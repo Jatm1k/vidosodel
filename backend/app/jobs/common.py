@@ -75,5 +75,6 @@ def scene_to_dict(scene: Scene) -> dict[str, Any]:
         "image_status": src.image_status if src is not None else scene.image_status,
         "image_error": scene.image_error, "image_meta": scene.image_meta or {},
         "source_scene_id": scene.source_scene_id, "overrides": scene.overrides or {},
+        "characters": src.characters if src is not None else scene.characters,
         "shared": src is not None,
     }

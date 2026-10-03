@@ -13,6 +13,7 @@ import { useTrackActions } from '@/composables/useTrackActions'
 import { useNotify } from '@/composables/useNotify'
 import { useAppStore } from '@/stores/app'
 import ActiveJobs from '../ActiveJobs.vue'
+import CharacterCast from '../CharacterCast.vue'
 import SceneRow from '../SceneRow.vue'
 import SceneTimeline from '../SceneTimeline.vue'
 
@@ -37,6 +38,8 @@ const bibleOpen = ref(false)
 const bible = ref(props.project.visual_context)
 
 const shares = computed(() => props.track.shares_images)
+/** Character references are on: the cast is shown and scenes list who is in them. */
+const cast = computed(() => (props.project.effective_settings.images.character_refs ? props.project.characters : []))
 const stats = computed(() => props.track.scene_stats)
 const master = computed(() => props.project.tracks.find((t) => t.is_master))
 const filtered = computed(() =>
@@ -179,7 +182,7 @@ onUnmounted(() => {
 
 <template>
   <div class="flex flex-col gap-4">
-    <ActiveJobs :track="track" :kinds="['scenes', 'prompts', 'images', 'watermarks']" />
+    <ActiveJobs :track="track" :kinds="['scenes', 'characters', 'prompts', 'images', 'watermarks']" />
 
     <div class="flex flex-wrap items-center gap-2">
       <Button
@@ -263,6 +266,14 @@ onUnmounted(() => {
       </div>
     </section>
 
+    <CharacterCast
+      v-if="!shares && project.effective_settings.images.character_refs"
+      :project-id="project.id"
+      :master-track-id="project.master_track_id"
+      :characters="project.characters"
+      @changed="emit('changed')"
+    />
+
     <template v-if="scenes.length">
       <SceneTimeline :scenes="scenes" :duration="track.audio_duration ?? scenes.at(-1)?.end ?? 0" :selected="selected" @select="select" />
 
@@ -290,6 +301,7 @@ onUnmounted(() => {
           :selected="selected === s.id"
           :readonly-prompt="shares"
           :planned-op="plan?.scene_ops[s.id] ?? null"
+          :cast="cast"
           :is-last="i === filtered.length - 1"
           @updated="(sc) => { patch(sc); void loadPlan() }"
           @replaced="(list) => (scenes = list)"

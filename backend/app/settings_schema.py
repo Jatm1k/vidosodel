@@ -69,6 +69,11 @@ class ImageSettings(_Base):
     )
     #: Things that must not appear in images.
     avoid: str = "text, captions, letters, watermark, logo, signature, frame, border, collage, split screen"
+    #: Character references: recurring people get a reference portrait that is
+    #: sent with every scene they appear in (needs a model that accepts references).
+    character_refs: bool = False
+    #: Model that draws the reference portraits.
+    character_operation: str = "nano_banana_pro_image_generate"
     #: Style reference images (relative media paths), sent with every request.
     reference_images: list[str] = Field(default_factory=list)
     use_references: bool = False

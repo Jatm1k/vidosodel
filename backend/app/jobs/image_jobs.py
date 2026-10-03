@@ -12,7 +12,8 @@ from typing import Any
 import cv2
 
 from ..db import session_scope
-from ..models import Scene, Track
+from ..models import Character, Scene, Track
+from ..pipeline import characters as chars
 from ..pipeline import llm_tasks
 from ..pipeline.image_plan import plan_project
 from ..render.media import imread, imwrite, make_thumbnail, remove_watermark
@@ -36,20 +37,21 @@ def reference_inputs(images: ImageSettings, operations: set[str] | None = None) 
     ops = operations or {images.operation}
     if not images.use_references or not any(IMAGE_OPS_BY_ID.get(op, {}).get("refs") for op in ops):
         return []
-    refs = []
-    for rel in images.reference_images[:6]:
-        path = to_abs(rel)
-        if not path or not path.exists():
-            continue
-        img = imread(path)
-        h, w = img.shape[:2]
-        scale = min(1.0, 1280 / max(h, w))
-        if scale < 1:
-            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])
-        if ok:
-            refs.append("data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode())
-    return refs
+    return [uri for rel in images.reference_images[:6] if (uri := image_data_uri(rel))]
+
+
+def image_data_uri(rel: str | None, max_side: int = 1280) -> str | None:
+    """A stored image as a compact JPEG data URI for the ``inputs`` of a generation."""
+    path = to_abs(rel)
+    if not path or not path.exists():
+        return None
+    img = imread(path)
+    h, w = img.shape[:2]
+    scale = min(1.0, max_side / max(h, w))
+    if scale < 1:
+        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode() if ok else None
 
 
 def postprocess(raw: Path, dest: Path, images: ImageSettings) -> bool:
@@ -71,9 +73,12 @@ def _watermark_method(images: ImageSettings) -> str:
 def generate_one(
     fg: FastgenClient, prompt: str, dest_dir: Path, stem: str, images: ImageSettings, llm: LlmSettings,
     refs: list[str], ctx: JobContext, on_wait=None, operation: str | None = None,
-    on_prompt_fixed=None,
+    on_prompt_fixed=None, note: str = "",
 ) -> tuple[Path, dict[str, Any]]:
-    """Generate a single image with retries, budget control and prompt auto-fixing."""
+    """Generate a single image with retries, budget control and prompt auto-fixing.
+
+    ``note`` is put before the prompt (e.g. which reference image shows which character).
+    """
     operation = operation or images.operation
     credits = image_credits(operation, images.upscale_2x)
     attempts = max(1, images.max_attempts)
@@ -87,7 +92,7 @@ def generate_one(
                 started: dict[str, Any] = {}
                 try:
                     meta = fg.generate_image(
-                        llm_tasks.compose_prompt(current, images), raw, operation=operation,
+                        note + llm_tasks.compose_prompt(current, images), raw, operation=operation,
                         references=refs if IMAGE_OPS_BY_ID.get(operation, {}).get("refs") else None,
                         upscale=images.upscale_2x, should_stop=ctx.should_stop,
                         on_started=started.update,
@@ -142,6 +147,9 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
         images, llm = tc.settings.images, tc.settings.llm
         plan = plan_project(tc.project, images, limiter.hourly_budget())
         jobs = [(s.id, s.prompt, plan.ops.get(s.id, images.operation)) for s in scenes]
+        cast = list(tc.project.characters) if images.character_refs else []
+        # scene id → characters in it (only when the scene's model can take reference images)
+        scene_cast = {s.id: chars.scene_character_ids(s, cast) for s in scenes} if cast else {}
         for s in scenes:
             s.image_status, s.image_error = "queued", None
         project_id, track_id = tc.project.id, tc.track.id
@@ -150,7 +158,26 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
     track_changed(track_id, "images")
 
     out_dir = track_dir(project_id, track_id, "images")
+    if any(scene_cast.values()):
+        from .character_jobs import ensure_portraits  # noqa: PLC0415 – avoids an import cycle
+
+        ensure_portraits(project_id, ctx)
+    portraits: dict[int, tuple[str, str]] = {}
+    if scene_cast:
+        with session_scope() as db:
+            for c in db.query(Character).filter(Character.project_id == project_id):
+                if c.image_file and (uri := image_data_uri(c.image_file, 1024)):
+                    portraits[c.id] = (c.name, uri)
     refs = reference_inputs(images, {op for _, _, op in jobs})
+
+    def scene_inputs(scene_id: int, operation: str) -> tuple[list[str], str]:
+        """Reference inputs and the note for one scene: its characters first, then the style refs."""
+        if not chars.accepts_refs(operation):
+            return refs, ""
+        cast_here = [portraits[c] for c in scene_cast.get(scene_id, []) if c in portraits]
+        inputs = [uri for _, uri in cast_here] + refs
+        return inputs[:chars.MAX_INPUTS], chars.reference_note([name for name, _ in cast_here])
+
     by_op: dict[str, int] = {}
     for _, _, op in jobs:
         by_op[op] = by_op.get(op, 0) + 1
@@ -178,9 +205,13 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
                     sc.prompt = new_prompt
 
         try:
+            inputs, note = scene_inputs(scene_id, operation)
             with FastgenClient() as fg:
-                path, meta = generate_one(fg, prompt, out_dir, f"scene_{scene_id}", images, llm, refs, ctx,
-                                          on_wait=on_wait, operation=operation, on_prompt_fixed=prompt_fixed)
+                path, meta = generate_one(fg, prompt, out_dir, f"scene_{scene_id}", images, llm, inputs, ctx,
+                                          on_wait=on_wait, operation=operation, on_prompt_fixed=prompt_fixed,
+                                          note=note)
+            if note:
+                meta["characters"] = scene_cast.get(scene_id, [])
             with session_scope() as db:
                 sc = db.get(Scene, scene_id)
                 if sc is None:

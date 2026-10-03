@@ -11,7 +11,10 @@ A project can mix a quality model and a cheap one (``ImageSettings.model_strateg
   number of scenes. Quality scenes go to the start of each video.
 
 A model chosen by hand for a scene (``scene.overrides["operation"]``) always
-wins and its cost is taken out of the budget first.
+wins and its cost is taken out of the budget first. With character references
+on, scenes that show a character need a model that accepts reference images:
+when the strategy could give them one that does not (e.g. a cheap model), they
+are pinned to the model that does – also paid from the budget first.
 
 The plan is deterministic – the same scene gets the same model on every run –
 so regenerating a few images never shuffles models around.
@@ -24,6 +27,7 @@ from typing import Any
 from ..models import Project, Scene, Track
 from ..services.fastgen import IMAGE_OPS_BY_ID, image_credits
 from ..settings_schema import ImageSettings
+from .characters import accepts_refs, scene_character_ids
 
 
 @dataclass
@@ -58,16 +62,33 @@ def plan_project(project: Project, images: ImageSettings, hourly_budget: int) ->
     scenes_by_track = {t.id: sorted(t.scenes, key=lambda s: s.idx) for t in tracks}
     plan = ImagePlan(budget=images.budget_credits or hourly_budget)
 
+    cast = list(project.characters) if images.character_refs else []
+    refs_op = next((op for op in (premium, economy) if accepts_refs(op)), None)
+    strategy_ops = {premium} if strategy == "single" else {premium, economy}
+    must_pin_cast = bool(cast) and refs_op is not None and not all(accepts_refs(op) for op in strategy_ops)
+    if cast and refs_op is None:
+        plan.warning = "Выбранные модели не принимают референсы — портреты персонажей не будут учитываться."
+
+    def forced(sc: Scene) -> str | None:
+        """Model fixed for the scene regardless of the strategy."""
+        if op := scene_override(sc):
+            return op
+        if must_pin_cast and scene_character_ids(sc, cast):
+            return refs_op
+        return None
+
+    fixed = {s.id: op for sc_list in scenes_by_track.values() for s in sc_list if (op := forced(s))}
+
     # How many premium scenes each track gets (None = decided per scene by time).
     premium_count: dict[int, int] = {}
     if strategy == "budget":
-        free = {tid: [s for s in sc if not scene_override(s)] for tid, sc in scenes_by_track.items()}
+        free = {tid: [s for s in sc if s.id not in fixed] for tid, sc in scenes_by_track.items()}
         # Languages without scenes yet will need about as many as the others.
         known = [len(v) for v in free.values() if v]
         guess = round(sum(known) / len(known)) if known else 0
         sizes = {tid: len(v) or guess for tid, v in free.items()}
         total = sum(sizes.values())
-        pinned = sum(cost(scene_override(s)) for sc in scenes_by_track.values() for s in sc if scene_override(s))
+        pinned = sum(cost(op) for op in fixed.values())
         left = plan.budget - pinned
         cp, ce = cost(premium), cost(economy)
         if cp <= ce:
@@ -87,7 +108,7 @@ def plan_project(project: Project, images: ImageSettings, hourly_budget: int) ->
     for t in tracks:
         given = 0
         for s in scenes_by_track[t.id]:
-            op = scene_override(s)
+            op = fixed.get(s.id)
             if not op:
                 if strategy == "single":
                     op = premium

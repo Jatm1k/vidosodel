@@ -1,7 +1,8 @@
 """LLM tasks of the pipeline (all through FastGen chat completions).
 
 * :func:`visual_bible` – consistent look of characters/places for the whole video.
-* :func:`scene_prompts` – one English image prompt per scene, in batches.
+* :func:`extract_characters` – recurring people that get reference portraits.
+* :func:`scene_prompts` – one English image prompt per scene (and who is in it), in batches.
 * :func:`soften_prompt` – rephrase a prompt rejected by a content filter.
 * :func:`translate_script` – paragraph-aligned translation of a script.
 * :func:`publish_metadata` – titles, description, tags, chapters, thumbnail ideas.
@@ -51,6 +52,42 @@ def visual_bible(fg: FastgenClient, script: str, llm: LlmSettings, images: Image
                    model=llm.model, temperature=0.5).strip()
 
 
+# ----------------------------------------------------------------------- characters
+def extract_characters(fg: FastgenClient, script: str, bible: str, llm: LlmSettings,
+                       limit: int = 6) -> list[dict[str, str]]:
+    """Recurring on-screen people of the video: ``[{"name", "description"}]`` (may be empty)."""
+    system = (
+        "You prepare reference portraits for an illustrated narrated video. From the script and the visual "
+        f"bible, list up to {limit} RECURRING people who should look the same in many images: named heroes, "
+        "the narrator's persona if shown, a recurring 'the man'/'the woman' protagonist. Skip people that appear "
+        "once, crowds, historical figures and real celebrities. For each give a short English handle (a first "
+        "name or 'the old man') and a fixed visual description in English, 25–50 words: gender, age, "
+        "ethnicity, face, hair, build, typical clothing. Reuse the bible's descriptions when present. "
+        "If nobody recurs (abstract or educational script), return an empty list. "
+        'Answer ONLY with JSON: {"characters": [{"name": "...", "description": "..."}]}'
+    )
+    user = f"{_niche(llm)}VISUAL BIBLE:\n{bible or '(none)'}\n\nSCRIPT:\n{script[:120_000]}"
+    data = fg.chat_json([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                        model=llm.model, temperature=0.3)
+    out: list[dict[str, str]] = []
+    for c in (data.get("characters") if isinstance(data, dict) else None) or []:
+        if not isinstance(c, dict):
+            continue
+        name, desc = str(c.get("name", "")).strip()[:60], str(c.get("description", "")).strip()
+        if name and desc and name.lower() not in {o["name"].lower() for o in out}:
+            out.append({"name": name, "description": desc})
+    return out[:limit]
+
+
+def portrait_prompt(description: str) -> str:
+    """Prompt of a character reference portrait (the channel style is appended by :func:`compose_prompt`)."""
+    return (
+        f"Character reference portrait: {description}. Head and upper body, facing the camera, calm neutral "
+        "expression, plain neutral grey background, soft even studio lighting, face in sharp focus, "
+        "no other people"
+    )
+
+
 # -------------------------------------------------------------------- scene prompts
 _PROMPT_SYSTEM = """You write prompts for an image generation model that illustrates a narrated YouTube video.
 Each scene below is a fragment of the voice-over; write ONE prompt per scene describing a single 16:9 still \
@@ -63,8 +100,13 @@ Rules:
 - Vary shot types (wide, medium, close-up, over-the-shoulder, detail shot) and compositions across scenes.
 - Abstract ideas → clear visual metaphors. Never put text, captions, letters or UI in the image.
 - Do NOT add art-style words (photorealistic, oil painting...) – the style is appended automatically.
-- {safe}
-Answer ONLY with JSON: {{"prompts": [{{"id": <scene id>, "prompt": "<text>"}}, ...]}}"""
+- {safe}{characters_rule}
+Answer ONLY with JSON: {{"prompts": [{{"id": <scene id>, "prompt": "<text>"{characters_field}}}, ...]}}"""
+
+_CHARACTERS_RULE = """
+- CHARACTERS have reference portraits. When one is visible in a scene, call them by their exact name and \
+list them in "characters"; describe pose, action and emotion, not their face or hair (the portrait defines \
+those). At most 3 named characters per scene; use [] when none of them is visible."""
 
 
 def scene_prompts(
@@ -76,15 +118,23 @@ def scene_prompts(
     batch_size: int = 30,
     progress: Callable[[float], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
-    on_batch: Callable[[dict[int, str]], None] | None = None,
-) -> dict[int, str]:
-    """Generate prompts for ``(scene_id, text)`` pairs. Returns ``{scene_id: prompt}``.
+    on_batch: Callable[[dict[int, dict[str, Any]]], None] | None = None,
+    characters: Sequence[tuple[str, str]] = (),
+) -> dict[int, dict[str, Any]]:
+    """Generate prompts for ``(scene_id, text)`` pairs.
 
+    Returns ``{scene_id: {"prompt": str, "characters": [names] | None}}``:
+    who of ``characters`` (name, description) is visible in the scene, or
+    None when no characters were given or the model did not say.
     ``on_batch`` is called after every batch so results are persisted
     incrementally (a long video is ~50 requests).
     """
-    system = _PROMPT_SYSTEM.format(safe=SAFE_RULES)
-    result: dict[int, str] = {}
+    system = _PROMPT_SYSTEM.format(
+        safe=SAFE_RULES,
+        characters_rule=_CHARACTERS_RULE if characters else "",
+        characters_field=', "characters": ["<name>"]' if characters else "",
+    )
+    result: dict[int, dict[str, Any]] = {}
     previous: list[str] = []
     for start in range(0, len(scenes), batch_size):
         if should_stop and should_stop():
@@ -95,6 +145,8 @@ def scene_prompts(
             f"{('Additional instructions: ' + llm.prompt_instructions + chr(10)) if llm.prompt_instructions else ''}"
             f"VISUAL BIBLE:\n{bible or '(none)'}\n\n"
         )
+        if characters:
+            header += "CHARACTERS:\n" + "\n".join(f"- {n}: {d}" for n, d in characters) + "\n\n"
         context = "\n".join(f"- {p}" for p in previous[-3:])
         if context:
             header += f"Previous prompts (for continuity, do not repeat):\n{context}\n\n"
@@ -102,7 +154,7 @@ def scene_prompts(
         result.update(got)
         if on_batch and got:
             on_batch(got)
-        previous.extend(got[sid] for sid, _ in batch if sid in got)
+        previous.extend(got[sid]["prompt"] for sid, _ in batch if sid in got)
         if progress:
             progress(min(1.0, (start + len(batch)) / len(scenes)))
     return result
@@ -111,7 +163,7 @@ def scene_prompts(
 def _prompts_resilient(
     fg: FastgenClient, system: str, header: str, batch: list[tuple[int, str]], llm: LlmSettings,
     should_stop: Callable[[], bool] | None, depth: int = 0,
-) -> dict[int, str]:
+) -> dict[int, dict[str, Any]]:
     """Prompts for a batch that never fails as a whole.
 
     The chat backend occasionally returns an empty, truncated or non-JSON
@@ -121,7 +173,7 @@ def _prompts_resilient(
     """
     if not batch or (should_stop and should_stop()):
         return {}
-    got: dict[int, str] = {}
+    got: dict[int, dict[str, Any]] = {}
     try:
         got = _prompts_batch(fg, system, header, batch, llm)
     except ApiError as exc:
@@ -142,20 +194,22 @@ def _prompts_resilient(
 
 
 def _prompts_batch(fg: FastgenClient, system: str, header: str, batch: list[tuple[int, str]],
-                   llm: LlmSettings) -> dict[int, str]:
+                   llm: LlmSettings) -> dict[int, dict[str, Any]]:
     """One LLM request. Accepts partial/truncated JSON: every complete ``{id, prompt}`` object counts."""
     ids = {sid for sid, _ in batch}
     user = header + "SCENES:\n" + "\n".join(f"[{sid}] {text}" for sid, text in batch)
     text = fg.chat([{"role": "system", "content": system}, {"role": "user", "content": user}],
                    model=llm.model, temperature=llm.temperature)
-    out: dict[int, str] = {}
+    out: dict[int, dict[str, Any]] = {}
     for it in iter_json_objects(text):
         try:
             sid, prompt = int(it["id"]), str(it["prompt"]).strip()
         except (KeyError, TypeError, ValueError):
             continue
         if sid in ids and prompt:
-            out[sid] = prompt
+            names = it.get("characters")
+            out[sid] = {"prompt": prompt,
+                        "characters": [str(n) for n in names] if isinstance(names, list) else None}
     if not out:
         log.warning("LLM answer without usable prompts (%d chars): %r", len(text), text[:400])
     return out

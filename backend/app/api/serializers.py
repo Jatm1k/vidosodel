@@ -11,6 +11,7 @@ from ..jobs.runner import job_to_dict
 from ..models import Channel, Job, Project, Scene, Track
 from ..pipeline.languages import LANGUAGES
 from ..storage import media_url
+from .characters import character_to_dict
 
 
 def channel_to_dict(db: Session, ch: Channel) -> dict[str, Any]:
@@ -111,6 +112,7 @@ def project_to_dict(db: Session, project: Project, *, full: bool = False) -> dic
     if full:
         data["settings"] = project.settings or {}
         data["visual_context"] = project.visual_context
+        data["characters"] = [character_to_dict(c) for c in project.characters]
         data["tracks"] = summaries
     return data
 

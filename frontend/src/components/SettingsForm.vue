@@ -104,6 +104,18 @@ const strategyHint = computed(() => ({
   budget: 'Качественной моделью делается столько сцен, сколько позволяет бюджет, — с начала каждого видео. Остальные — дешёвой. ' +
     'Бюджет делится на все языки, у которых свои картинки, пропорционально числу сцен.',
 }[s.value.images.model_strategy]))
+// Character references need a scene model that accepts reference images (mirrors pipeline/image_plan.py).
+const refsOk = (id: string) => !!imageOps.value.find((o) => o.id === id)?.refs
+const opName = (id: string | null) => imageOps.value.find((o) => o.id === id)?.name ?? id ?? ''
+const strategyOps = computed(() =>
+  mixed.value ? [s.value.images.operation, s.value.images.economy_operation] : [s.value.images.operation],
+)
+const characterRefsOp = computed(() => [s.value.images.operation, s.value.images.economy_operation].find(refsOk) ?? null)
+const characterModelsOk = computed(() => !!characterRefsOp.value)
+const characterUpgrade = computed(() => {
+  const without = strategyOps.value.filter((op) => !refsOk(op))
+  return without.length && characterRefsOp.value ? without.map(opName).join(', ') : ''
+})
 const economyOptions = computed(() => imageOps.value.map((o) => ({ ...o, label: `${o.name} · ${o.credits} кр.` })))
 /** Budget example for a typical 10-minute video (~100 scenes) to make the number tangible. */
 const budgetExample = computed(() => {
@@ -379,6 +391,24 @@ onMounted(async () => {
               <i :class="['pi', uploading ? 'pi-spin pi-spinner' : 'pi-plus']" />Добавить
               <input type="file" accept="image/*" multiple class="hidden" @change="uploadRef" />
             </label>
+          </div>
+        </FormField>
+        <FormField
+          label="Референсы персонажей"
+          hint="Повторяющиеся герои получают портрет-образец, который отправляется со всеми сценами, где они есть: лицо, причёска и одежда не меняются от кадра к кадру"
+        >
+          <ToggleSwitch v-model="s.images.character_refs" class="mt-1.5" />
+          <div v-if="s.images.character_refs" class="mt-3 flex flex-col gap-2">
+            <label class="flex flex-col gap-1.5">
+              <span class="text-[13px] text-ink-2">Модель для портретов</span>
+              <Select v-model="s.images.character_operation" :options="economyOptions" option-value="id" option-label="label" class="w-80" />
+            </label>
+            <p v-if="!characterModelsOk" class="text-[13px] text-tally">
+              Ни одна из выбранных моделей не принимает референсы — портреты не будут учитываться. Выберите, например, Nano Banana 2.
+            </p>
+            <p v-else-if="characterUpgrade" class="text-[13px] text-ink-3">
+              {{ characterUpgrade }} не принимает референсы — сцены с персонажами сделает {{ opName(characterRefsOp) }}.
+            </p>
           </div>
         </FormField>
         <FormField label="Водяные знаки" hint="Модели на основе Gemini (Flower, Nano Banana через Gemini) ставят звёздочку в углу части картинок. Каждая картинка проверяется">

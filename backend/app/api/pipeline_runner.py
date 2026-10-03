@@ -2,7 +2,10 @@
 
 Steps run in this order per track, each depending on the previous one::
 
-    translate → voice → scenes → prompts → images → render → metadata → thumbnails
+    translate → voice → scenes → characters → prompts → images → render → metadata → thumbnails
+
+``characters`` (reference portraits) runs only when it is enabled in the image
+settings, once per project – on the master track.
 
 Already finished steps are skipped unless ``force`` is set, so the same button
 means "continue from where it stopped". With shared images, other languages
@@ -17,8 +20,13 @@ from sqlalchemy.orm import Session
 
 from ..jobs.runner import runner
 from ..models import Project, Track
+from ..settings_schema import effective_settings
 
-STEP_ORDER = ["translate", "voice", "scenes", "prompts", "images", "render", "metadata", "thumbnails"]
+STEP_ORDER = ["translate", "voice", "scenes", "characters", "prompts", "images", "render", "metadata", "thumbnails"]
+
+
+def _characters_done(project: Project) -> bool:
+    return bool(project.characters_scanned_at) and all(c.image_file for c in project.characters)
 
 
 def _done(track: Track, step: str, shares: bool) -> bool:
@@ -52,6 +60,7 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
     # Master first: other languages may depend on it.
     tracks.sort(key=lambda t: (t.id != master_id, t.position))
     selected = [s for s in STEP_ORDER if s in steps]
+    use_characters = effective_settings(project.channel.settings, project.settings).images.character_refs
     created: list[int] = []
     master_jobs: dict[str, int] = {}
 
@@ -65,12 +74,15 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
                 continue
             if step in ("prompts", "images") and shares:
                 continue
+            if step == "characters":
+                if not use_characters or not is_master or (not force and _characters_done(project)):
+                    continue
             # A shared-image track must follow the master when the master re-cuts scenes
             # (its aligned scenes get reset) or regenerates images (its video becomes stale).
             follows_master = shares and ((step == "scenes" and "scenes" in master_jobs)
                                          or (step == "render" and "images" in master_jobs))
             redo = force or follows_master or (step == "translate" and options.get("retranslate"))
-            if not redo and _done(track, step, shares):
+            if step != "characters" and not redo and _done(track, step, shares):
                 continue
             if step in ("thumbnails",) and not force and "metadata" not in selected and not track.publish_meta:
                 continue
@@ -86,6 +98,10 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
                 params["overwrite"] = True
             if step == "render" and options.get("allow_missing"):
                 params["allow_missing"] = True
+            if step == "characters" and force:
+                params["rescan"] = True
+            if step == "prompts" and not is_master and "characters" in master_jobs:
+                after.append(master_jobs["characters"])  # the cast is shared by all languages
             if shares and step == "scenes" and "scenes" in master_jobs:
                 after.append(master_jobs["scenes"])
             if shares and step == "render" and "images" in master_jobs:

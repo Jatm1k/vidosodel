@@ -17,7 +17,7 @@ const store = useAppStore()
 const KINDS: Record<StageId, string[]> = {
   script: ['translate'],
   voice: ['voice', 'transcribe'],
-  storyboard: ['scenes', 'prompts', 'images', 'watermarks'],
+  storyboard: ['scenes', 'characters', 'prompts', 'images', 'watermarks'],
   video: ['render', 'preview'],
   publish: ['metadata', 'thumbnails'],
 }

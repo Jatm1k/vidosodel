@@ -3,10 +3,11 @@
 import { computed, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Menu from 'primevue/menu'
+import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 import { api } from '@/api/client'
-import type { Scene } from '@/api/types'
+import type { Character, Scene } from '@/api/types'
 import { timecode } from '@/composables/useFormat'
 import { useNotify } from '@/composables/useNotify'
 import { useAppStore } from '@/stores/app'
@@ -15,6 +16,8 @@ const props = defineProps<{
   scene: Scene; trackId: number; selected: boolean; readonlyPrompt: boolean; isLast: boolean
   /** Model the project plan assigns to this scene (null for borrowed images). */
   plannedOp?: string | null
+  /** Project characters when character references are on (empty otherwise). */
+  cast?: Character[]
 }>()
 const emit = defineEmits<{
   updated: [scene: Scene]
@@ -47,6 +50,24 @@ const modelOptions = computed(() => {
   ]
 })
 const usedModel = computed(() => opShort(props.scene.image_meta?.operation))
+
+/** Who is in the scene: the assigned list, or names found in the prompt (same rule as the server). */
+const castIds = computed<number[]>(() => {
+  const cast = props.cast ?? []
+  if (props.scene.characters) return props.scene.characters.filter((id) => cast.some((c) => c.id === id))
+  const text = props.scene.prompt ?? ''
+  return cast.filter((c) => {
+    const name = c.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return name && new RegExp(`(?<![\\p{L}\\d_])${name}(?![\\p{L}\\d_])`, 'iu').test(text)
+  }).map((c) => c.id).slice(0, 3)
+})
+async function setCast(ids: number[]) {
+  try {
+    emit('updated', await api.patch<Scene>(`/api/scenes/${props.scene.id}`, { characters: ids }))
+  } catch (e) {
+    notify.error(e)
+  }
+}
 
 async function savePrompt() {
   if (prompt.value.trim() === props.scene.prompt.trim()) return
@@ -165,6 +186,22 @@ async function restructure(action: 'split' | 'merge-next') {
           <i class="pi pi-shield text-[11px]" />промпт смягчён после отказа модели
         </span>
         <div class="ml-auto flex items-center gap-2">
+          <MultiSelect
+            v-if="cast?.length && !scene.shared"
+            :model-value="castIds"
+            :options="cast"
+            option-value="id"
+            option-label="name"
+            :selection-limit="3"
+            :show-toggle-all="false"
+            placeholder="Без персонажей"
+            :max-selected-labels="2"
+            selected-items-label="{0} персонажа"
+            size="small"
+            class="w-48"
+            aria-label="Персонажи в сцене"
+            @update:model-value="setCast"
+          />
           <Select
             v-if="!scene.shared && plannedOp !== null"
             :model-value="scene.overrides.operation ?? null"

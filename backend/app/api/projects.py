@@ -464,6 +464,8 @@ class ScenePatch(BaseModel):
     prompt: str | None = None
     text: str | None = None
     overrides: dict[str, Any] | None = None
+    #: Characters visible in the scene (ids of project characters).
+    characters: list[int] | None = None
 
 
 @router.patch("/scenes/{scene_id}")
@@ -475,6 +477,8 @@ def update_scene(scene_id: int, body: ScenePatch, db: Session = Depends(get_db))
         s.text = body.text
     if body.overrides is not None:
         s.overrides = {k: v for k, v in body.overrides.items() if v}
+    if body.characters is not None:
+        s.characters = list(dict.fromkeys(body.characters))
     db.commit()
     return scene_to_dict(s)
 

@@ -65,12 +65,44 @@ class Project(TimestampMixin, Base):
     master_track_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: LLM-made "visual bible": recurring characters, places, era, palette.
     visual_context: Mapped[str] = mapped_column(Text, default="")
+    #: When the script was last scanned for recurring characters (None – never).
+    characters_scanned_at: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     channel: Mapped[Channel] = relationship(back_populates="projects")
     tracks: Mapped[list[Track]] = relationship(
         back_populates="project", cascade="all, delete-orphan", passive_deletes=True,
         order_by="Track.position",
     )
+    characters: Mapped[list[Character]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", passive_deletes=True,
+        order_by="Character.position",
+    )
+
+
+class Character(TimestampMixin, Base):
+    """A recurring person of the video with a reference portrait.
+
+    The portrait is sent to the image model together with every scene the
+    character appears in, so the face, hair and clothing stay the same.
+    """
+
+    __tablename__ = "characters"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    #: Short name used in prompts ("Alex").
+    name: Mapped[str] = mapped_column(String(100))
+    #: Fixed appearance in English: gender, age, ethnicity, hair, build, clothing.
+    description: Mapped[str] = mapped_column(Text, default="")
+    image_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    #: none | generating | done | failed
+    image_status: Mapped[str] = mapped_column(String(20), default="none")
+    image_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: ``generated`` or ``upload`` (an own photo/drawing is never replaced automatically).
+    image_origin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="characters")
 
 
 class Track(TimestampMixin, Base):
@@ -143,6 +175,9 @@ class Scene(Base):
     )
     #: Optional manual overrides: ``{"effect": "zoom_in", "transition": "fade"}``.
     overrides: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: Ids of the project characters visible in this scene; ``None`` – not assigned
+    #: yet (then names mentioned in the prompt are used).
+    characters: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
 
     track: Mapped[Track] = relationship(back_populates="scenes", foreign_keys=[track_id])
     source_scene: Mapped[Scene | None] = relationship(remote_side=[id], foreign_keys=[source_scene_id])

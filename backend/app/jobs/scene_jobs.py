@@ -7,9 +7,10 @@ from typing import Any
 from sqlalchemy import delete
 
 from ..db import session_scope
-from ..models import Project, Scene, Track
+from ..models import Character, Project, Scene, Track
 from ..pipeline import llm_tasks
 from ..pipeline.align import align_scenes
+from ..pipeline.characters import ids_from_names
 from ..pipeline.scenes import split_auto, split_smart
 from ..pipeline.timings import estimate
 from ..services.fastgen import FastgenClient
@@ -115,19 +116,32 @@ def prompts_job(ctx: JobContext) -> dict[str, Any]:
             if (s.id in only_ids) or (not only_ids and (not s.prompt.strip() or (overwrite and not s.prompt_locked)))
         ]
         llm, project_id, track_id = tc.settings.llm, tc.project.id, tc.track.id
+        use_characters = tc.settings.images.character_refs
     if not targets:
         return {"message": "Все сцены уже имеют промпты"}
     with FastgenClient() as fg:
         ctx.progress(0.02, "Визуальная библия проекта", force=True)
         bible = ensure_bible(project_id, fg)
+        cast: list[Character] = []
+        if use_characters:
+            from .character_jobs import ensure_scanned  # noqa: PLC0415 – character_jobs imports this module
 
-        def save(batch: dict[int, str]) -> None:
+            ctx.progress(0.04, "Персонажи", force=True)
+            ensure_scanned(project_id, fg)
             with session_scope() as db:
-                for sid, prompt in batch.items():
+                cast = list(db.get(Project, project_id).characters)
+                for c in cast:
+                    db.expunge(c)
+
+        def save(batch: dict[int, dict]) -> None:
+            with session_scope() as db:
+                for sid, item in batch.items():
                     sc = db.get(Scene, sid)
                     if sc is None:
                         continue
-                    sc.prompt = prompt
+                    sc.prompt = item["prompt"]
+                    if cast:
+                        sc.characters = ids_from_names(item.get("characters"), cast)
                     if sid in only_ids:
                         sc.prompt_locked = False
                     scene_changed(track_id, scene_to_dict(sc))
@@ -136,6 +150,7 @@ def prompts_job(ctx: JobContext) -> dict[str, Any]:
             fg, targets, bible=bible, llm=llm,
             progress=lambda v: ctx.progress(0.05 + 0.95 * v, f"Промпты: {int(v * len(targets))}/{len(targets)}"),
             should_stop=ctx.should_stop, on_batch=save,
+            characters=[(c.name, c.description) for c in cast],
         )
     missing = len(targets) - len(got)
     if missing and not got:

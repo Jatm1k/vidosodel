@@ -62,6 +62,7 @@ export interface PipelineSettings {
     premium_minutes: number; budget_credits: number
     upscale_2x: boolean; style_prompt: string; avoid: string
     reference_images: string[]; use_references: boolean
+    character_refs: boolean; character_operation: string
     watermark_fix: 'auto' | 'inpaint' | 'crop' | 'none'; auto_fix_rejected: boolean; max_attempts: number
   }
   llm: { model: string; niche: string; prompt_instructions: string; temperature: number }
@@ -175,6 +176,7 @@ export interface TrackSummary {
 export interface ProjectDetail extends ProjectSummary {
   settings: Partial<PipelineSettings>
   visual_context: string
+  characters: Character[]
   tracks: TrackSummary[]
   channel: { id: number; name: string; color: string }
   effective_settings: PipelineSettings
@@ -194,6 +196,8 @@ export interface Scene {
   image_meta: Record<string, any>
   source_scene_id: number | null
   overrides: { effect?: string; transition?: string; operation?: string }
+  /** Ids of project characters in the scene; null – not assigned (names in the prompt are used). */
+  characters: number[] | null
   shared: boolean
 }
 
@@ -281,4 +285,16 @@ export interface VersionState {
   supervised: boolean
   checked_at: number | null
   update: UpdateInfo | null
+}
+
+export interface Character {
+  id: number
+  name: string
+  description: string
+  position: number
+  image_url: string | null
+  image_status: 'none' | 'generating' | 'done' | 'failed'
+  image_error: string | null
+  /** generated | upload */
+  image_origin: string | null
 }
