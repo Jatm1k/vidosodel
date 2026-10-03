@@ -1,0 +1,110 @@
+@layer theme, base, primevue, components, utilities;
+@import "tailwindcss";
+@import "tailwindcss-primeui";
+@import "@fontsource-variable/onest";
+@import "@fontsource-variable/unbounded";
+@import "primeicons/primeicons.css";
+
+/*
+ * Vidosodel visual tokens — "grading suite":
+ * neutral graphite-blue surfaces so images read true, an amber tally-light
+ * accent reserved for the primary action and live work, signal colours for state.
+ */
+@theme {
+  --font-sans: "Onest Variable", system-ui, sans-serif;
+  --font-display: "Unbounded Variable", "Onest Variable", sans-serif;
+
+  --color-bg: #1c1f25;
+  --color-panel: #252932;
+  --color-raised: #2d323c;
+  --color-line: #363c48;
+  --color-line-soft: #2c313b;
+  --color-ink: #e9ebef;
+  --color-ink-2: #a9b0bd;
+  --color-ink-3: #737b8a;
+  --color-tally: #f0b03c;
+  --color-tally-ink: #241a05;
+  --color-ok: #5fb3a1;
+  --color-bad: #e5645a;
+  --color-info: #7aa5e8;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Timecodes, counters and sizes line up in columns. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-tally) 35%, transparent);
+}
+
+/* Quiet scrollbars that do not fight with images. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #424958 transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-tally);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Live work indicator: a slow breathing tally lamp. */
+@keyframes tally-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.tally-live {
+  animation: tally-breathe 1.6s ease-in-out infinite;
+}
+
+/* Diagonal stripes on a progress bar that is waiting (budget / queue). */
+.stripes {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    rgb(255 255 255 / 0.07) 6px 12px
+  );
+}
+
+/* PrimeVue InputNumber: let the inner input follow the width set on the component. */
+@layer components {
+  .p-inputnumber .p-inputnumber-input {
+    width: 100%;
+    min-width: 0;
+  }
+}

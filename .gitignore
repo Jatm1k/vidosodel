@@ -1,0 +1,15 @@
+# secrets and local data
+.env
+data/
+tools/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# frontend (dist is committed so that users without Node.js can start right away)
+frontend/node_modules/
+
+# updater: version the user chose to skip
+.update-skip

@@ -1,0 +1,15 @@
+# One line-ending style in the repository and in every checkout: hashes of the
+# UI sources (frontend/dist/.build-hash) stay valid on Windows, macOS and Linux.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

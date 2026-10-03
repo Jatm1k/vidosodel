@@ -1,0 +1,23 @@
+/** Russian strings for built-in PrimeVue texts (dialogs, file upload, pickers). */
+export const ru = {
+  accept: 'Да',
+  reject: 'Нет',
+  choose: 'Выбрать',
+  upload: 'Загрузить',
+  cancel: 'Отмена',
+  clear: 'Очистить',
+  apply: 'Применить',
+  emptyMessage: 'Ничего не найдено',
+  emptyFilterMessage: 'Ничего не найдено',
+  emptySearchMessage: 'Ничего не найдено',
+  emptySelectionMessage: 'Ничего не выбрано',
+  selectionMessage: 'Выбрано: {0}',
+  searchMessage: 'Найдено: {0}',
+  dayNames: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'],
+  dayNamesShort: ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'],
+  dayNamesMin: ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'],
+  monthNames: ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'],
+  monthNamesShort: ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'],
+  firstDayOfWeek: 1,
+  aria: { close: 'Закрыть', previous: 'Назад', next: 'Вперёд' },
+}
