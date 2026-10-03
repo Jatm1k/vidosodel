@@ -96,7 +96,7 @@ scripts/bootstrap.py       установка и запуск
 Чтобы обновления работали, программу нужно установить через git:
 
 ```
-git clone <адрес репозитория> vidosodel
+git clone https://github.com/Jatm1k/vidosodel.git
 ```
 
 ## Разработка
