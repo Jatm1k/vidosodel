@@ -10,6 +10,10 @@ Two strategies share the same building blocks:
   the DP so the bounds always hold.
 
 The first ``intro_seconds`` use shorter bounds: fast cuts help retention.
+
+With ``limit_mode="count"`` the bounds are stretched by :func:`fit_to_limit`
+so a video gets at most ``max_images`` scenes, and :func:`enforce_limit`
+merges the shortest neighbours if the result still exceeds it.
 """
 from __future__ import annotations
 
@@ -224,3 +228,35 @@ def estimate_scene_count(duration: float, cfg: SceneSettings) -> int:
     rest = max(0.0, duration - intro)
     return int(round(intro / ((cfg.intro_min_duration + cfg.intro_max_duration) / 2)
                      + rest / ((cfg.min_duration + cfg.max_duration) / 2)))
+
+
+# ----------------------------------------------------------------------------- image limit
+def fit_to_limit(cfg: SceneSettings, duration: float) -> SceneSettings:
+    """Duration bounds that give at most ``cfg.max_images`` scenes for this video.
+
+    The limit is a ceiling: when the configured durations already fit, they
+    are kept. Otherwise every bound (intro included) is multiplied by the same
+    factor, aiming slightly below the limit because the split is not exact.
+    """
+    if cfg.limit_mode != "count" or cfg.max_images <= 0 or duration <= 0:
+        return cfg
+    expected = estimate_scene_count(duration, cfg)
+    target = cfg.max_images * 0.95
+    if expected <= target:
+        return cfg
+    k = expected / target
+    return cfg.model_copy(update={
+        "min_duration": cfg.min_duration * k, "max_duration": cfg.max_duration * k,
+        "intro_min_duration": cfg.intro_min_duration * k, "intro_max_duration": cfg.intro_max_duration * k,
+    })
+
+
+def enforce_limit(specs: list[SceneSpec], limit: int) -> list[SceneSpec]:
+    """Merge the shortest pair of neighbouring scenes until there are at most ``limit``."""
+    specs = list(specs)
+    while limit > 0 and len(specs) > limit:
+        i = min(range(len(specs) - 1), key=lambda k: specs[k + 1].end - specs[k].start)
+        a, b = specs[i], specs[i + 1]
+        specs[i:i + 2] = [SceneSpec(start=a.start, end=b.end, text=f"{a.text} {b.text}",
+                                    first_word=a.first_word, last_word=b.last_word)]
+    return specs

@@ -42,6 +42,11 @@ class SceneSettings(_Base):
     intro_seconds: float = 45.0
     intro_min_duration: float = 2.5
     intro_max_duration: float = 5.0
+    #: ``duration`` – scenes follow the duration bounds above;
+    #: ``count`` – at most ``max_images`` scenes per video: when the bounds above
+    #: would give more, all durations (intro included) stretch proportionally.
+    limit_mode: Literal["duration", "count"] = "duration"
+    max_images: int = 150
 
 
 class ImageSettings(_Base):

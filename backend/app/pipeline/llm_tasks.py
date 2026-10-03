@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -317,10 +318,16 @@ def publish_metadata(
         "You are a YouTube growth strategist. Create upload metadata for a long-form narrated video. "
         f"Write titles, description, tags and chapter titles in {name}. Titles: max 70 characters, curiosity-driven "
         "but honest, no clickbait lies, no ALL CAPS. Description: 2 short hook paragraphs + key points; "
-        "no hashtag spam (max 3 hashtags at the end). Tags: relevant search phrases. "
+        "no hashtag spam (max 3 hashtags at the end). NEVER put timestamps, time codes or a chapter list "
+        "into the description – chapters are added automatically from the \"chapters\" field. "
+        "Tags: relevant search phrases. "
         "Chapters: pick 5–12 moments ONLY from the candidate list (use their seconds), first must be 0. "
         "Thumbnail concepts: English image prompts for a 16:9 thumbnail (one strong focal subject, emotion, "
-        f"contrast) and a 2–4 word headline in {name}. "
+        f"contrast) and a 2–4 word headline in {name}. The thumbnail art style is FIXED and added "
+        f"automatically: «{publish.thumbnail_style}». Describe only WHAT is shown (characters, emotion, "
+        "action, objects, composition, background) so that it fits this style – e.g. for a cartoon style "
+        "describe cartoon characters, not real people. Never use style, medium, camera or quality words "
+        "(photo, photorealistic, realistic, cinematic, 8k, detailed skin, lens, illustration, render). "
         'Answer ONLY with JSON: {"titles": [...], "description": "...", "tags": [...], '
         '"chapters": [{"t": 0, "title": "..."}], "thumbnails": [{"prompt": "...", "headline": "..."}]}'
     )
@@ -347,11 +354,41 @@ def publish_metadata(
         chapters_out[0]["t"] = 0
     return {
         "titles": [str(t).strip() for t in data.get("titles") or []][: publish.title_variants],
-        "description": str(data.get("description") or "").strip(),
+        "description": strip_timestamps(str(data.get("description") or "")),
         "tags": [str(t).strip() for t in data.get("tags") or []][: publish.tags_count],
         "chapters": chapters_out,
         "thumbnails": [t for t in data.get("thumbnails") or [] if isinstance(t, dict) and t.get("prompt")],
     }
+
+
+#: A line that is a time code entry: "00:00 — Intro", "1:38 Title", "(12:05) - ...".
+_TIMESTAMP_LINE = re.compile(r"^\s*[-•*▪]?\s*\(?\d{1,2}:\d{2}(?::\d{2})?\)?(?:\s|[—–:|-]|$)")
+_TIMESTAMP_HEADING = re.compile(r"^\s*(таймкоды|тайм-коды|главы|содержание|chapters|timestamps|contents)\s*:?\s*$", re.I)
+
+
+def strip_timestamps(text: str) -> str:
+    """Remove time code lists the LLM may write into a description (real chapters are added separately)."""
+    lines = [ln for ln in text.strip().splitlines() if not _TIMESTAMP_LINE.match(ln)]
+    lines = [ln for ln in lines if not _TIMESTAMP_HEADING.match(ln)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+#: Style/medium/quality words that would fight the channel's thumbnail style.
+_STYLE_WORDS = re.compile(
+    r"\b(?:hyper[- ]?realistic|photo[- ]?realistic|photorealism|realistic(?: skin)? textures?|realistic|"
+    r"photograph(?:ic|y)?|photo|cinematic(?: style| lighting| shot| still)?|highly detailed(?: skin texture|"
+    r" facial features)?|detailed skin(?: texture)?|skin texture|8k(?: resolution)?|4k|uhd|hdr|dslr|"
+    r"35mm|85mm|bokeh|film grain|octane render|unreal engine|3d render|16:9(?: aspect ratio)?)\b",
+    re.I,
+)
+
+
+def strip_style_words(prompt: str) -> str:
+    """Thumbnail concept without style words, so the configured thumbnail style wins."""
+    text = _STYLE_WORDS.sub("", prompt)
+    text = re.sub(r"\s*,\s*(?:,\s*)+", ", ", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return re.sub(r"(^[\s,.;-]+)|([\s,;-]+$)", "", text).replace(" ,", ",").strip()
 
 
 def format_timestamp(seconds: float) -> str:
@@ -361,7 +398,7 @@ def format_timestamp(seconds: float) -> str:
 
 def build_description(meta: dict[str, Any], publish: PublishSettings) -> str:
     """Full description text: body + chapters (YouTube needs ≥3, first at 0:00) + footer."""
-    parts = [meta.get("description", "").strip()]
+    parts = [strip_timestamps(meta.get("description", ""))]
     chapters = meta.get("chapters") or []
     if publish.with_chapters and len(chapters) >= 3:
         parts.append("\n".join(f"{format_timestamp(c['t'])} {c['title']}" for c in chapters))

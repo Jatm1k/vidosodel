@@ -11,7 +11,7 @@ from ..models import Character, Project, Scene, Track
 from ..pipeline import llm_tasks
 from ..pipeline.align import align_scenes
 from ..pipeline.characters import ids_from_names
-from ..pipeline.scenes import split_auto, split_smart
+from ..pipeline.scenes import enforce_limit, fit_to_limit, split_auto, split_smart
 from ..pipeline.timings import estimate
 from ..services.fastgen import FastgenClient
 from ..settings_schema import effective_settings
@@ -53,6 +53,8 @@ def scenes_job(ctx: JobContext) -> dict[str, Any]:
             track_changed(track_id, "scenes")
             return {"message": f"Сцены сопоставлены с основным языком: {count}"}
 
+    configured = cfg
+    cfg = fit_to_limit(cfg, timings.duration)
     mode = mode_override or cfg.mode
     if mode == "smart":
         with FastgenClient() as fg:
@@ -62,6 +64,8 @@ def scenes_job(ctx: JobContext) -> dict[str, Any]:
         specs = split_auto(timings, cfg)
     if not specs:
         raise JobError("Не удалось выделить сцены: в таймингах нет слов")
+    if cfg.limit_mode == "count":
+        specs = enforce_limit(specs, cfg.max_images)
     with session_scope() as db:
         db.execute(delete(Scene).where(Scene.track_id == track_id))
         for i, sp in enumerate(specs):
@@ -75,7 +79,10 @@ def scenes_job(ctx: JobContext) -> dict[str, Any]:
                     db.execute(delete(Scene).where(Scene.track_id == other.id))
     track_changed(track_id, "scenes")
     durs = [s.end - s.start for s in specs]
-    return {"message": f"Сцен: {len(specs)}, средняя длительность {sum(durs) / len(durs):.1f} с"}
+    message = f"Сцен: {len(specs)}, средняя длительность {sum(durs) / len(durs):.1f} с"
+    if cfg.limit_mode == "count":
+        message += f" (лимит {cfg.max_images}" + (", сцены удлинены" if cfg is not configured else "") + ")"
+    return {"message": message}
 
 
 # --------------------------------------------------------------------- visual bible

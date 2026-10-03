@@ -56,6 +56,7 @@ export interface PipelineSettings {
   scenes: {
     mode: 'smart' | 'auto'; min_duration: number; max_duration: number
     intro_seconds: number; intro_min_duration: number; intro_max_duration: number
+    limit_mode: 'duration' | 'count'; max_images: number
   }
   images: {
     operation: string; model_strategy: 'single' | 'intro' | 'budget'; economy_operation: string

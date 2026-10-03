@@ -83,6 +83,23 @@ const speedOverride = computed({
   set: (v: boolean) => (s.value.voice.speed = v ? 1.0 : null),
 })
 
+// ---------------------------------------------------------------- scenes
+/** Same estimate as pipeline/scenes.py: how many scenes the duration bounds give. */
+function sceneCount(seconds: number) {
+  const sc = s.value.scenes
+  const intro = Math.min(seconds, sc.intro_seconds)
+  return Math.round(intro / ((sc.intro_min_duration + sc.intro_max_duration) / 2)
+    + Math.max(0, seconds - intro) / ((sc.min_duration + sc.max_duration) / 2))
+}
+const limitExample = computed(() => {
+  const rows = [10, 30, 60].map((min) => {
+    const normal = sceneCount(min * 60)
+    const n = Math.min(normal, s.value.scenes.max_images)
+    return `${min} мин → ${n}${normal > n ? ` (сцена ≈ ${Math.round((min * 60) / n)} с)` : ''}`
+  })
+  return `Пример: ${rows.join(', ')}`
+})
+
 // ---------------------------------------------------------------- images
 const imageOps = computed(() => store.meta?.image_operations ?? [])
 const currentOp = computed(() => imageOps.value.find((o) => o.id === s.value.images.operation))
@@ -288,7 +305,32 @@ onMounted(async () => {
               : 'Мгновенно и бесплатно: режет по предложениям и паузам, ближе к средней длительности.' }}
           </p>
         </FormField>
-        <FormField label="Длительность сцены" hint="Сколько секунд держится одна картинка" :value="`${s.scenes.min_duration}–${s.scenes.max_duration} с`">
+        <FormField label="Чем ограничить">
+          <SelectButton
+            v-model="s.scenes.limit_mode"
+            :options="[{ v: 'duration', l: 'Длительностью сцен' }, { v: 'count', l: 'Количеством картинок' }]"
+            option-value="v"
+            option-label="l"
+            :allow-empty="false"
+          />
+          <p class="mt-2 text-[13px] text-ink-3">
+            {{ s.scenes.limit_mode === 'count'
+              ? 'Не больше заданного числа картинок на видео. Если с длительностью ниже картинок получится больше, сцены равномерно удлинятся.'
+              : 'Сцены держатся в заданных секундах, число картинок зависит от длины видео.' }}
+          </p>
+        </FormField>
+        <FormField
+          v-if="s.scenes.limit_mode === 'count'"
+          label="Картинок на видео"
+          :hint="`Не больше этого числа на одно видео (на каждую языковую версию со своими картинками). ${limitExample}`"
+        >
+          <InputNumber v-model="s.scenes.max_images" :min="10" :max="5000" :step="10" show-buttons class="w-36" />
+        </FormField>
+        <FormField
+          :label="s.scenes.limit_mode === 'count' ? 'Длительность сцены, если лимит не мешает' : 'Длительность сцены'"
+          hint="Сколько секунд держится одна картинка"
+          :value="`${s.scenes.min_duration}–${s.scenes.max_duration} с`"
+        >
           <div class="flex items-center gap-3">
             <InputNumber v-model="s.scenes.min_duration" :min="1" :max="s.scenes.max_duration" :step="0.5" :min-fraction-digits="0" :max-fraction-digits="1" suffix=" с" show-buttons class="w-32" />
             <span class="text-ink-3">до</span>

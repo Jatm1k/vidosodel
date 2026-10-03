@@ -10,6 +10,8 @@ from ..jobs.common import scene_to_dict
 from ..jobs.runner import job_to_dict
 from ..models import Channel, Job, Project, Scene, Track
 from ..pipeline.languages import LANGUAGES
+from ..pipeline.llm_tasks import build_description
+from ..settings_schema import effective_settings
 from ..storage import media_url
 from .characters import character_to_dict
 
@@ -45,6 +47,16 @@ def _scene_stats(db: Session, track: Track) -> dict[str, int]:
     return stats
 
 
+def _publish_meta(track: Track) -> dict[str, Any]:
+    """Metadata with the full description rebuilt from the current settings (footer, chapters)."""
+    meta = dict(track.publish_meta or {})
+    if meta.get("description") is not None:
+        project = track.project
+        publish = effective_settings(project.channel.settings, project.settings).publish
+        meta["description_full"] = build_description(meta, publish)
+    return meta
+
+
 def track_summary(db: Session, track: Track) -> dict[str, Any]:
     """Compact track info with the status of every pipeline stage."""
     stats = _scene_stats(db, track)
@@ -76,7 +88,7 @@ def track_summary(db: Session, track: Track) -> dict[str, Any]:
         "video_srt_url": media_url((track.video_meta or {}).get("srt")),
         "preview_url": media_url(track.preview_file),
         "thumbnails": [media_url(t) for t in track.thumbnails or []],
-        "publish_meta": track.publish_meta or {},
+        "publish_meta": _publish_meta(track),
         "scene_stats": stats,
         "stages": {
             "script": stage(bool((track.script or "").strip())),

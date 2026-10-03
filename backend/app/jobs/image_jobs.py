@@ -282,7 +282,8 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
     with FastgenClient() as fg:
         for k, concept in enumerate(concepts[: pub.thumbnail_count]):
             ctx.progress(k / max(1, pub.thumbnail_count), f"Обложка {k + 1}")
-            prompt = concept["prompt"]
+            # The style goes first (and again at the end via compose_prompt): models weigh early words most.
+            prompt = f"{pub.thumbnail_style.strip().rstrip('.')}. {llm_tasks.strip_style_words(concept['prompt'])}"
             if pub.thumbnail_text and concept.get("headline"):
                 prompt += (f'. Large bold readable headline text "{concept["headline"]}" with strong contrast, '
                            "placed on the side, not covering the main subject")
