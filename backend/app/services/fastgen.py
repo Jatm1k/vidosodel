@@ -45,6 +45,9 @@ IMAGE_OPERATIONS: list[dict[str, Any]] = [
 
 IMAGE_OPS_BY_ID = {op["id"]: op for op in IMAGE_OPERATIONS}
 
+#: How many times a request refused for a limit is retried (each after the limiter's back-off).
+_LIMIT_RETRIES = 90
+
 #: Error codes/phrases that mean "the prompt was rejected by a content filter".
 _POLICY_PATTERNS = re.compile(r"policy|safety|blocked|moderat|prohibit|content|nsfw|filter|unsafe", re.I)
 
@@ -96,7 +99,8 @@ class FastgenClient:
 
     # ------------------------------------------------------------- generations
     def start(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._req("POST", "/api/v6/generations", json=payload)
+        # 429 is not retried here: the caller holds a budget slot and waits via the limiter instead.
+        return self._req("POST", "/api/v6/generations", json=payload, retry_429=False)
 
     def status(self, generation_id: str) -> dict[str, Any]:
         return self._req("GET", f"/api/v6/generations/{generation_id}")
@@ -175,10 +179,27 @@ class FastgenClient:
     # -------------------------------------------------------------------- chat
     def chat(self, messages: list[dict[str, str]], *, model: str, temperature: float = 0.7,
              max_tokens: int | None = None) -> str:
+        """One chat completion within the hourly token budget (waits when it is used up)."""
+        from .limiter import estimate_tokens, is_limit_error, token_limiter  # noqa: PLC0415 – import cycle
+
         body: dict[str, Any] = {"model": model, "messages": messages, "temperature": temperature}
         if max_tokens:
             body["max_tokens"] = max_tokens
-        data = self._req("POST", "/v1/chat/completions", json=body, attempts=4)
+        estimate = estimate_tokens(messages, max_tokens)
+        for _ in range(_LIMIT_RETRIES):
+            with token_limiter.slot(estimate) as commit:
+                try:
+                    data = self._req("POST", "/v1/chat/completions", json=body, attempts=4, retry_429=False)
+                except ApiError as exc:
+                    if not is_limit_error(exc):
+                        raise
+                    data = None
+                if data is not None:
+                    commit(int((data.get("usage") or {}).get("total_tokens") or estimate))
+                    break
+            token_limiter.block()  # over the limit on the server (e.g. another app): wait, then retry
+        else:
+            raise ApiError("FastGen", 429, "лимит токенов LLM так и не освободился")
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError) as exc:

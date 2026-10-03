@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from ..db import session_scope
 from ..models import Job, utcnow
+from ..services.limiter import Cancelled, job_hooks
 from ..settings_store import load_config
 from .events import bus
 
@@ -236,10 +237,12 @@ class JobRunner:
         _, handler, _ = _REGISTRY[ctx.kind]
         status, error, result = "done", None, {}
         try:
-            result = handler(ctx) or {}
+            # Budget waits deep inside the handler see the cancel flag and report why they wait.
+            with job_hooks(ctx.should_stop, lambda msg: ctx.progress(None, msg, force=True)):
+                result = handler(ctx) or {}
             if ctx.should_stop():
                 status = "cancelled"
-        except JobCancelled:
+        except (JobCancelled, Cancelled):
             status = "cancelled"
         except JobError as exc:
             status, error = "failed", str(exc)

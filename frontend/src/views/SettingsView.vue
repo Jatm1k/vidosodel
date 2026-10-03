@@ -96,12 +96,25 @@ async function check(service: 'lumean' | 'fastgen') {
             <span class="text-ink-2">Одновременных генераций</span>
             <InputNumber v-model="cfg.fastgen_image_threads" :min="1" :max="50" show-buttons />
           </label>
+          <label class="flex flex-col gap-1.5">
+            <span class="text-ink-2">Токенов LLM в час</span>
+            <InputNumber v-model="cfg.fastgen_tokens_per_hour" :min="1000" :step="10000" show-buttons />
+          </label>
+          <div class="flex flex-col gap-2">
+            <span class="text-ink-2">
+              Доля токенов для приложения: <span class="tnum text-ink">{{ Math.round(cfg.fastgen_token_ratio * 100) }}%</span>
+            </span>
+            <Slider v-model="cfg.fastgen_token_ratio" :min="0.1" :max="1" :step="0.05" class="mt-2" />
+          </div>
           <div class="col-span-2 flex flex-col gap-2">
             <span class="text-ink-2">
               Доля бюджета для приложения: <span class="tnum text-ink">{{ Math.round(cfg.fastgen_budget_ratio * 100) }}%</span>
             </span>
             <Slider v-model="cfg.fastgen_budget_ratio" :min="0.1" :max="1" :step="0.05" />
-            <span class="text-[13px] text-ink-3">Уменьшите, если тем же ключом пользуются другие инструменты.</span>
+            <span class="text-[13px] text-ink-3">
+              Траты всех, кто пользуется этим ключом, учитываются автоматически: приложение сверяется со счётчиком FastGen
+              и ждёт, когда лимит освободится. Доли нужны, только чтобы жёстко поделить тариф между людьми.
+            </span>
           </div>
         </div>
       </section>

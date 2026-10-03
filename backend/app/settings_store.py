@@ -25,6 +25,10 @@ class AppConfig(BaseModel):
     fastgen_image_threads: int = 10
     #: Keep this share of the hourly budget free for manual work in other tools.
     fastgen_budget_ratio: float = 1.0
+    #: FastGen chat (LLM) tokens per rolling hour, prompt + completion (plan limit).
+    fastgen_tokens_per_hour: int = 200_000
+    #: Share of the hourly token budget this app may use.
+    fastgen_token_ratio: float = 1.0
     #: Concurrent Lumean voice orders started by the app.
     lumean_parallel_orders: int = 3
     #: How many renders may run at the same time (each is itself multi-process).

@@ -14,7 +14,7 @@ from ..render.motion import EFFECT_LABELS, EFFECTS
 from ..render.transitions import TRANSITION_LABELS, TRANSITIONS
 from ..services.fastgen import IMAGE_OPERATIONS, FastgenClient
 from ..services.http import ApiError
-from ..services.limiter import limiter
+from ..services.limiter import limiter, token_limiter
 from ..services.lumean import LumeanClient
 from ..services.updates import updates
 from ..settings_schema import default_settings
@@ -48,6 +48,7 @@ def status() -> dict[str, Any]:
         "ffmpeg": ffmpeg_version(),
         "keys": {"lumean": bool(cfg.lumean_api_key), "fastgen": bool(cfg.fastgen_api_key)},
         "fastgen": limiter.status() if cfg.fastgen_api_key else None,
+        "llm": token_limiter.status() if cfg.fastgen_api_key else None,
         "data_dir": str(get_settings().data_dir),
     }
 
@@ -119,6 +120,7 @@ def check_key(body: KeyCheck) -> dict[str, Any]:
             save_config({
                 "fastgen_credits_per_hour": limits.get("img_gen_per_hour_limit") or load_config().fastgen_credits_per_hour,
                 "fastgen_image_threads": limits.get("img_generation_threads_allowed") or load_config().fastgen_image_threads,
+                "fastgen_tokens_per_hour": limits.get("prompt_tokens_per_hour_limit") or load_config().fastgen_tokens_per_hour,
             })
         return {"ok": True}
     except ApiError as exc:

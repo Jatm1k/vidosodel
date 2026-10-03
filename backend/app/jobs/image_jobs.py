@@ -19,7 +19,7 @@ from ..pipeline.image_plan import plan_project
 from ..render.media import imread, imwrite, make_thumbnail, remove_watermark
 from ..services.fastgen import IMAGE_OPS_BY_ID, FastgenClient, GenerationFailed, image_credits
 from ..services.http import ApiError
-from ..services.limiter import Cancelled, limiter
+from ..services.limiter import Cancelled, is_limit_error, limiter
 from ..settings_schema import ImageSettings, LlmSettings
 from ..storage import to_abs, to_rel, track_dir, unique_name
 from .common import load_track, scene_to_dict
@@ -84,7 +84,9 @@ def generate_one(
     attempts = max(1, images.max_attempts)
     current = prompt
     last_error: Exception | None = None
-    for attempt in range(1, attempts + 1):
+    attempt = limit_waits = 0
+    while attempt < attempts:
+        attempt += 1
         ctx.check()
         raw = dest_dir / f"{stem}.raw"
         try:
@@ -109,21 +111,28 @@ def generate_one(
             return dest, meta
         except (Cancelled, JobCancelled):
             raise
-        except GenerationFailed as exc:
-            last_error = exc
-            if exc.is_policy and images.auto_fix_rejected and attempt < attempts:
-                try:
-                    current = llm_tasks.soften_prompt(fg, current, llm)
-                    if on_prompt_fixed:
-                        on_prompt_fixed(current)
-                except ApiError as llm_exc:
-                    log.warning("prompt softening failed: %s", llm_exc)
-            time.sleep(2 * attempt)
         except ApiError as exc:
+            if is_limit_error(exc) and limit_waits < 90:
+                # Over the hourly or thread limit on the server (e.g. a second app on the same key):
+                # wait for the budget instead of spending an attempt.
+                limit_waits += 1
+                attempt -= 1
+                limiter.block()
+                continue
             last_error = exc
-            if exc.status in (401, 403, 422):
+            if isinstance(exc, GenerationFailed):
+                if exc.is_policy and images.auto_fix_rejected and attempt < attempts:
+                    try:
+                        current = llm_tasks.soften_prompt(fg, current, llm)
+                        if on_prompt_fixed:
+                            on_prompt_fixed(current)
+                    except ApiError as llm_exc:
+                        log.warning("prompt softening failed: %s", llm_exc)
+                time.sleep(2 * attempt)
+            elif exc.status in (401, 403, 422):
                 break  # configuration problem – retrying will not help
-            time.sleep(5 * attempt)
+            else:
+                time.sleep(5 * attempt)
         finally:
             (dest_dir / f"{stem}.raw").unlink(missing_ok=True)
     raise last_error or RuntimeError("не удалось сгенерировать изображение")

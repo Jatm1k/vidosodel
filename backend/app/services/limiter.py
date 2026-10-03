@@ -1,21 +1,33 @@
-"""FastGen image budget: concurrent threads + rolling hourly credit window.
+"""FastGen hourly budgets: image credits + threads, and LLM tokens.
 
-The plan allows N simultaneous image generations and M credits per hour.
-Every worker that wants to generate an image calls :meth:`acquire` with the
-credit cost; it blocks until a thread slot is free *and* the credits fit
-into the budget. Spent credits are written to the ``fastgen_usage`` table so
-the window survives restarts, and refunded generations give credits back.
+The plan allows N simultaneous image generations, M image credits and T chat
+tokens per hour. Every image generation and every chat request goes through a
+limiter here: it blocks until the request fits into the budget, so the app
+waits instead of failing when the limit is reached.
 
-The local ledger is cross-checked with the server's own counter
-(``GET /api/v6/usage``) so usage from other tools on the same key is respected.
+Usage is counted in two places and the larger number wins:
+
+* a local ledger (table ``fastgen_usage``) that survives restarts and reacts
+  instantly to this app's own requests;
+* the server's counter for the whole API key (``GET /api/v6/usage``), so that
+  other people and tools using the same key are respected. It is refreshed
+  every minute, and right away whenever the limit is close or FastGen refuses
+  a request because of it.
+
+If two apps start at the same moment and FastGen still refuses a request over
+the limit, :func:`is_limit_error` recognises it and the caller waits (see
+:meth:`BudgetLimiter.block`) instead of reporting an error.
 """
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
-from contextlib import contextmanager
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import delete, func, select
 
@@ -26,98 +38,217 @@ from ..settings_store import load_config
 log = logging.getLogger(__name__)
 
 WINDOW = 3600.0
-_SERVER_SYNC_INTERVAL = 60.0
+_SYNC_INTERVAL = 60.0
+_SYNC_INTERVAL_BUSY = 10.0
+#: How long to back off when FastGen refuses a request because of a limit.
+_LIMIT_BACKOFF = 30.0
+
+#: Ledger operation names.
+OP_IMAGE = "image"
+OP_LLM = "llm"
 
 
 class Cancelled(Exception):
-    """Raised from :meth:`FastgenLimiter.acquire` when the caller asked to stop."""
+    """Raised while waiting for budget when the caller asked to stop."""
 
 
-class FastgenLimiter:
+# ------------------------------------------------------------------ job hooks
+_local = threading.local()
+
+
+@contextmanager
+def job_hooks(should_stop: Callable[[], bool] | None, on_wait: Callable[[str], None] | None) -> Iterator[None]:
+    """Let limiter waits in this thread see the job's cancel flag and report why it waits.
+
+    Set by the job runner around every handler, so deep calls (e.g. an LLM
+    request inside a pipeline helper) wait cancellably without extra arguments.
+    """
+    prev = getattr(_local, "hooks", None)
+    _local.hooks = (should_stop, on_wait)
+    try:
+        yield
+    finally:
+        _local.hooks = prev
+
+
+def _thread_hooks() -> tuple[Callable[[], bool] | None, Callable[[str], None] | None]:
+    return getattr(_local, "hooks", None) or (None, None)
+
+
+_LIMIT_PATTERNS = re.compile(
+    r"rate.?limit|quota|limit (?:exceeded|reached)|exceed(?:ed|s)? .*limit|too many|per.?hour|hourly|"
+    r"threads?.{0,20}(?:limit|allowed|busy)|concurren|лимит|превыш",
+    re.I,
+)
+
+
+def is_limit_error(exc: Exception) -> bool:
+    """FastGen refused a request because the key is over its hourly or thread limit."""
+    status = getattr(exc, "status", None)
+    if status == 429:
+        return True
+    if status not in (400, 402, 403, 409, 423, 503):
+        return False
+    text = f"{getattr(exc, 'message', '')} {getattr(exc, 'reason', '') or ''}"
+    return bool(_LIMIT_PATTERNS.search(text))
+
+
+# ------------------------------------------------------------------ server counters
+@dataclass
+class ServerCounter:
+    used: int = 0
+    window_start: float | None = None
+
+    def active_used(self) -> tuple[int, float]:
+        """Usage in the current server window and seconds until it resets (0 when expired)."""
+        if not self.window_start:
+            return 0, 0.0
+        reset_in = self.window_start + WINDOW - time.time()
+        return (self.used, reset_in) if reset_in > 0 else (0, 0.0)
+
+
+class UsageSync:
+    """Cached ``GET /api/v6/usage`` for the whole key (shared by both limiters)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last = 0.0
+        self.images = ServerCounter()
+        self.tokens = ServerCounter()
+        #: Image generations running right now on this key (all apps together).
+        self.image_threads = 0
+        self.limits: dict[str, Any] = {}
+
+    def refresh(self, max_age: float = _SYNC_INTERVAL) -> None:
+        """Re-read the server counters when the cached ones are older than ``max_age`` seconds."""
+        with self._lock:
+            if time.time() - self._last < max_age:
+                return
+            self._last = time.time()
+        try:
+            from .fastgen import FastgenClient  # noqa: PLC0415 – avoids an import cycle
+
+            with FastgenClient() as fg:
+                usage = fg.usage()
+        except Exception as exc:  # noqa: BLE001 – a failed sync must never break generation
+            log.debug("FastGen usage sync failed: %s", exc)
+            return
+        current = usage.get("current_usage") or {}
+        hourly = current.get("hourly_usage") or {}
+        with self._lock:
+            for counter, key in ((self.images, "image_generation"), (self.tokens, "prompt_generation")):
+                stats = hourly.get(key) or {}
+                counter.used = int(stats.get("current_usage") or 0)
+                counter.window_start = stats.get("window_start")
+            self.image_threads = int((current.get("active_threads") or {}).get("image_threads") or 0)
+            self.limits = usage.get("account_limits") or {}
+
+
+usage_sync = UsageSync()
+
+
+# ------------------------------------------------------------------ budget limiter
+class BudgetLimiter:
+    """Rolling-hour budget of one resource (image credits or chat tokens)."""
+
+    #: Ledger operation name and the server counter this budget is checked against.
+    operation = OP_IMAGE
+    label = "FastGen"
+    unit = "кредитов"
+
     def __init__(self) -> None:
         self._cond = threading.Condition()
-        self._active = 0
-        self._reserved = 0  # credits of in-flight generations not yet in the ledger
-        self._server_used = 0
-        self._server_window_start: float | None = None
-        self._last_sync = 0.0
+        self._reserved = 0  # in-flight requests not yet in the ledger
+        self._blocked_until = 0.0  # FastGen refused a request because of the limit
         self.waiting = 0
 
-    # ------------------------------------------------------------------ limits
-    @staticmethod
-    def _limits() -> tuple[int, int]:
-        cfg = load_config()
-        budget = int(cfg.fastgen_credits_per_hour * max(0.05, min(cfg.fastgen_budget_ratio, 1.0)))
-        return max(1, cfg.fastgen_image_threads), max(1, budget)
+    # -- subclass API
+    def _budget(self) -> int:
+        raise NotImplementedError
 
+    def _server(self) -> ServerCounter:
+        raise NotImplementedError
+
+    def _can_start(self) -> bool:
+        """Extra condition besides the budget (e.g. free threads)."""
+        return True
+
+    def _on_start(self) -> None:
+        pass
+
+    def _on_finish(self) -> None:
+        pass
+
+    # -- accounting
     def _ledger_used(self) -> tuple[int, float | None]:
-        """Credits spent in the last hour and the timestamp of the oldest entry."""
+        """Spent in the last hour by this app and the timestamp of the oldest entry."""
         cutoff = time.time() - WINDOW
         with session_scope() as db:
             db.execute(delete(FastgenUsage).where(FastgenUsage.ts < cutoff - WINDOW))
             used, oldest = db.execute(
                 select(func.coalesce(func.sum(FastgenUsage.credits), 0), func.min(FastgenUsage.ts))
-                .where(FastgenUsage.ts >= cutoff)
+                .where(FastgenUsage.ts >= cutoff, FastgenUsage.operation == self.operation)
             ).one()
         return int(used), oldest
 
-    def sync_server(self, force: bool = False) -> None:
-        """Refresh the server-side hourly counter (best effort)."""
-        if not force and time.time() - self._last_sync < _SERVER_SYNC_INTERVAL:
-            return
-        self._last_sync = time.time()
-        try:
-            from .fastgen import FastgenClient
-
-            with FastgenClient() as fg:
-                usage = fg.usage()
-            stats = ((usage.get("current_usage") or {}).get("hourly_usage") or {}).get("image_generation") or {}
-            self._server_used = int(stats.get("current_usage") or 0)
-            self._server_window_start = stats.get("window_start")
-        except Exception as exc:  # noqa: BLE001 – usage sync must never break generation
-            log.debug("FastGen usage sync failed: %s", exc)
-
     def _used_now(self) -> tuple[int, float]:
-        """Effective used credits and the number of seconds until some budget frees up."""
+        """Effective usage (incl. reservations) and seconds until some budget frees up."""
         local, oldest = self._ledger_used()
         used = local
         wait = (oldest + WINDOW - time.time()) if oldest else 30.0
-        if self._server_window_start:
-            server_reset = self._server_window_start + WINDOW - time.time()
-            if server_reset > 0 and self._server_used > used:
-                used = self._server_used
-                wait = server_reset
+        server_used, server_reset = self._server().active_used()
+        if server_used > used:
+            used, wait = server_used, server_reset
+        blocked = self._blocked_until - time.time()
+        if blocked > 0:
+            used, wait = max(used, self._budget()), blocked
         return used + self._reserved, max(5.0, wait)
 
-    # ----------------------------------------------------------------- acquire
-    @contextmanager
-    def slot(self, credits: int, should_stop: Callable[[], bool] | None = None,
-             on_wait: Callable[[str], None] | None = None) -> Iterator[Callable[[int, str | None], None]]:
-        """Hold a generation slot. Yields ``commit(actual_credits, generation_id)``.
+    def block(self, seconds: float | None = None) -> None:
+        """FastGen refused a request over the limit: treat the budget as full for a while."""
+        seconds = seconds or _LIMIT_BACKOFF
+        with self._cond:
+            self._blocked_until = max(self._blocked_until, time.time() + seconds)
+        usage_sync.refresh(max_age=0)
+        log.info("%s limit reached on the server – waiting %.0fs", self.label, seconds)
 
-        If ``commit`` is not called (generation failed before billing or was
-        refunded) the reservation is simply released.
+    def record(self, amount: int, ref: str | None = None) -> None:
+        if amount > 0:
+            with session_scope() as db:
+                db.add(FastgenUsage(ts=time.time(), credits=int(amount), operation=self.operation,
+                                    generation_id=ref))
+
+    # -- acquire
+    @contextmanager
+    def slot(self, amount: int, should_stop: Callable[[], bool] | None = None,
+             on_wait: Callable[[str], None] | None = None) -> Iterator[Callable[..., None]]:
+        """Reserve ``amount`` until the request is done. Yields ``commit(actual, ref=None)``.
+
+        If ``commit`` is not called (failed before billing, refunded) the
+        reservation is simply released.
         """
-        self._acquire(credits, should_stop, on_wait)
+        hook_stop, hook_wait = _thread_hooks()
+        should_stop = should_stop or hook_stop
+        on_wait = on_wait or hook_wait
+        amount = min(int(amount), self._budget())  # a single huge request must still be able to run
+        self._acquire(amount, should_stop, on_wait)
         committed = False
 
-        def commit(actual: int, generation_id: str | None = None) -> None:
+        def commit(actual: int, ref: str | None = None) -> None:
             nonlocal committed
-            if committed:
-                return
-            committed = True
-            with session_scope() as db:
-                db.add(FastgenUsage(ts=time.time(), credits=int(actual), operation="image", generation_id=generation_id))
+            if not committed:
+                committed = True
+                self.record(actual, ref)
 
         try:
             yield commit
         finally:
             with self._cond:
-                self._active -= 1
-                self._reserved -= credits
+                self._on_finish()
+                self._reserved -= amount
                 self._cond.notify_all()
 
-    def _acquire(self, credits: int, should_stop: Callable[[], bool] | None,
+    def _acquire(self, amount: int, should_stop: Callable[[], bool] | None,
                  on_wait: Callable[[str], None] | None) -> None:
         with self._cond:
             self.waiting += 1
@@ -125,48 +256,130 @@ class FastgenLimiter:
             while True:
                 if should_stop and should_stop():
                     raise Cancelled()
-                threads, budget = self._limits()
-                self.sync_server()
+                budget = self._budget()
+                usage_sync.refresh()
                 with self._cond:
                     used, free_in = self._used_now()
-                    if self._active < threads and used + credits <= budget:
-                        self._active += 1
-                        self._reserved += credits
+                    if used + amount <= budget and self._can_start():
+                        self._on_start()
+                        self._reserved += amount
                         return
-                    if self._active >= threads:
+                    if used + amount <= budget:  # only threads are busy – they free up quickly
                         self._cond.wait(timeout=2.0)
+                        if self._waited_long_for_threads():
+                            usage_sync.refresh(max_age=_SYNC_INTERVAL_BUSY)
                         continue
                 if on_wait:
-                    on_wait(f"Лимит FastGen: {used}/{budget} кредитов в час, ожидание ~{int(free_in // 60) + 1} мин")
-                # Sleep in small steps so cancellation stays responsive.
+                    on_wait(f"Лимит {self.label}: {fmt_amount(used)}/{fmt_amount(budget)} {self.unit} в час, "
+                            f"ожидание ~{int(free_in // 60) + 1} мин")
+                # Sleep in small steps so cancellation stays responsive; re-check the server meanwhile.
                 end = time.time() + min(free_in, 60.0)
                 while time.time() < end:
                     if should_stop and should_stop():
                         raise Cancelled()
                     time.sleep(1.0)
-                self.sync_server(force=True)
+                usage_sync.refresh(max_age=_SYNC_INTERVAL_BUSY)
         finally:
             with self._cond:
                 self.waiting -= 1
 
-    # ------------------------------------------------------------------ status
-    def hourly_budget(self) -> int:
-        """Credits per rolling hour this app may spend (plan limit × budget ratio)."""
-        return self._limits()[1]
+    def _waited_long_for_threads(self) -> bool:
+        return False
 
+    # -- status
     def status(self) -> dict[str, int | float | None]:
-        threads, budget = self._limits()
-        self.sync_server()
+        budget = self._budget()
+        usage_sync.refresh()
         with self._cond:
             used, free_in = self._used_now()
-            return {
-                "active": self._active,
-                "threads": threads,
-                "waiting": self.waiting,
-                "used": used,
-                "budget": budget,
-                "free_in_seconds": free_in if used >= budget else 0,
-            }
+            return {"used": used, "budget": budget, "waiting": self.waiting,
+                    "free_in_seconds": free_in if used >= budget else 0}
 
 
-limiter = FastgenLimiter()
+def fmt_amount(n: int) -> str:
+    return f"{n / 1000:.0f} тыс." if n >= 10_000 else str(n)
+
+
+class ImageLimiter(BudgetLimiter):
+    """Image credits per hour + concurrent generations (threads are shared by every app on the key)."""
+
+    operation = OP_IMAGE
+    label = "FastGen"
+    unit = "кредитов"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._active = 0
+        self._threads_wait_since = 0.0
+
+    @staticmethod
+    def _limits() -> tuple[int, int]:
+        cfg = load_config()
+        budget = int(cfg.fastgen_credits_per_hour * max(0.05, min(cfg.fastgen_budget_ratio, 1.0)))
+        return max(1, cfg.fastgen_image_threads), max(1, budget)
+
+    def _budget(self) -> int:
+        return self._limits()[1]
+
+    def _server(self) -> ServerCounter:
+        return usage_sync.images
+
+    def _threads_allowed(self) -> int:
+        """Our thread limit minus generations other apps run on the same key right now."""
+        threads = self._limits()[0]
+        plan = int(usage_sync.limits.get("img_generation_threads_allowed") or threads)
+        others = max(0, usage_sync.image_threads - self._active)
+        return max(1, min(threads, plan - others))
+
+    def _can_start(self) -> bool:
+        return self._active < self._threads_allowed()
+
+    def _on_start(self) -> None:
+        self._active += 1
+        self._threads_wait_since = 0.0
+
+    def _on_finish(self) -> None:
+        self._active -= 1
+
+    def _waited_long_for_threads(self) -> bool:
+        now = time.time()
+        if not self._threads_wait_since:
+            self._threads_wait_since = now
+        return now - self._threads_wait_since > _SYNC_INTERVAL_BUSY
+
+    def hourly_budget(self) -> int:
+        """Credits per rolling hour this app may spend (plan limit × budget ratio)."""
+        return self._budget()
+
+    def sync_server(self, force: bool = False) -> None:
+        usage_sync.refresh(max_age=0 if force else _SYNC_INTERVAL)
+
+    def status(self) -> dict[str, int | float | None]:
+        out = super().status()
+        out.update(active=self._active, threads=self._threads_allowed())
+        return out
+
+
+class TokenLimiter(BudgetLimiter):
+    """Chat (LLM) tokens per hour – prompt and completion together."""
+
+    operation = OP_LLM
+    label = "LLM"
+    unit = "токенов"
+
+    def _budget(self) -> int:
+        cfg = load_config()
+        return max(1000, int(cfg.fastgen_tokens_per_hour * max(0.05, min(cfg.fastgen_token_ratio, 1.0))))
+
+    def _server(self) -> ServerCounter:
+        return usage_sync.tokens
+
+
+def estimate_tokens(messages: list[dict[str, Any]], max_tokens: int | None = None) -> int:
+    """Rough cost of a chat request before sending it (≈3.5 characters per token + the answer)."""
+    chars = sum(len(str(m.get("content", ""))) for m in messages)
+    return int(chars / 3.5) + (max_tokens or 3000)
+
+
+limiter = ImageLimiter()
+token_limiter = TokenLimiter()

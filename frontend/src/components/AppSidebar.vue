@@ -21,6 +21,9 @@ const palette = ['#7aa5e8', '#5fb3a1', '#c58be0', '#e58f5a', '#d9c25b', '#e56a8d
 
 const budget = computed(() => store.status?.fastgen)
 const budgetPct = computed(() => (budget.value ? Math.min(100, (budget.value.used / budget.value.budget) * 100) : 0))
+const tokens = computed(() => store.status?.llm)
+const tokensPct = computed(() => (tokens.value ? Math.min(100, (tokens.value.used / tokens.value.budget) * 100) : 0))
+const thousands = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)} тыс.` : String(n))
 
 function isActive(path: string) {
   return route.path === path || (path !== '/' && route.path.startsWith(path))
@@ -122,6 +125,16 @@ async function createChannel() {
           Потоков занято: <span class="tnum">{{ budget.active }}/{{ budget.threads }}</span>
           <template v-if="budget.waiting"> · ждут: {{ budget.waiting }}</template>
         </div>
+      </div>
+      <div v-if="tokens" class="mb-3">
+        <div class="mb-1.5 flex items-baseline justify-between text-xs">
+          <span class="text-ink-3">LLM за час</span>
+          <span class="tnum text-ink-2">{{ thousands(tokens.used) }} / {{ thousands(tokens.budget) }}</span>
+        </div>
+        <div class="h-1.5 overflow-hidden rounded-full bg-raised">
+          <div class="h-full rounded-full transition-all" :class="tokensPct > 90 ? 'bg-bad' : 'bg-ink-3'" :style="{ width: `${tokensPct}%` }" />
+        </div>
+        <div v-if="tokens.waiting" class="mt-1.5 text-xs text-ink-3">Ждут лимита: {{ tokens.waiting }}</div>
       </div>
       <div class="flex items-center gap-2 text-xs" :class="store.connected ? 'text-ink-3' : 'text-bad'">
         <span class="h-1.5 w-1.5 rounded-full" :class="store.connected ? 'bg-ok' : 'bg-bad'" />

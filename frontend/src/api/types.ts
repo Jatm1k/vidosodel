@@ -236,6 +236,8 @@ export interface SystemStatus {
   ffmpeg: string | null
   keys: { lumean: boolean; fastgen: boolean }
   fastgen: LimiterStatus | null
+  /** LLM tokens per hour (prompt + completion), shared by every app on the key. */
+  llm: { used: number; budget: number; waiting: number; free_in_seconds: number } | null
   data_dir: string
 }
 
@@ -245,6 +247,8 @@ export interface AppConfig {
   fastgen_credits_per_hour: number
   fastgen_image_threads: number
   fastgen_budget_ratio: number
+  fastgen_tokens_per_hour: number
+  fastgen_token_ratio: number
   lumean_parallel_orders: number
   parallel_renders: number
 }
