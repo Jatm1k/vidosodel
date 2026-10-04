@@ -21,9 +21,26 @@ from .version import __version__
 log = logging.getLogger("vidosodel")
 
 
+def _quiet_client_disconnects(loop: asyncio.AbstractEventLoop) -> None:
+    """Hide the traceback Windows' proactor loop logs when a browser drops a connection.
+
+    Seeking in the video player, scrolling past images or closing the tab aborts
+    requests; closing such a socket raises ConnectionResetError inside asyncio
+    (a known CPython issue) and it gets logged as an error, although nothing failed.
+    """
+    def handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)) and                 "_call_connection_lost" in str(context.get("handle") or context.get("message") or ""):
+            return
+        loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    _quiet_client_disconnects(asyncio.get_running_loop())
     bus.bind_loop(asyncio.get_running_loop())
     runner.start()
     updates.start()
