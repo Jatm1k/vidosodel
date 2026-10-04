@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
@@ -24,6 +24,18 @@ const budgetPct = computed(() => (budget.value ? Math.min(100, (budget.value.use
 const tokens = computed(() => store.status?.llm)
 const tokensPct = computed(() => (tokens.value ? Math.min(100, (tokens.value.used / tokens.value.budget) * 100) : 0))
 const thousands = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)} тыс.` : String(n))
+
+// FastGen zeroes its counters at the top of every hour; tick locally so the countdown stays live between polls.
+const now = ref(Date.now() / 1000)
+const clock = setInterval(() => (now.value = Date.now() / 1000), 20000)
+onUnmounted(() => clearInterval(clock))
+
+function resetLabel(resetAt?: number) {
+  if (!resetAt) return ''
+  const time = new Date(resetAt * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const min = Math.max(1, Math.ceil((resetAt - now.value) / 60))
+  return `${time} (через ${min} мин)`
+}
 
 function isActive(path: string) {
   return route.path === path || (path !== '/' && route.path.startsWith(path))
@@ -125,6 +137,9 @@ async function createChannel() {
           Потоков занято: <span class="tnum">{{ budget.active }}/{{ budget.threads }}</span>
           <template v-if="budget.waiting"> · ждут: {{ budget.waiting }}</template>
         </div>
+        <div v-if="budget.used" class="mt-0.5 text-xs" :class="budget.used >= budget.budget ? 'text-bad' : 'text-ink-3'">
+          {{ budget.used >= budget.budget ? 'Исчерпан до' : 'Сброс в' }} {{ resetLabel(budget.reset_at) }}
+        </div>
       </div>
       <div v-if="tokens" class="mb-3">
         <div class="mb-1.5 flex items-baseline justify-between text-xs">
@@ -134,7 +149,10 @@ async function createChannel() {
         <div class="h-1.5 overflow-hidden rounded-full bg-raised">
           <div class="h-full rounded-full transition-all" :class="tokensPct > 90 ? 'bg-bad' : 'bg-ink-3'" :style="{ width: `${tokensPct}%` }" />
         </div>
-        <div v-if="tokens.waiting" class="mt-1.5 text-xs text-ink-3">Ждут лимита: {{ tokens.waiting }}</div>
+        <div v-if="tokens.used" class="mt-1.5 text-xs" :class="tokens.used >= tokens.budget ? 'text-bad' : 'text-ink-3'">
+          {{ tokens.used >= tokens.budget ? 'Исчерпан до' : 'Сброс в' }} {{ resetLabel(tokens.reset_at) }}
+          <template v-if="tokens.waiting"> · ждут: {{ tokens.waiting }}</template>
+        </div>
       </div>
       <div class="flex items-center gap-2 text-xs" :class="store.connected ? 'text-ink-3' : 'text-bad'">
         <span class="h-1.5 w-1.5 rounded-full" :class="store.connected ? 'bg-ok' : 'bg-bad'" />

@@ -5,14 +5,16 @@ tokens per hour. Every image generation and every chat request goes through a
 limiter here: it blocks until the request fits into the budget, so the app
 waits instead of failing when the limit is reached.
 
-Usage is counted in two places and the larger number wins:
+FastGen counts usage in fixed windows: every counter starts from zero at the
+top of the hour (``window_start`` in ``GET /api/v6/usage``), so the budget is
+counted in the same window here:
 
-* a local ledger (table ``fastgen_usage``) that survives restarts and reacts
-  instantly to this app's own requests;
-* the server's counter for the whole API key (``GET /api/v6/usage``), so that
-  other people and tools using the same key are respected. It is refreshed
-  every minute, and right away whenever the limit is close or FastGen refuses
-  a request because of it.
+* the server's counter for the whole API key, so that other people and tools
+  using the same key are respected. It is refreshed every minute, and right
+  away whenever the limit is close or FastGen refuses a request because of it;
+* a local ledger (table ``fastgen_usage``) that survives restarts and covers
+  this app's own requests made since the last refresh – or everything, when
+  the server could not be reached.
 
 If two apps start at the same moment and FastGen still refuses a request over
 the limit, :func:`is_limit_error` recognises it and the caller waits (see
@@ -40,6 +42,8 @@ log = logging.getLogger(__name__)
 WINDOW = 3600.0
 _SYNC_INTERVAL = 60.0
 _SYNC_INTERVAL_BUSY = 10.0
+#: Server counters older than this (sync keeps failing) are ignored in favour of the local ledger.
+_SERVER_TRUST = 600.0
 #: How long to back off when FastGen refuses a request because of a limit.
 _LIMIT_BACKOFF = 30.0
 
@@ -99,12 +103,17 @@ class ServerCounter:
     used: int = 0
     window_start: float | None = None
 
-    def active_used(self) -> tuple[int, float]:
-        """Usage in the current server window and seconds until it resets (0 when expired)."""
-        if not self.window_start:
-            return 0, 0.0
-        reset_in = self.window_start + WINDOW - time.time()
-        return (self.used, reset_in) if reset_in > 0 else (0, 0.0)
+    def window(self, now: float | None = None) -> tuple[float, float]:
+        """Start and end of the current window: the server's one while it lasts, else the clock hour."""
+        now = now or time.time()
+        if self.window_start and self.window_start <= now < self.window_start + WINDOW:
+            return self.window_start, self.window_start + WINDOW
+        start = now - now % WINDOW
+        return start, start + WINDOW
+
+    def used_in(self, start: float) -> int:
+        """Server usage in the window starting at ``start`` (0 once the server's window has passed)."""
+        return self.used if self.window_start == start else 0
 
 
 class UsageSync:
@@ -113,6 +122,8 @@ class UsageSync:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._last = 0.0
+        #: When the counters were last read successfully (0 – never).
+        self.synced_at = 0.0
         self.images = ServerCounter()
         self.tokens = ServerCounter()
         #: Image generations running right now on this key (all apps together).
@@ -142,6 +153,11 @@ class UsageSync:
                 counter.window_start = stats.get("window_start")
             self.image_threads = int((current.get("active_threads") or {}).get("image_threads") or 0)
             self.limits = usage.get("account_limits") or {}
+            self.synced_at = time.time()
+
+    def fresh(self) -> bool:
+        """The server counters are recent enough to be trusted over the local ledger."""
+        return time.time() - self.synced_at < _SERVER_TRUST
 
 
 usage_sync = UsageSync()
@@ -180,29 +196,31 @@ class BudgetLimiter:
         pass
 
     # -- accounting
-    def _ledger_used(self) -> tuple[int, float | None]:
-        """Spent in the last hour by this app and the timestamp of the oldest entry."""
-        cutoff = time.time() - WINDOW
+    def _ledger_used(self, since: float) -> int:
+        """Spent by this app since ``since`` (epoch seconds)."""
         with session_scope() as db:
-            db.execute(delete(FastgenUsage).where(FastgenUsage.ts < cutoff - WINDOW))
-            used, oldest = db.execute(
-                select(func.coalesce(func.sum(FastgenUsage.credits), 0), func.min(FastgenUsage.ts))
-                .where(FastgenUsage.ts >= cutoff, FastgenUsage.operation == self.operation)
-            ).one()
-        return int(used), oldest
+            db.execute(delete(FastgenUsage).where(FastgenUsage.ts < time.time() - 2 * WINDOW))
+            used = db.execute(
+                select(func.coalesce(func.sum(FastgenUsage.credits), 0))
+                .where(FastgenUsage.ts >= since, FastgenUsage.operation == self.operation)
+            ).scalar_one()
+        return int(used)
 
-    def _used_now(self) -> tuple[int, float]:
-        """Effective usage (incl. reservations) and seconds until some budget frees up."""
-        local, oldest = self._ledger_used()
-        used = local
-        wait = (oldest + WINDOW - time.time()) if oldest else 30.0
-        server_used, server_reset = self._server().active_used()
-        if server_used > used:
-            used, wait = server_used, server_reset
-        blocked = self._blocked_until - time.time()
+    def _used_now(self) -> tuple[int, float, float]:
+        """Effective usage (incl. reservations), seconds until budget frees up and when the window resets."""
+        now = time.time()
+        server = self._server()
+        start, reset_at = server.window(now)
+        used = self._ledger_used(start)
+        if usage_sync.fresh():
+            # The server knows everything spent on the key up to the last sync; add only our newer requests.
+            since_sync = self._ledger_used(max(start, usage_sync.synced_at))
+            used = max(used, server.used_in(start) + since_sync)
+        wait = reset_at - now
+        blocked = self._blocked_until - now
         if blocked > 0:
-            used, wait = max(used, self._budget()), blocked
-        return used + self._reserved, max(5.0, wait)
+            used, wait = max(used, self._budget()), min(blocked, wait)
+        return used + self._reserved, max(5.0, wait), reset_at
 
     def block(self, seconds: float | None = None) -> None:
         """FastGen refused a request over the limit: treat the budget as full for a while."""
@@ -259,7 +277,7 @@ class BudgetLimiter:
                 budget = self._budget()
                 usage_sync.refresh()
                 with self._cond:
-                    used, free_in = self._used_now()
+                    used, free_in, reset_at = self._used_now()
                     if used + amount <= budget and self._can_start():
                         self._on_start()
                         self._reserved += amount
@@ -270,8 +288,10 @@ class BudgetLimiter:
                             usage_sync.refresh(max_age=_SYNC_INTERVAL_BUSY)
                         continue
                 if on_wait:
+                    until = (f"до {time.strftime('%H:%M', time.localtime(reset_at))}" if free_in >= reset_at - time.time() - 1
+                             else f"~{int(free_in // 60) + 1} мин")
                     on_wait(f"Лимит {self.label}: {fmt_amount(used)}/{fmt_amount(budget)} {self.unit} в час, "
-                            f"ожидание ~{int(free_in // 60) + 1} мин")
+                            f"ожидание {until}")
                 # Sleep in small steps so cancellation stays responsive; re-check the server meanwhile.
                 end = time.time() + min(free_in, 60.0)
                 while time.time() < end:
@@ -291,9 +311,10 @@ class BudgetLimiter:
         budget = self._budget()
         usage_sync.refresh()
         with self._cond:
-            used, free_in = self._used_now()
+            used, free_in, reset_at = self._used_now()
             return {"used": used, "budget": budget, "waiting": self.waiting,
-                    "free_in_seconds": free_in if used >= budget else 0}
+                    "free_in_seconds": free_in if used >= budget else 0,
+                    "reset_at": reset_at}
 
 
 def fmt_amount(n: int) -> str:

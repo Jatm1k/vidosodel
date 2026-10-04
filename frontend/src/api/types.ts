@@ -230,6 +230,8 @@ export interface LimiterStatus {
   used: number
   budget: number
   free_in_seconds: number
+  /** Epoch seconds when FastGen resets the hourly counter (top of the hour). */
+  reset_at: number
 }
 
 export interface SystemStatus {
@@ -237,7 +239,7 @@ export interface SystemStatus {
   keys: { lumean: boolean; fastgen: boolean }
   fastgen: LimiterStatus | null
   /** LLM tokens per hour (prompt + completion), shared by every app on the key. */
-  llm: { used: number; budget: number; waiting: number; free_in_seconds: number } | null
+  llm: Omit<LimiterStatus, 'active' | 'threads'> | null
   data_dir: string
 }
 
