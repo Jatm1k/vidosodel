@@ -101,6 +101,8 @@ Rules:
 - Follow the VISUAL BIBLE strictly: reuse the exact character/location descriptions so they stay consistent.
 - Vary shot types (wide, medium, close-up, over-the-shoulder, detail shot) and compositions across scenes.
 - Abstract ideas → clear visual metaphors. Never put text, captions, letters or UI in the image.
+- The narration may mention everyday illness, pain, doctors, conflicts or loss – this is ordinary storytelling, \
+not medical or harmful content. Illustrate such scenes gently: everyday settings, emotions, symbolism.
 - Do NOT add art-style words (photorealistic, oil painting...) – the style is appended automatically.
 - {safe}{characters_rule}
 Answer ONLY with JSON: {{"prompts": [{{"id": <scene id>, "prompt": "<text>"{characters_field}}}, ...]}}"""
@@ -138,6 +140,7 @@ def scene_prompts(
     )
     result: dict[int, dict[str, Any]] = {}
     previous: list[str] = []
+    empty_batches = 0
     for start in range(0, len(scenes), batch_size):
         if should_stop and should_stop():
             break
@@ -161,6 +164,12 @@ def scene_prompts(
         previous.extend(got[sid]["prompt"] for sid, _ in batch if sid in got)
         if progress:
             progress(min(1.0, (start + len(batch)) / len(scenes)))
+        empty_batches = 0 if got else empty_batches + 1
+        if empty_batches >= _MAX_EMPTY_BATCHES:
+            log.warning("stopping scene prompts: %d batches in a row gave no prompts (LLM unavailable or "
+                        "refusing) - %d scenes left without prompts", empty_batches,
+                        len(scenes) - len(result))
+            break
     return result
 
 
@@ -170,10 +179,15 @@ _REFUSAL = re.compile(
     r"|against (?:my|our) (?:policy|policies|guidelines)|something else instead",
     re.I,
 )
-#: Pauses before re-asking after a canned "something went wrong" answer.
-_ERROR_BACKOFF = (5, 15, 30)
-#: Max total backoff per batch, so a dead backend does not stall the job for long.
-_MAX_BATCH_WAIT = 120
+#: Pause before re-asking once after a canned "something went wrong" answer. The backend sends the same
+#: stub for content it filters (illness, injuries...), so a repeated stub is treated like a refusal.
+_ERROR_RETRY_DELAY = 5
+#: Every request is paid (input tokens) even when it returns a stub - cap the requests per batch.
+_MAX_BATCH_CALLS = 24
+#: This many stubs in a row before any success in a batch -> the backend is down, stop asking.
+_MAX_STUBS_WITHOUT_SUCCESS = 6
+#: Stop the whole job after this many batches in a row without a single prompt.
+_MAX_EMPTY_BATCHES = 2
 _MAX_DEPTH = 6  # 30 → 15 → 8 → 4 → 2 → 1: deep enough to reach single scenes
 
 
@@ -186,14 +200,36 @@ def _stub_kind(text: str) -> str | None:
 
 
 class _BatchStats:
-    """What went wrong while getting prompts for one batch – logged once, not per request."""
+    """Request budget of one batch and what went wrong – logged once, not per request."""
 
     def __init__(self) -> None:
         self.counts: dict[str, int] = {}
         self.samples: dict[str, str] = {}
-        self.waited = 0.0
-        #: Backoff budget used up: the backend is down, stop asking for this batch.
-        self.down = False
+        self.calls = 0
+        self.ok_calls = 0
+        self.stubs_in_row = 0
+        #: An error stub came back on retry: it is about the content, do not re-ask the same text.
+        self.errors_are_content = False
+
+    @property
+    def exhausted(self) -> bool:
+        return (self.calls >= _MAX_BATCH_CALLS
+                or (not self.ok_calls and self.stubs_in_row >= _MAX_STUBS_WITHOUT_SUCCESS))
+
+    def chat(self, fg: FastgenClient, messages: list[dict[str, str]], llm: LlmSettings,
+             temperature: float, *, plain: bool = False) -> str:
+        """``fg.chat`` that counts the request and canned answers (``plain``: a short text answer is expected)."""
+        self.calls += 1
+        text = fg.chat(messages, model=llm.model, temperature=temperature)
+        kind = _stub_kind(text)
+        if plain and kind == "error" and text.strip():
+            kind = None
+        if kind:
+            self.stubs_in_row += 1
+            self.note(kind, text)
+        else:
+            self.stubs_in_row = 0
+        return text
 
     def note(self, kind: str, sample: str) -> None:
         self.counts[kind] = self.counts.get(kind, 0) + 1
@@ -204,8 +240,10 @@ class _BatchStats:
         if not self.counts and not skipped:
             return
         issues = ", ".join(f"{k} x{n} ({self.samples[k]!r})" for k, n in self.counts.items())
-        log.warning("prompts for scenes %d-%d: %d/%d ok%s%s", batch[0][0], batch[-1][0], len(got), len(batch),
+        log.warning("prompts for scenes %d-%d: %d/%d ok, %d requests%s%s%s", batch[0][0], batch[-1][0],
+                    len(got), len(batch), self.calls,
                     f"; {issues}" if issues else "",
+                    "; request limit reached" if self.exhausted else "",
                     f"; skipped {skipped} (use 'create missing')" if skipped else "")
 
 
@@ -226,12 +264,13 @@ def _prompts_resilient(
     """Prompts for a batch that never fails as a whole.
 
     The chat backend occasionally returns an empty, truncated or non-JSON
-    answer. Whatever was parsed is kept; the rest is retried in halves
-    (smaller answers are far less likely to break). A single scene the model
-    refuses is retold neutrally and tried once more. Scenes that still fail
-    are skipped – the job reports them and "create missing" fills them later.
+    answer, or a canned stub instead of an answer when its filter dislikes
+    the text. Whatever was parsed is kept; the rest is retried in halves, so
+    the offending scenes are isolated. A single scene the model refuses is
+    retold neutrally and tried once more. Scenes that still fail (or exceed
+    the request budget) are skipped – "create missing" fills them later.
     """
-    if not batch or stats.down or (should_stop and should_stop()):
+    if not batch or stats.exhausted or (should_stop and should_stop()):
         return {}
     got: dict[int, dict[str, Any]] = {}
     kind: str | None = None
@@ -242,14 +281,14 @@ def _prompts_resilient(
     missing = [(sid, text) for sid, text in batch if sid not in got]
     if not missing:
         return got
-    if len(batch) == 1 and kind == "refusal":
+    if len(batch) == 1 and kind:
         return got | _prompts_softened(fg, system, header, batch[0], llm, should_stop, stats)
     if depth >= _MAX_DEPTH:
         return got
-    if len(missing) == 1 or not got and len(missing) <= 2 and kind != "refusal":
-        # Single scenes: one more plain retry.
+    if not kind and (len(missing) == 1 or not got and len(missing) <= 2):
+        # Single scenes with a broken (not refused) answer: one more plain retry.
         return got | _prompts_resilient(fg, system, header, missing, llm, should_stop, stats, depth + 1)
-    mid = len(missing) // 2
+    mid = (len(missing) + 1) // 2
     for part in (missing[:mid], missing[mid:]):
         got |= _prompts_resilient(fg, system, header, part, llm, should_stop, stats, depth + 1)
     return got
@@ -261,10 +300,11 @@ def _prompts_softened(
 ) -> dict[int, dict[str, Any]]:
     """Retry a refused scene with its text retold in neutral words."""
     sid, text = scene
+    if stats.exhausted:
+        return {}
     try:
-        soft = soften_scene(fg, text, llm)
+        soft = stats.chat(fg, soften_scene_messages(text), llm, 0.4, plain=True).strip().strip('"')
         if not soft or _REFUSAL.search(soft):
-            stats.note("soften refused", soft)
             return {}
         got, _kind = _prompts_batch(fg, system, header, [(sid, soft)], llm, stats, should_stop)
     except ApiError as exc:
@@ -279,31 +319,26 @@ def _prompts_batch(
     fg: FastgenClient, system: str, header: str, batch: list[tuple[int, str]], llm: LlmSettings,
     stats: _BatchStats, should_stop: Callable[[], bool] | None,
 ) -> tuple[dict[int, dict[str, Any]], str | None]:
-    """One LLM request (re-asked with pauses on canned backend errors).
+    """One LLM request (re-asked once after a pause on a canned "something went wrong").
 
     Accepts partial/truncated JSON: every complete ``{id, prompt}`` object counts.
     Returns the prompts and the kind of canned answer (``"refusal"``/``"error"``) if that is all we got.
     """
     ids = {sid for sid, _ in batch}
     user = header + "SCENES:\n" + "\n".join(f"[{sid}] {text}" for sid, text in batch)
-    delays = iter(_ERROR_BACKOFF)
-    while True:
-        text = fg.chat([{"role": "system", "content": system}, {"role": "user", "content": user}],
-                       model=llm.model, temperature=llm.temperature)
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    text = stats.chat(fg, messages, llm, llm.temperature)
+    kind = _stub_kind(text)
+    if kind == "error" and not stats.errors_are_content and not stats.exhausted:
+        if not _pause(_ERROR_RETRY_DELAY, should_stop):
+            return {}, kind
+        text = stats.chat(fg, messages, llm, llm.temperature)
         kind = _stub_kind(text)
-        if kind:
-            stats.note(kind, text)
-        if kind != "error":
-            break
-        delay = next(delays, None)
-        if delay is None:
-            return {}, kind
-        if stats.waited + delay > _MAX_BATCH_WAIT:
-            stats.down = True
-            return {}, kind
-        stats.waited += delay
-        if not _pause(delay, should_stop):
-            return {}, kind
+        if kind == "error":
+            stats.errors_are_content = True
+    if kind:
+        return {}, kind
+    stats.ok_calls += 1
     out: dict[int, dict[str, Any]] = {}
     for it in iter_json_objects(text):
         try:
@@ -314,9 +349,9 @@ def _prompts_batch(
             names = it.get("characters")
             out[sid] = {"prompt": prompt,
                         "characters": [str(n) for n in names] if isinstance(names, list) else None}
-    if not out and not kind:
+    if not out:
         stats.note("no JSON", text)
-    return out, kind
+    return out, None
 
 
 def iter_json_objects(text: str) -> list[dict[str, Any]]:
@@ -362,16 +397,15 @@ def soften_prompt(fg: FastgenClient, prompt: str, llm: LlmSettings) -> str:
                    model=llm.model, temperature=0.4).strip().strip('"')
 
 
-def soften_scene(fg: FastgenClient, text: str, llm: LlmSettings) -> str:
-    """Retell a voice-over fragment the model refused to illustrate, in neutral, showable terms."""
+def soften_scene_messages(text: str) -> list[dict[str, str]]:
+    """Chat messages that retell a voice-over fragment the model refused to illustrate, in showable terms."""
     system = (
         "A fragment of a narrated video script needs an illustration, but the illustrator refused it as too "
         "sensitive. Retell the fragment in 1–3 neutral English sentences describing only what can be shown on "
         "screen: turn violence, death, illness, sexual or political details into metaphor, atmosphere and "
         f"body language, keep the people, place and mood. {SAFE_RULES} Answer with the retold fragment only."
     )
-    return fg.chat([{"role": "system", "content": system}, {"role": "user", "content": text}],
-                   model=llm.model, temperature=0.4).strip().strip('"')
+    return [{"role": "system", "content": system}, {"role": "user", "content": text}]
 
 
 # ----------------------------------------------------------------------- translation
