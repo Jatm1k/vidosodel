@@ -134,10 +134,13 @@ class FastgenClient:
 
     def generate_image(
         self, prompt: str, dest: Path, *, operation: str, aspect_ratio: str = "16:9",
-        references: list[str] | None = None, upscale: bool = False, seed: int | None = None,
+        references: list[Any] | None = None, upscale: bool = False, seed: int | None = None,
         should_stop: Any = None, on_started: Any = None,
     ) -> dict[str, Any]:
-        """Generate one image and save it to ``dest``. Returns generation metadata."""
+        """Generate one image and save it to ``dest``. Returns generation metadata.
+
+        ``references``: data URIs or named inputs ``{"name": "Alex.jpg", "input": <data URI>}``.
+        """
         payload: dict[str, Any] = {"operation": operation, "prompt": prompt, "aspect_ratio": aspect_ratio}
         if references:
             payload["inputs"] = references

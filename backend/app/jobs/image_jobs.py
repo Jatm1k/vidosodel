@@ -72,7 +72,7 @@ def _watermark_method(images: ImageSettings) -> str:
 
 def generate_one(
     fg: FastgenClient, prompt: str, dest_dir: Path, stem: str, images: ImageSettings, llm: LlmSettings,
-    refs: list[str], ctx: JobContext, on_wait=None, operation: str | None = None,
+    refs: list[Any], ctx: JobContext, on_wait=None, operation: str | None = None,
     on_prompt_fixed=None, note: str = "",
 ) -> tuple[Path, dict[str, Any]]:
     """Generate a single image with retries, budget control and prompt auto-fixing.
@@ -171,21 +171,33 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
         from .character_jobs import ensure_portraits  # noqa: PLC0415 – avoids an import cycle
 
         ensure_portraits(project_id, ctx)
-    portraits: dict[int, tuple[str, str]] = {}
+    # character id → (name, file name of the input, description, image data URI)
+    portraits: dict[int, tuple[str, str, str, str]] = {}
     if scene_cast:
+        taken: set[str] = set()
         with session_scope() as db:
             for c in db.query(Character).filter(Character.project_id == project_id):
                 if c.image_file and (uri := image_data_uri(c.image_file, 1024)):
-                    portraits[c.id] = (c.name, uri)
+                    portraits[c.id] = (c.name, chars.reference_name(c.name, taken), c.description or "", uri)
     refs = reference_inputs(images, {op for _, _, op in jobs})
 
-    def scene_inputs(scene_id: int, operation: str) -> tuple[list[str], str]:
-        """Reference inputs and the note for one scene: its characters first, then the style refs."""
+    def scene_inputs(scene_id: int, operation: str) -> tuple[list[Any], str]:
+        """Reference inputs and the note for one scene: its characters first, then the style refs.
+
+        Portraits are named inputs (``{"name": "Alex.jpg", "input": ...}``) so the note can
+        say which file shows whom instead of relying on the order of the images.
+        """
         if not chars.accepts_refs(operation):
             return refs, ""
         cast_here = [portraits[c] for c in scene_cast.get(scene_id, []) if c in portraits]
-        inputs = [uri for _, uri in cast_here] + refs
-        return inputs[:chars.MAX_INPUTS], chars.reference_note([name for name, _ in cast_here])
+        if not cast_here:
+            return refs, ""
+        inputs: list[Any] = [{"name": file, "input": uri} for _, file, _, uri in cast_here]
+        inputs += [{"name": f"style_reference_{i + 1}.jpg", "input": uri} for i, uri in enumerate(refs)]
+        note = chars.reference_note([(name, file, desc) for name, file, desc, _ in cast_here])
+        if refs:
+            note += "The style_reference images show only the art style, not these characters. "
+        return inputs[:chars.MAX_INPUTS], note
 
     by_op: dict[str, int] = {}
     for _, _, op in jobs:

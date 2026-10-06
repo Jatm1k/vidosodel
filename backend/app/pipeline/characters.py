@@ -57,10 +57,28 @@ def ids_from_names(names: Sequence[str] | None, characters: Sequence[Character])
     return ids[:MAX_PER_SCENE]
 
 
-def reference_note(names: Sequence[str]) -> str:
-    """Tells the model which reference image shows whom."""
-    if not names:
+def reference_name(name: str, taken: set[str]) -> str:
+    """File name of a portrait input (``Alex.jpg``) – prompts refer to references by it."""
+    base = re.sub(r"\W+", "_", name.strip()).strip("_") or "character"
+    out, n = f"{base}.jpg", 2
+    while out.lower() in taken:
+        out, n = f"{base}_{n}.jpg", n + 1
+    taken.add(out.lower())
+    return out
+
+
+def reference_note(cast: Sequence[tuple[str, str, str]]) -> str:
+    """Tells the model which reference file shows whom: ``(name, file name, description)`` per character.
+
+    The description repeats the look in words, so a character stays recognisable even when
+    the model follows the reference image only loosely.
+    """
+    if not cast:
         return ""
-    parts = ", ".join(f"{n} (reference image {i + 1})" for i, n in enumerate(names))
-    return (f"Keep these people exactly as in the reference images – same face, hair, age and clothing: {parts}. "
-            "Use the references only for their appearance, not for pose or background. ")
+    parts = "; ".join(
+        f"{name} = {file}" + (f" ({' '.join(desc.split())[:300]})" if desc.strip() else "")
+        for name, file, desc in cast
+    )
+    return (f"Characters in this image: {parts}. Draw each of them exactly as in their reference image – same "
+            "face, hair, age, build and clothing. Use the references only for appearance, not for pose, "
+            "background or framing. ")
