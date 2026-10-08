@@ -71,6 +71,9 @@ def next_version(current: str, bump: str) -> str:
 
 
 def main() -> None:
+    # A Windows console defaults to cp1251, which has no "→" used in the output.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="Выпуск новой версии Vidosodel")
     parser.add_argument("bump", help="patch | minor | major | X.Y.Z")
     parser.add_argument("--push", action="store_true", help="отправить коммит и тег на GitHub")
@@ -92,7 +95,9 @@ def main() -> None:
             sys.exit(f"Ветка {STABLE_BRANCH} содержит коммиты, которых нет в {branch} — сначала влейте их: "
                      f"git merge {STABLE_BRANCH}")
 
-    dirty = [line[3:] for line in git("status", "--porcelain").splitlines() if line[3:] != "CHANGELOG.md"]
+    # git() strips the output, so the first line may lose the leading space of its " M" status.
+    changed = [line.split(maxsplit=1)[1] for line in git("status", "--porcelain").splitlines()]
+    dirty = [path for path in changed if path != "CHANGELOG.md"]
     if dirty:
         sys.exit("Сначала закоммитьте изменения (кроме CHANGELOG.md):\n  " + "\n  ".join(dirty))
 
