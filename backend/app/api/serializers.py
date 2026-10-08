@@ -57,6 +57,23 @@ def _publish_meta(track: Track) -> dict[str, Any]:
     return meta
 
 
+#: Production statuses of a language version, from the earliest to the last one.
+STATUS_ORDER = ["draft", "voiced", "storyboard", "video", "ready", "published"]
+
+
+def _status(track: Track, stages: dict[str, str]) -> str:
+    """Where the version is on the channel board: derived from its data, plus the user's marks."""
+    if track.published_at:
+        return "published"
+    if stages["video"] == "done":
+        return "ready" if track.approved_at else "video"
+    if stages["images"] == "done":
+        return "storyboard"
+    if stages["voice"] == "done":
+        return "voiced"
+    return "draft"
+
+
 def track_summary(db: Session, track: Track) -> dict[str, Any]:
     """Compact track info with the status of every pipeline stage."""
     stats = _scene_stats(db, track)
@@ -76,6 +93,17 @@ def track_summary(db: Session, track: Track) -> dict[str, Any]:
         return "done" if done else ("partial" if partial else "empty")
 
     total = stats["total"]
+    stages = {
+        "script": stage(bool((track.script or "").strip())),
+        "voice": stage(bool(track.audio_file)),
+        "timings": stage(bool(track.timings_file) and track.timings_origin != "estimate",
+                         track.timings_origin == "estimate"),
+        "scenes": stage(total > 0),
+        "prompts": stage(shares and total > 0 or (total > 0 and stats["prompts"] == total), stats["prompts"] > 0),
+        "images": stage(total > 0 and (shares or stats["images"] == total), stats["images"] > 0),
+        "video": stage(bool(track.video_file)),
+        "publish": stage(bool(track.publish_meta), bool(track.thumbnails)),
+    }
     return {
         "id": track.id, "project_id": track.project_id, "language": track.language,
         "language_name": lang[0], "flag": lang[2], "position": track.position,
@@ -90,17 +118,9 @@ def track_summary(db: Session, track: Track) -> dict[str, Any]:
         "thumbnails": [media_url(t) for t in track.thumbnails or []],
         "publish_meta": _publish_meta(track),
         "scene_stats": stats,
-        "stages": {
-            "script": stage(bool((track.script or "").strip())),
-            "voice": stage(bool(track.audio_file)),
-            "timings": stage(bool(track.timings_file) and track.timings_origin != "estimate",
-                             track.timings_origin == "estimate"),
-            "scenes": stage(total > 0),
-            "prompts": stage(shares and total > 0 or (total > 0 and stats["prompts"] == total), stats["prompts"] > 0),
-            "images": stage(total > 0 and (shares or stats["images"] == total), stats["images"] > 0),
-            "video": stage(bool(track.video_file)),
-            "publish": stage(bool(track.publish_meta), bool(track.thumbnails)),
-        },
+        "stages": stages,
+        "status": _status(track, stages),
+        "approved_at": track.approved_at, "published_at": track.published_at,
         "active_jobs": active,
         "failed_jobs": failed,
         "updated_at": track.updated_at.isoformat(),
@@ -121,12 +141,24 @@ def project_to_dict(db: Session, project: Project, *, full: bool = False) -> dic
     data["cover_url"] = media_url(cover)
     summaries = [track_summary(db, t) for t in project.tracks]
     data["progress"] = _project_progress(summaries)
+    data.update(_project_status(summaries))
     if full:
         data["settings"] = project.settings or {}
         data["visual_context"] = project.visual_context
         data["characters"] = [character_to_dict(c) for c in project.characters]
         data["tracks"] = summaries
     return data
+
+
+def _project_status(tracks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Board column of the project: the least advanced language decides it."""
+    per_track = [{
+        "id": t["id"], "language": t["language"], "status": t["status"],
+        "running": bool(t["active_jobs"]), "failed": bool(t["failed_jobs"]),
+        "has_script": t["stages"]["script"] == "done", "published_at": t["published_at"],
+    } for t in tracks]
+    status = min((t["status"] for t in per_track), key=STATUS_ORDER.index, default="draft")
+    return {"status": status, "tracks_status": per_track}
 
 
 def _project_progress(tracks: list[dict[str, Any]]) -> dict[str, Any]:

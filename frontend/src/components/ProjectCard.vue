@@ -38,10 +38,14 @@ const props = defineProps<{ project: ProjectSummary; channelName?: string; chann
         <span v-if="channelName" class="flex items-center gap-1.5 truncate">
           <span class="h-2 w-2 rounded-sm" :style="{ background: channelColor }" />{{ channelName }}
         </span>
-        <span class="flex gap-1" :title="project.languages.join(', ')">
-          <LangBadge v-for="l in project.languages" :key="l" :code="l" />
-        </span>
-        <span class="ml-auto shrink-0">{{ relativeDate(project.updated_at) }}</span>
+        <!-- The board replaces the badges with per-language statuses and adds a menu. -->
+        <slot name="languages">
+          <span class="flex gap-1" :title="project.languages.join(', ')">
+            <LangBadge v-for="l in project.languages" :key="l" :code="l" />
+          </span>
+        </slot>
+        <span class="ml-auto shrink-0"><slot name="date">{{ relativeDate(project.updated_at) }}</slot></span>
+        <slot name="actions" />
       </div>
     </div>
   </RouterLink>

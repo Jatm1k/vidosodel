@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Menu from 'primevue/menu'
 import { useConfirm } from 'primevue/useconfirm'
 import { api } from '@/api/client'
-import type { ChannelDetail, PipelineSettings } from '@/api/types'
+import type { ChannelDetail, PipelineSettings, ProjectSummary } from '@/api/types'
 import { useAppStore } from '@/stores/app'
 import { useNotify } from '@/composables/useNotify'
 import ProjectCard from '@/components/ProjectCard.vue'
+import ProjectBoard from '@/components/ProjectBoard.vue'
 import SettingsForm from '@/components/SettingsForm.vue'
 import NewProjectDialog from '@/components/NewProjectDialog.vue'
 
@@ -29,6 +30,24 @@ const tab = computed<'projects' | 'settings'>({
   set: (v) => router.replace({ query: v === 'settings' ? { tab: 'settings' } : {} }),
 })
 const showNew = ref(false)
+
+// Board or grid: a per-viewer convenience, remembered in the browser.
+const VIEW_KEY = 'vidosodel.channelView'
+function savedView(): 'board' | 'grid' {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'board'
+  } catch {
+    return 'board'
+  }
+}
+const view = ref<'board' | 'grid'>(savedView())
+watch(view, (v) => {
+  try {
+    localStorage.setItem(VIEW_KEY, v)
+  } catch {
+    /* storage unavailable – keep the choice for this visit only */
+  }
+})
 const editingName = ref(false)
 const menu = ref()
 const colors = ['#7aa5e8', '#5fb3a1', '#c58be0', '#e58f5a', '#d9c25b', '#e56a8d', '#62c0d8', '#9aa86a']
@@ -41,6 +60,30 @@ async function load() {
   settings.value = JSON.parse(JSON.stringify(channel.value.effective_settings)) as PipelineSettings
   savedJson.value = JSON.stringify(settings.value)
 }
+
+/** Refresh only the project list: unsaved channel settings stay untouched. */
+async function reloadProjects() {
+  if (!channel.value) return
+  channel.value.projects = await api.get<ProjectSummary[]>(`/api/projects?channel_id=${props.id}`)
+}
+
+let timer: number | undefined
+let off: (() => void) | undefined
+onMounted(() => {
+  const ids = () => new Set(channel.value?.projects.map((p) => p.id))
+  off = store.onEvent((e) => {
+    // Track events carry no project id: a cheap list reload is fine for them.
+    const relevant = e.type === 'track' || (e.type === 'job' && ids().has(e.job.project_id ?? -1) && e.job.status !== 'running')
+    if (relevant) {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(reloadProjects, 500)
+    }
+  })
+})
+onUnmounted(() => {
+  off?.()
+  window.clearTimeout(timer)
+})
 
 async function reloadRefs() {
   // Reference uploads are saved immediately on the server: sync them without touching unsaved edits.
@@ -151,6 +194,16 @@ onMounted(load)
         @click="tab = t[0]"
       >{{ t[1] }}</button>
       <div class="flex-1" />
+      <div v-if="tab === 'projects' && channel.projects.length" class="mb-2 mr-2 flex rounded-md border border-line-soft p-0.5">
+        <button
+          v-for="v in ([['board', 'pi-objects-column', 'Доска'], ['grid', 'pi-th-large', 'Сетка']] as const)"
+          :key="v[0]"
+          class="flex items-center gap-1.5 rounded px-2.5 py-1 text-[13px] transition-colors"
+          :class="view === v[0] ? 'bg-raised text-ink' : 'text-ink-3 hover:text-ink-2'"
+          :aria-pressed="view === v[0]"
+          @click="view = v[0]"
+        ><i :class="['pi', v[1], 'text-xs']" />{{ v[2] }}</button>
+      </div>
       <Button v-if="tab === 'projects'" label="Новый проект" icon="pi pi-plus" size="small" class="mb-2" @click="showNew = true" />
     </div>
 
@@ -160,7 +213,8 @@ onMounted(load)
         <p class="mt-1 text-ink-3">Проект — это одно видео: вставьте сценарий, и приложение соберёт ролик на всех выбранных языках.</p>
         <Button class="mt-5" label="Создать проект" icon="pi pi-plus" @click="showNew = true" />
       </div>
-      <div class="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
+      <ProjectBoard v-else-if="view === 'board'" :projects="channel.projects" @changed="reloadProjects" />
+      <div v-else class="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
         <ProjectCard v-for="p in channel.projects" :key="p.id" :project="p" />
       </div>
     </section>

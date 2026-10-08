@@ -52,7 +52,11 @@ export interface Meta {
 }
 
 export interface PipelineSettings {
-  voice: { templates: Record<string, string>; default_template_id: string | null; speed: number | null; paragraph_mode: boolean }
+  voice: {
+    templates: Record<string, string>; default_template_id: string | null; speed: number | null; paragraph_mode: boolean
+    /** Language the scripts are written in; null – the first language. */
+    master_language: string | null
+  }
   scenes: {
     mode: 'smart' | 'auto'; min_duration: number; max_duration: number
     intro_seconds: number; intro_min_duration: number; intro_max_duration: number
@@ -112,6 +116,19 @@ export interface ProjectProgress {
   running?: boolean
 }
 
+/** Board column of a language version (and of a project – by its least advanced language). */
+export type ProductionStatus = 'draft' | 'voiced' | 'storyboard' | 'video' | 'ready' | 'published'
+
+export interface TrackStatus {
+  id: number
+  language: string
+  status: ProductionStatus
+  running: boolean
+  failed: boolean
+  has_script: boolean
+  published_at: number | null
+}
+
 export interface ProjectSummary {
   id: number
   channel_id: number
@@ -123,6 +140,8 @@ export interface ProjectSummary {
   languages: string[]
   cover_url: string | null
   progress: ProjectProgress
+  status: ProductionStatus
+  tracks_status: TrackStatus[]
 }
 
 export interface SceneStats {
@@ -168,6 +187,10 @@ export interface TrackSummary {
   publish_meta: PublishMeta
   scene_stats: SceneStats
   stages: Record<'script' | 'voice' | 'timings' | 'scenes' | 'prompts' | 'images' | 'video' | 'publish', StageState>
+  status: ProductionStatus
+  /** Unix seconds; set by the user. */
+  approved_at: number | null
+  published_at: number | null
   active_jobs: Job[]
   failed_jobs: Job[]
   updated_at: string

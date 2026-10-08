@@ -22,6 +22,9 @@ class VoiceSettings(_Base):
 
     #: Language code → Lumean template UUID (voice, model, stability...).
     templates: dict[str, str] = Field(default_factory=dict)
+    #: Language the scripts are written in: new projects get it as the main
+    #: language, the others are translated from it. ``None`` – first language.
+    master_language: str | None = None
     #: Template used when a language has no dedicated one.
     default_template_id: str | None = None
     #: Speech speed override (0.7–1.2); ``None`` keeps the template value.

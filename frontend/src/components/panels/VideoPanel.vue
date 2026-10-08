@@ -9,6 +9,7 @@ import type { ProjectDetail, TrackSummary } from '@/api/types'
 import { useNotify } from '@/composables/useNotify'
 import { bytes, duration, relativeDate } from '@/composables/useFormat'
 import { useTrackActions } from '@/composables/useTrackActions'
+import { markDate, markTrack } from '@/composables/useProduction'
 import ActiveJobs from '../ActiveJobs.vue'
 
 const props = defineProps<{ track: TrackSummary; project: ProjectDetail }>()
@@ -145,6 +146,23 @@ function startRender() {
           <p v-if="track.audio_duration" class="mt-2 text-center text-[13px] text-ink-3">
             Примерно {{ duration(estimate) }} на этом компьютере
           </p>
+          <div v-if="track.video_url" class="mt-4 border-t border-line-soft pt-4">
+            <Button
+              v-if="!track.approved_at"
+              class="w-full"
+              label="Видео проверено"
+              icon="pi pi-check"
+              severity="secondary"
+              outlined
+              v-tooltip.bottom="'Ролик переедет в колонку «Готово» на доске канала'"
+              @click="markTrack(track.id, { approved: true })"
+            />
+            <div v-else class="flex items-center gap-2 text-[13px]">
+              <i class="pi pi-check text-ok" />
+              <span class="text-ink-2">Проверено {{ markDate(track.approved_at) }}</span>
+              <button class="ml-auto text-ink-3 hover:text-ink" @click="markTrack(track.id, { approved: false })">Снять</button>
+            </div>
+          </div>
         </section>
 
         <section class="rounded-lg border border-line-soft p-4">

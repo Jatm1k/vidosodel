@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -200,6 +201,35 @@ def run_project(project_id: int, body: RunIn, db: Session = Depends(get_db)) -> 
     return {"jobs": ids, "message": f"Запущено задач: {len(ids)}" if ids else "Все выбранные шаги уже выполнены"}
 
 
+class MarkIn(BaseModel):
+    """User marks on the channel board; ``None`` leaves a mark as it is."""
+    approved: bool | None = None
+    published: bool | None = None
+    #: ``None`` – every language of the project.
+    track_ids: list[int] | None = None
+
+
+def _mark(track: Track, approved: bool | None, published: bool | None) -> None:
+    now = time.time()
+    if approved is not None:
+        # Only a rendered video can be checked; keep the original date on repeated clicks.
+        track.approved_at = (track.approved_at or now) if approved and track.video_file else None
+    if published is not None:
+        track.published_at = (track.published_at or now) if published else None
+
+
+@router.post("/projects/{project_id}/mark")
+def mark_project(project_id: int, body: MarkIn, db: Session = Depends(get_db)) -> dict[str, Any]:
+    project = _project(db, project_id)
+    tracks = [t for t in project.tracks if not body.track_ids or t.id in body.track_ids]
+    for t in tracks:
+        _mark(t, body.approved, body.published)
+    db.commit()
+    for t in tracks:
+        track_changed(t.id, "status")
+    return project_to_dict(db, project)
+
+
 @router.post("/projects/{project_id}/cancel")
 def cancel_project_jobs(project_id: int, db: Session = Depends(get_db)) -> dict[str, int]:
     """Stop every queued/running job of the project. Finished work is kept."""
@@ -251,6 +281,8 @@ def add_track(project_id: int, body: TrackIn, db: Session = Depends(get_db)) -> 
 # ============================================================== tracks
 class TrackPatch(BaseModel):
     script: str | None = None
+    approved: bool | None = None
+    published: bool | None = None
 
 
 @router.get("/tracks/{track_id}")
@@ -267,7 +299,10 @@ def update_track(track_id: int, body: TrackPatch, db: Session = Depends(get_db))
     if body.script is not None:
         t.script = normalize_script(body.script)
         t.script_origin = "manual"
+    _mark(t, body.approved, body.published)
     db.commit()
+    if body.approved is not None or body.published is not None:
+        track_changed(t.id, "status")
     return get_track(track_id, db)
 
 

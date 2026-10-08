@@ -143,6 +143,12 @@ class Track(TimestampMixin, Base):
     #: Relative paths of generated thumbnails.
     thumbnails: Mapped[list[str]] = mapped_column(JSON, default=list)
 
+    # --- production status (set by the user) ----------------------------------
+    #: When the user checked the finished video; a new render resets it.
+    approved_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: When the user marked the video as uploaded to the channel.
+    published_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     project: Mapped[Project] = relationship(back_populates="tracks")
     scenes: Mapped[list[Scene]] = relationship(
         back_populates="track", cascade="all, delete-orphan", passive_deletes=True,

@@ -5,6 +5,7 @@ import type { ProjectDetail, TrackSummary } from '@/api/types'
 import { copyText } from '@/composables/useFormat'
 import { useTrackActions } from '@/composables/useTrackActions'
 import { useNotify } from '@/composables/useNotify'
+import { markDate, markTrack } from '@/composables/useProduction'
 import ActiveJobs from '../ActiveJobs.vue'
 
 const props = defineProps<{ track: TrackSummary; project: ProjectDetail }>()
@@ -45,6 +46,21 @@ async function copy(text: string, what: string) {
         :loading="starting === 'thumbnails'"
         v-tooltip.top="!meta.thumbnails?.length ? 'Сначала создайте метаданные — в них идеи для обложек' : undefined"
         @click="run('thumbnails', {}, 'Обложки создаются')"
+      />
+      <div class="flex-1" />
+      <div v-if="track.published_at" class="flex items-center gap-2 text-[13px]">
+        <i class="pi pi-send text-ok" />
+        <span class="text-ink-2">Выложено {{ markDate(track.published_at) }}</span>
+        <button class="text-ink-3 hover:text-ink" @click="markTrack(track.id, { published: false })">Снять</button>
+      </div>
+      <Button
+        v-else
+        label="Отметить выложенным"
+        icon="pi pi-send"
+        severity="secondary"
+        outlined
+        size="small"
+        @click="markTrack(track.id, { published: true })"
       />
     </div>
 

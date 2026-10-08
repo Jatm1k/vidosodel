@@ -130,6 +130,7 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
             if old and old.exists() and old != out_path:
                 old.unlink(missing_ok=True)
             t.video_file = to_rel(out_path)
+            t.approved_at = None  # a new cut has to be checked again
             # Export subtitles next to the video for YouTube upload.
             if timings:
                 write_srt(build_cues(timings.words), out_path.with_suffix(".srt"))

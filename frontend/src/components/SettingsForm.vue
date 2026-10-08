@@ -72,7 +72,13 @@ function removeLang(code: string) {
   const t = { ...s.value.voice.templates }
   delete t[code]
   s.value.voice.templates = t
+  if (s.value.voice.master_language === code) s.value.voice.master_language = null
 }
+// The main language is picked among the channel's languages (all languages while none is added).
+const masterOptions = computed(() => {
+  const all = store.meta?.languages ?? []
+  return voiceLangs.value.length ? all.filter((l) => voiceLangs.value.includes(l.code)) : all
+})
 async function onVoiceCreated(t: { id: string }) {
   await loadTemplates()
   if (pickerFor.value === '__default') s.value.voice.default_template_id = t.id
@@ -236,6 +242,22 @@ onMounted(async () => {
         <div v-if="templatesError" class="rounded-md border border-bad/40 bg-bad/10 px-4 py-3 text-[13px] text-bad">
           Не удалось загрузить голоса Lumean: {{ templatesError }}
         </div>
+        <FormField
+          v-if="mode === 'channel'"
+          label="Основной язык"
+          hint="На нём вставляется сценарий новых проектов, остальные языки переводятся с него"
+        >
+          <Select
+            v-model="s.voice.master_language"
+            :options="masterOptions"
+            option-value="code"
+            option-label="name"
+            filter
+            show-clear
+            placeholder="Первый язык из списка"
+            class="w-60"
+          />
+        </FormField>
         <FormField label="Голос по умолчанию" hint="Для языков без отдельного голоса">
           <div class="flex gap-2">
             <Select
