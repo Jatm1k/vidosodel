@@ -73,6 +73,7 @@ export interface PipelineSettings {
   llm: { model: string; niche: string; prompt_instructions: string; temperature: number }
   render: {
     resolution: '1080p' | '1440p' | '2160p'; fps: number; motion_effects: string[]; motion_intensity: number
+    phrase_cuts: boolean; depth_of_field: boolean
     transitions: string[]; transition_duration: number; cut_ratio: number; fade_in: number; fade_out: number
     encoder: string; quality: 'max' | 'high' | 'balanced' | 'fast'; workers: number; loudness: number
   }

@@ -111,11 +111,15 @@ class RenderSettings(_Base):
     motion_effects: list[str] = Field(
         default_factory=lambda: [
             "zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down",
-            "zoom_in_left", "zoom_in_right", "drift",
+            "zoom_in_left", "zoom_in_right", "drift", "parallax",
         ]
     )
     #: 0 – barely moving, 1 – dynamic.
     motion_intensity: float = 0.5
+    #: 3D-parallax scenes cut between a wide shot and a close-up at phrase boundaries.
+    phrase_cuts: bool = True
+    #: Background behind the subject goes soft in parallax shots (stronger on close-ups).
+    depth_of_field: bool = True
     #: Transitions picked between scenes (see render.transitions.TRANSITIONS).
     transitions: list[str] = Field(
         default_factory=lambda: ["crossfade", "dip_black", "slide_left", "slide_right", "zoom_blend", "wipe", "blur"]

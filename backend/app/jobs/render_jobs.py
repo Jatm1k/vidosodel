@@ -13,6 +13,7 @@ from ..pipeline import llm_tasks
 from ..render.engine import RESOLUTIONS, PlanScene, RenderPlan, render_video
 from ..render.look import random_look
 from ..render.media import pick_encoder
+from ..render import parallax
 from ..render.motion import EFFECTS
 from ..render.subtitles import build_cues, write_ass, write_srt
 from ..render.transitions import TRANSITIONS
@@ -112,12 +113,23 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         out_path = track_dir(project.id, track.id, "render") / out_name
         track_id, unique = track.id, s.unique
         loudness, workers = s.render.loudness, s.render.workers
+        phrase_cuts, depth_of_field = s.render.phrase_cuts, s.render.depth_of_field
     t0 = time.time()
+    # Depth maps for 3D parallax scenes (cached, so only new images cost time).
+    base = 0.0
+    if any(sc.effect == "parallax" for sc in plan.scenes):
+        base = 0.08
+        warning = parallax.prepare(
+            plan, timings.words if timings else None, phrase_cuts=phrase_cuts, depth_of_field=depth_of_field,
+            progress=lambda v, m: ctx.progress(v * base, m), check=ctx.check,
+        )
+        if warning:
+            ctx.progress(base, warning, force=True)
     render_video(
         plan, audio, out_path, work, workers=1 if preview else workers,
         metadata={"title": title} if not preview else None, loudness=loudness,
         audio_eq_seed=seed if unique.enabled and unique.audio_eq and not preview else None,
-        strip_metadata=unique.strip_metadata, progress=ctx.progress,
+        strip_metadata=unique.strip_metadata, progress=lambda v, m: ctx.progress(base + v * (1 - base), m),
         should_stop=ctx.should_stop,
     )
     elapsed = time.time() - t0

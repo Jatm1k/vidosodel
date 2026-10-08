@@ -34,7 +34,9 @@ import numpy as np
 from ..config import ffmpeg_bin
 from .look import LookParams, LookProcessor
 from .media import CREATE_NO_WINDOW, cover_fit, encoder_args, imread, run
+from . import depth as depth_mod
 from .motion import make_motion, max_zoom, render_view
+from .parallax import ParallaxRenderer, prepare_layers
 from .transitions import blend
 
 log = logging.getLogger(__name__)
@@ -51,6 +53,8 @@ class PlanScene:
     seed: int
     #: Transition from the previous scene into this one (``cut`` or a name).
     transition: str = "cut"
+    #: Camera of a ``parallax`` shot (see :mod:`.parallax`); ``None`` → plain 2D motion.
+    shot: dict | None = None
 
 
 @dataclass
@@ -97,6 +101,8 @@ class FrameRenderer:
         self.look = LookProcessor(LookParams(**plan.look), plan.width, plan.height)
         self._zmax = max_zoom(plan.intensity)
         self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._layers_cache: OrderedDict[str, tuple | None] = OrderedDict()
+        self._parallax: ParallaxRenderer | None = None
         self._motions = [make_motion(s.effect, plan.intensity, s.seed) for s in plan.scenes]
         self._starts = [s.start for s in plan.scenes]
         # Half of a transition happens before the boundary, half after.
@@ -117,6 +123,18 @@ class FrameRenderer:
             self._cache.move_to_end(path)
         return img
 
+    def _layers(self, path: str):
+        """Parallax layers of an image (LRU of 3), ``None`` when its depth map is missing."""
+        if path in self._layers_cache:
+            self._layers_cache.move_to_end(path)
+            return self._layers_cache[path]
+        depth = depth_mod.load(Path(path))
+        layers = None if depth is None else prepare_layers(imread(Path(path)), depth, self.plan.width, self.plan.height)
+        self._layers_cache[path] = layers
+        if len(self._layers_cache) > 3:
+            self._layers_cache.popitem(last=False)
+        return layers
+
     def _scene_frame(self, idx: int, t: float) -> np.ndarray:
         s = self.plan.scenes[idx]
         # Motion progress spans the scene plus the transition halves around it.
@@ -125,6 +143,13 @@ class FrameRenderer:
         span = max(0.1, (s.end + tail) - (s.start - lead))
         u = (t - (s.start - lead)) / span
         lp = self.look.p
+        if s.shot:
+            layers = self._layers(s.image)
+            if layers is not None:
+                if self._parallax is None:
+                    self._parallax = ParallaxRenderer(self.plan.width, self.plan.height)
+                return self._parallax.frame(layers, s.shot, u, t, extra_zoom=lp.micro_zoom,
+                                            offset=(lp.offset_x, lp.offset_y))
         return render_view(self._source(s.image), self._motions[idx](u), self.plan.width, self.plan.height,
                            extra_zoom=lp.micro_zoom, offset=(lp.offset_x, lp.offset_y))
 

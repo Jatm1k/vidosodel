@@ -26,13 +26,14 @@ class View:
 
 EFFECTS = [
     "zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down",
-    "zoom_in_left", "zoom_in_right", "drift", "static",
+    "zoom_in_left", "zoom_in_right", "drift", "static", "parallax",
 ]
 
 EFFECT_LABELS = {
     "zoom_in": "Наезд", "zoom_out": "Отъезд", "pan_left": "Панорама влево", "pan_right": "Панорама вправо",
     "pan_up": "Панорама вверх", "pan_down": "Панорама вниз", "zoom_in_left": "Наезд со сдвигом влево",
     "zoom_in_right": "Наезд со сдвигом вправо", "drift": "Плавный дрейф", "static": "Без движения",
+    "parallax": "3D-параллакс",
 }
 
 
@@ -105,6 +106,8 @@ def make_motion(effect: str, intensity: float, seed: int):
         "zoom_in": zoom_in, "zoom_out": zoom_out,
         "pan_left": pan(1, 0), "pan_right": pan(-1, 0), "pan_up": pan(0, 1), "pan_down": pan(0, -1),
         "zoom_in_left": zoom_shift(-1), "zoom_in_right": zoom_shift(1), "drift": drift, "static": static,
+        # Real parallax is drawn by .parallax from a depth map; this is its 2D stand-in.
+        "parallax": drift,
     }
     fn = table.get(effect, zoom_in)
     return lambda u: _clamp_center(fn(u))

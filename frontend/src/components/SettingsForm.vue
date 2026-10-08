@@ -547,6 +547,14 @@ onMounted(async () => {
         <FormField label="Интенсивность движения" :value="`${Math.round(s.render.motion_intensity * 100)}%`">
           <Slider v-model="s.render.motion_intensity" :min="0" :max="1" :step="0.05" class="mt-3" />
         </FormField>
+        <template v-if="s.render.motion_effects.includes('parallax')">
+          <FormField label="Крупные планы по фразам" hint="3D-параллакс: внутри сцены монтаж чередует общий план и крупный план героя, склейки — на паузах в речи">
+            <ToggleSwitch v-model="s.render.phrase_cuts" class="mt-1.5" />
+          </FormField>
+          <FormField label="Размытие фона" hint="3D-параллакс: фон за героем мягко размыт, как при съёмке на длиннофокусный объектив">
+            <ToggleSwitch v-model="s.render.depth_of_field" class="mt-1.5" />
+          </FormField>
+        </template>
         <FormField label="Переходы">
           <div class="flex flex-wrap gap-2">
             <button
