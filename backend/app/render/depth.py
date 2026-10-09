@@ -134,6 +134,12 @@ def find_subject(bgr: np.ndarray, depth: np.ndarray) -> dict:
             "depth": float(np.median(d[d >= thr])), "face": False}
 
 
+def face_subject(image: Path) -> dict:
+    """Subject without a depth map (depth unavailable): the most prominent face, else the centre."""
+    bgr = imread(image)
+    return find_subject(bgr, np.full(bgr.shape[:2], 0.5, dtype=np.float32))
+
+
 def cache_paths(image: Path) -> tuple[Path, Path]:
     d = image.parent / ".depth"
     return d / f"{image.stem}.png", d / f"{image.stem}.json"

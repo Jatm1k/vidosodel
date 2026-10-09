@@ -35,11 +35,14 @@ from ..config import ffmpeg_bin
 from .look import LookParams, LookProcessor
 from .media import CREATE_NO_WINDOW, cover_fit, encoder_args, imread, run
 from . import depth as depth_mod
-from .motion import make_motion, max_zoom, render_view
+from .motion import View, make_motion, max_zoom, render_view
 from .parallax import ParallaxRenderer, prepare_layers
 from .transitions import blend
 
 log = logging.getLogger(__name__)
+
+#: Extra source resolution when a plan has closer 2D shots, so they stay sharp.
+FRAMING_HEADROOM = 1.25
 
 RESOLUTIONS = {"1080p": (1920, 1080), "1440p": (2560, 1440), "2160p": (3840, 2160), "360p": (640, 360), "540p": (960, 540)}
 
@@ -55,6 +58,11 @@ class PlanScene:
     transition: str = "cut"
     #: Camera of a ``parallax`` shot (see :mod:`.parallax`); ``None`` → plain 2D motion.
     shot: dict | None = None
+    #: Tighter framing of a 2D shot ``{"zoom", "cx", "cy"}`` (a closer shot cut from the same image).
+    framing: dict | None = None
+    #: ``[start, end]`` of the whole scene when it is split into shots: the camera move
+    #: runs through the cuts instead of restarting in every shot.
+    span: list[float] | None = None
 
 
 @dataclass
@@ -100,6 +108,8 @@ class FrameRenderer:
         self.plan = plan
         self.look = LookProcessor(LookParams(**plan.look), plan.width, plan.height)
         self._zmax = max_zoom(plan.intensity)
+        if any(s.framing for s in plan.scenes):
+            self._zmax *= FRAMING_HEADROOM  # closer shots sample the source at a higher magnification
         self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._layers_cache: OrderedDict[str, tuple | None] = OrderedDict()
         self._parallax: ParallaxRenderer | None = None
@@ -108,6 +118,19 @@ class FrameRenderer:
         # Half of a transition happens before the boundary, half after.
         self._td = [0.0 if (i == 0 or s.transition == "cut") else plan.transition_duration
                     for i, s in enumerate(plan.scenes)]
+        # Motion window of every scene: the scene plus the transition halves around it;
+        # shots of one split scene share the window of the whole scene.
+        n = len(plan.scenes)
+        self._window = [(s.start - self._td[i] / 2, s.end + (self._td[i + 1] / 2 if i + 1 < n else 0.0))
+                        for i, s in enumerate(plan.scenes)]
+        groups: dict[tuple, list[int]] = {}
+        for i, s in enumerate(plan.scenes):
+            if s.span:
+                groups.setdefault((s.image, *s.span), []).append(i)
+        for members in groups.values():
+            win = (min(self._window[i][0] for i in members), max(self._window[i][1] for i in members))
+            for i in members:
+                self._window[i] = win
 
     def _source(self, path: str) -> np.ndarray:
         """Source image cover-fitted to output size × max zoom (cached, LRU of 4)."""
@@ -137,11 +160,8 @@ class FrameRenderer:
 
     def _scene_frame(self, idx: int, t: float) -> np.ndarray:
         s = self.plan.scenes[idx]
-        # Motion progress spans the scene plus the transition halves around it.
-        lead = self._td[idx] / 2
-        tail = self._td[idx + 1] / 2 if idx + 1 < len(self.plan.scenes) else 0.0
-        span = max(0.1, (s.end + tail) - (s.start - lead))
-        u = (t - (s.start - lead)) / span
+        a, b = self._window[idx]
+        u = (t - a) / max(0.1, b - a)
         lp = self.look.p
         if s.shot:
             layers = self._layers(s.image)
@@ -150,7 +170,12 @@ class FrameRenderer:
                     self._parallax = ParallaxRenderer(self.plan.width, self.plan.height)
                 return self._parallax.frame(layers, s.shot, u, t, extra_zoom=lp.micro_zoom,
                                             offset=(lp.offset_x, lp.offset_y))
-        return render_view(self._source(s.image), self._motions[idx](u), self.plan.width, self.plan.height,
+        view = self._motions[idx](u)
+        if s.framing:
+            f = s.framing
+            fz = f["zoom"]
+            view = View(view.zoom * fz, f["cx"] + (view.cx - 0.5) / fz, f["cy"] + (view.cy - 0.5) / fz, view.rot)
+        return render_view(self._source(s.image), view, self.plan.width, self.plan.height,
                            extra_zoom=lp.micro_zoom, offset=(lp.offset_x, lp.offset_y))
 
     def _scene_index(self, t: float) -> int:

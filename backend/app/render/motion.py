@@ -138,5 +138,7 @@ def render_view(src: np.ndarray, view: View, out_w: int, out_h: int, extra_zoom:
         [cos_r, -sin_r, src_cx - cos_r * dst_cx + sin_r * dst_cy],
         [sin_r, cos_r, src_cy - sin_r * dst_cx - cos_r * dst_cy],
     ], dtype=np.float64)
-    return cv2.warpAffine(src, m, (out_w, out_h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+    # Bicubic only when the source is magnified (closer shots); bilinear is enough otherwise.
+    interp = cv2.INTER_CUBIC if s < 0.95 else cv2.INTER_LINEAR
+    return cv2.warpAffine(src, m, (out_w, out_h), flags=interp | cv2.WARP_INVERSE_MAP,
                           borderMode=cv2.BORDER_REFLECT_101)

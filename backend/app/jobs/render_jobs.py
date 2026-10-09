@@ -14,12 +14,13 @@ from ..render.engine import RESOLUTIONS, PlanScene, RenderPlan, render_video
 from ..render.look import random_look
 from ..render.media import pick_encoder
 from ..render import parallax
+from ..render.accents import avoid_subject, place as place_accents
 from ..render.motion import EFFECTS
 from ..render.subtitles import build_cues, write_ass, write_srt
 from ..render.transitions import TRANSITIONS
 from ..services.fastgen import FastgenClient
 from ..storage import safe_filename, to_abs, to_rel, track_dir
-from .common import TrackCtx, load_timings, load_track, scene_image
+from .common import TrackCtx, load_timings, load_track, scene_image, text_hash
 from .events import track_changed
 from .runner import JobContext, JobError, register
 
@@ -105,8 +106,12 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         track, project = tc.track, tc.project
         work = track_dir(project.id, track.id, "render", "preview" if preview else "work")
         timings = load_timings(track)
-        if s.subtitles.enabled and timings:
-            plan.subtitles_ass = str(write_ass(timings.words, s.subtitles, plan.width, plan.height, work / "subs.ass"))
+        subs = s.subtitles
+        accent_req = None
+        if subs.accents and timings and track.script.strip():
+            count = max(1, round((track.audio_duration or timings.duration) / 60 * subs.accents_per_minute))
+            accent_req = {"key": f"{text_hash(track.script)}:{count}", "count": count, "script": track.script,
+                          "language": track.language, "llm": s.llm, "cached": track.text_accents or {}}
         audio = to_abs(track.audio_file)
         title = ((track.publish_meta or {}).get("titles") or [project.name])[0]
         out_name = "preview.mp4" if preview else f"{safe_filename(project.name, 'video')}_{track.language}.mp4"
@@ -115,9 +120,13 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         loudness, workers = s.render.loudness, s.render.workers
         phrase_cuts, depth_of_field = s.render.phrase_cuts, s.render.depth_of_field
     t0 = time.time()
-    # Depth maps for 3D parallax scenes (cached, so only new images cost time).
+    accents = []
+    if accent_req:
+        items = _accent_items(ctx, track_id, accent_req)
+        accents = place_accents(items, timings.words, plan.extra["video_end"])
+    # Phrase cuts and depth maps for 3D parallax (cached, so only new images cost time).
     base = 0.0
-    if any(sc.effect == "parallax" for sc in plan.scenes):
+    if any(sc.effect == "parallax" for sc in plan.scenes) or (phrase_cuts and timings):
         base = 0.08
         warning = parallax.prepare(
             plan, timings.words if timings else None, phrase_cuts=phrase_cuts, depth_of_field=depth_of_field,
@@ -125,6 +134,10 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         )
         if warning:
             ctx.progress(base, warning, force=True)
+    if accents:
+        avoid_subject(accents, plan)  # after the depth pass: its subjects are cached by then
+    if timings and (subs.enabled or accents):
+        plan.subtitles_ass = str(write_ass(timings.words, subs, plan.width, plan.height, work / "subs.ass", accents))
     render_video(
         plan, audio, out_path, work, workers=1 if preview else workers,
         metadata={"title": title} if not preview else None, loudness=loudness,
@@ -150,13 +163,30 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
                 "seed": seed, "duration": plan.duration, "resolution": f"{plan.width}x{plan.height}",
                 "fps": plan.fps, "encoder": plan.encoder, "size": out_path.stat().st_size,
                 "render_seconds": round(elapsed, 1), "rendered_at": time.time(),
-                "subtitles": bool(plan.subtitles_ass), "srt": to_rel(out_path.with_suffix(".srt")) if timings else None,
+                "subtitles": bool(subs.enabled and timings), "accents": len(accents), "srt": to_rel(out_path.with_suffix(".srt")) if timings else None,
             }
     if not preview:
         shutil.rmtree(work, ignore_errors=True)
     track_changed(track_id, "preview" if preview else "video")
     mins = int(elapsed // 60)
     return {"message": f"{'Превью' if preview else 'Видео'} готово за {mins} мин {int(elapsed % 60)} с"}
+
+
+def _accent_items(ctx: JobContext, track_id: int, req: dict[str, Any]) -> list[dict[str, str]]:
+    """Key phrases of the script: cached on the track, asked from the LLM when the script changed."""
+    cached = req["cached"]
+    if cached.get("key") == req["key"]:
+        return cached.get("items") or []
+    ctx.progress(0.0, "Подбор ключевых фраз для экрана", force=True)
+    try:
+        with FastgenClient() as fg:
+            items = llm_tasks.text_accents(fg, req["script"], req["language"], req["count"], req["llm"])
+    except Exception as e:  # text on screen is a nicety: the video renders without it
+        ctx.progress(0.0, f"Ключевые фразы не подобраны: {e}", force=True)
+        return cached.get("items") or []
+    with session_scope() as db:
+        db.get(Track, track_id).text_accents = {"key": req["key"], "items": items}
+    return items
 
 
 @register("render", "render", "Рендер видео")

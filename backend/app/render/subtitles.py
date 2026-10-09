@@ -7,6 +7,7 @@ from pathlib import Path
 from ..pipeline.text import ends_clause, ends_sentence
 from ..pipeline.timings import Word
 from ..settings_schema import SubtitleSettings
+from .accents import Accent
 
 
 @dataclass(slots=True)
@@ -93,7 +94,33 @@ def _esc(text: str) -> str:
     return text.replace("\\", "\\\\").replace("{", "(").replace("}", ")")
 
 
-def write_ass(words: list[Word], cfg: SubtitleSettings, width: int, height: int, path: Path) -> Path:
+def _accent_style(cfg: SubtitleSettings, scale: float) -> str:
+    """Big bold text for key phrases: centre of the frame, or the top when subtitles sit in the middle."""
+    size = round(cfg.size * 1.8 * scale)
+    align = 8 if cfg.enabled and cfg.position == "middle" else 5
+    margin = round(160 * scale)
+    return (
+        f"Style: Accent,{cfg.accent_font or cfg.font},{size},{_ass_color(cfg.accent_color)},{_ass_color('#FFFFFF')},"
+        f"{_ass_color('#000000')},{_ass_color('#000000', 0.45)},-1,0,0,0,100,100,0,0,1,"
+        f"{round(4 * scale, 1)},{round(3 * scale, 1)},{align},{margin},{margin},{margin},1"
+    )
+
+
+def _accent_event(a: Accent, width: int, scale: float) -> str:
+    # Pops in slightly over-scaled, settles, fades out; \q0 lets a long phrase wrap.
+    anim = r"{\q0\fad(120,280)\fscx72\fscy72\t(0,170,\fscx108\fscy108)\t(170,300,\fscx100\fscy100)}"
+    ml = mr = 0  # 0 → margins of the style
+    if a.x is not None:
+        # A column centred at x, as wide as the frame allows on that side.
+        m = round(70 * scale)
+        half = min(a.x, 1 - a.x) * width - m
+        ml, mr = max(m, round(a.x * width - half)), max(m, round(width - a.x * width - half))
+    return f"Dialogue: 1,{_ass_time(a.start)},{_ass_time(a.end)},Accent,,{ml},{mr},0,,{anim}{_esc(a.text.upper())}"
+
+
+def write_ass(words: list[Word], cfg: SubtitleSettings, width: int, height: int, path: Path,
+              accents: list[Accent] | None = None) -> Path:
+    """Burned-in text: subtitles (when enabled in ``cfg``) and key-phrase ``accents``."""
     scale = height / 1080
     size = round(cfg.size * scale)
     align = {"bottom": 2, "middle": 5, "top": 8}[cfg.position]
@@ -115,10 +142,10 @@ def write_ass(words: list[Word], cfg: SubtitleSettings, width: int, height: int,
         "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
         "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"{style}\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        f"{style}\n{_accent_style(cfg, scale)}\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
-    events = []
-    for cue in build_cues(words, cfg.max_chars_per_line, cfg.max_lines):
+    events = [_accent_event(a, width, scale) for a in accents or []]
+    for cue in build_cues(words, cfg.max_chars_per_line, cfg.max_lines) if cfg.enabled else []:
         parts = []
         cue_words = cue.words
         for li, line in enumerate(cue.lines):

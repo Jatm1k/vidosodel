@@ -547,10 +547,10 @@ onMounted(async () => {
         <FormField label="Интенсивность движения" :value="`${Math.round(s.render.motion_intensity * 100)}%`">
           <Slider v-model="s.render.motion_intensity" :min="0" :max="1" :step="0.05" class="mt-3" />
         </FormField>
+        <FormField label="Крупные планы по фразам" hint="Внутри сцены монтаж чередует общий план и более крупный план героя, склейки — на паузах в речи. Новые картинки не нужны">
+          <ToggleSwitch v-model="s.render.phrase_cuts" class="mt-1.5" />
+        </FormField>
         <template v-if="s.render.motion_effects.includes('parallax')">
-          <FormField label="Крупные планы по фразам" hint="3D-параллакс: внутри сцены монтаж чередует общий план и крупный план героя, склейки — на паузах в речи">
-            <ToggleSwitch v-model="s.render.phrase_cuts" class="mt-1.5" />
-          </FormField>
           <FormField label="Размытие фона" hint="3D-параллакс: фон за героем мягко размыт, как при съёмке на длиннофокусный объектив">
             <ToggleSwitch v-model="s.render.depth_of_field" class="mt-1.5" />
           </FormField>
@@ -675,6 +675,21 @@ onMounted(async () => {
             <div class="flex items-center gap-3">
               <InputNumber v-model="s.subtitles.max_chars_per_line" :min="12" :max="80" show-buttons class="w-32" />
               <InputNumber v-model="s.subtitles.max_lines" :min="1" :max="3" show-buttons class="w-28" />
+            </div>
+          </FormField>
+        </template>
+
+        <FormField label="Ключевые фразы на экране" hint="Нейросеть выбирает в сценарии цифры и главные мысли, и в нужный момент они крупно появляются в кадре. Работает и без субтитров">
+          <ToggleSwitch v-model="s.subtitles.accents" class="mt-1.5" />
+        </FormField>
+        <template v-if="s.subtitles.accents">
+          <FormField label="Частота" :value="`${s.subtitles.accents_per_minute.toFixed(1)} в минуту`" hint="Примерно столько фраз на минуту видео; ближе 6 секунд друг к другу они не появляются">
+            <Slider v-model="s.subtitles.accents_per_minute" :min="0.3" :max="4" :step="0.1" class="mt-3" />
+          </FormField>
+          <FormField label="Шрифт и цвет фраз">
+            <div class="flex flex-wrap items-center gap-3">
+              <Select v-model="s.subtitles.accent_font" :options="fonts" editable class="w-56" />
+              <ColorPicker :model-value="s.subtitles.accent_color.slice(1)" @update:model-value="(v: any) => (s.subtitles.accent_color = hex(v))" />
             </div>
           </FormField>
         </template>

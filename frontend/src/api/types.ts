@@ -82,6 +82,7 @@ export interface PipelineSettings {
     uppercase: boolean; primary_color: string; highlight_color: string; outline_color: string
     box_color: string; box_opacity: number; outline: number; shadow: number
     position: 'bottom' | 'middle' | 'top'; margin_v: number; max_chars_per_line: number; max_lines: number
+    accents: boolean; accents_per_minute: number; accent_font: string; accent_color: string
   }
   unique: {
     enabled: boolean; strength: number; color_jitter: boolean; film_grain: boolean; vignette: boolean

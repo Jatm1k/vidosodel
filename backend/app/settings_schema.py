@@ -116,7 +116,7 @@ class RenderSettings(_Base):
     )
     #: 0 – barely moving, 1 – dynamic.
     motion_intensity: float = 0.5
-    #: 3D-parallax scenes cut between a wide shot and a close-up at phrase boundaries.
+    #: Scenes cut between a wide shot and a closer one at phrase boundaries of the voice-over.
     phrase_cuts: bool = True
     #: Background behind the subject goes soft in parallax shots (stronger on close-ups).
     depth_of_field: bool = True
@@ -159,6 +159,11 @@ class SubtitleSettings(_Base):
     margin_v: int = 70
     max_chars_per_line: int = 40
     max_lines: int = 2
+    #: Key numbers and phrases picked by the LLM pop up big on screen (works without subtitles too).
+    accents: bool = False
+    accents_per_minute: float = 1.0
+    accent_font: str = "Arial"
+    accent_color: str = "#FFD84D"
 
 
 class UniqueSettings(_Base):

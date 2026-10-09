@@ -6,6 +6,7 @@
 * :func:`soften_prompt` – rephrase a prompt rejected by a content filter.
 * :func:`translate_script` – paragraph-aligned translation of a script.
 * :func:`publish_metadata` – titles, description, tags, chapters, thumbnail ideas.
+* :func:`text_accents` – key numbers and phrases shown big on screen.
 """
 from __future__ import annotations
 
@@ -452,6 +453,34 @@ def translate_script(
         batch.append(p)
         size += len(p)
     flush()
+    return out
+
+
+# ---------------------------------------------------------------------- text accents
+def text_accents(fg: FastgenClient, script: str, language: str, count: int, llm: LlmSettings) -> list[dict[str, str]]:
+    """Moments worth big on-screen text: ``[{"quote": exact words of the script, "text": on-screen text}]``."""
+    name = language_name(language)
+    system = (
+        "You are the editor of a narrated YouTube video. Pick moments of the script that deserve big on-screen "
+        "text, like a skilled human editor would: key numbers and statistics, a striking short statement, the "
+        "main takeaway of a part, a turning point, a name or term the viewer must remember. Skip filler and "
+        "do not pick two moments close to each other; spread them over the whole video and skip the first "
+        "sentences. For each moment give: \"quote\" – 3 to 12 CONSECUTIVE words copied EXACTLY from the script "
+        "(same spelling and word forms) where the text must appear; \"text\" – the on-screen text in "
+        f"{name}, 1 to 5 words: a number with its unit (\"73%\", \"3×\", \"$2 000\") or a punchy shortened phrase. "
+        "No emojis, hashtags, quotation marks or a trailing period. "
+        'Answer ONLY with JSON: {"accents": [{"quote": "...", "text": "..."}]}'
+    )
+    user = f"{_niche(llm)}Number of moments: about {count}.\n\nSCRIPT:\n{script[:100_000]}"
+    data = fg.chat_json([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                        model=llm.model, temperature=0.5)
+    out: list[dict[str, str]] = []
+    for a in (data.get("accents") if isinstance(data, dict) else None) or []:
+        if not isinstance(a, dict):
+            continue
+        quote, text = str(a.get("quote", "")).strip(), str(a.get("text", "")).strip().strip('"«»“”').rstrip(".")
+        if quote and text and len(text) <= 40:
+            out.append({"quote": quote, "text": text})
     return out
 
 

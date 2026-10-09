@@ -138,6 +138,8 @@ class Track(TimestampMixin, Base):
     video_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
     video_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     preview_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    #: Key phrases on screen picked by the LLM: ``{"key": script hash + count, "items": [{"quote", "text"}]}``.
+    text_accents: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     #: Generated YouTube metadata: titles, description, tags, chapters.
     publish_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     #: Relative paths of generated thumbnails.

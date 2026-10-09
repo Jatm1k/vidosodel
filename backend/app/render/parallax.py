@@ -1,8 +1,9 @@
 """3D parallax camera over a still image, and phrase-timed shot cuts.
 
-A scene with the ``parallax`` effect is split at phrase boundaries of the
-voice-over into *shots* that alternate between a wide shot and a close-up of
-the subject (a face when one is found). Consecutive shots of the same image
+A scene is split at phrase boundaries of the voice-over into *shots* that
+alternate between a wide shot and a close-up of the subject (a face when one
+is found). Parallax scenes get a 3D camera per shot; plain 2D scenes keep
+their camera move and only change the framing. Consecutive shots of the same image
 are joined with hard cuts; the zoom ratio between them is large enough
 (≈1.4×) to read as a deliberate cut, not a jump.
 
@@ -90,49 +91,88 @@ def make_shots(start: float, end: float, cuts: list[float], subject: dict, *, se
     return out
 
 
+def make_flat_shots(start: float, end: float, cuts: list[float], subject: dict, *,
+                    seed: int) -> list[tuple[float, float, dict | None]]:
+    """``(start, end, framing)`` for a 2D scene: the wide shot (``None``) alternates with a closer one."""
+    rnd = random.Random(seed ^ 0x5F3759DF)
+    bounds = [start, *cuts, end]
+    out: list[tuple[float, float, dict | None]] = []
+    for i in range(len(bounds) - 1):
+        framing = None
+        if i % 2:
+            # ≥1.3× tighter than the wide shot, so the cut reads as a new angle, not a jump
+            zoom = rnd.uniform(1.4, 1.55) if subject.get("face") else rnd.uniform(1.3, 1.4)
+            half = 0.5 / zoom
+            framing = {"zoom": zoom, "cx": min(max(subject["cx"], half), 1 - half),
+                       "cy": min(max(subject["cy"], half), 1 - half)}
+        out.append((bounds[i], bounds[i + 1], framing))
+    return out
+
+
 def prepare(plan: RenderPlan, words: Sequence[Word] | None, *, phrase_cuts: bool, depth_of_field: bool,
             progress: Callable[[float, str], None] | None = None,
             check: Callable[[], None] | None = None) -> str | None:
-    """Compute depth for the parallax scenes of ``plan`` and split them into shots (in place).
+    """Split scenes of ``plan`` into shots at phrase boundaries (in place).
 
-    Only scenes inside the rendered window are processed (previews render a
-    fragment). Returns a warning when depth is unavailable – those scenes then
-    fall back to the plain 2D drift.
+    Parallax scenes get depth maps and alternate wide shots and close-ups of the
+    subject; plain 2D scenes alternate their wide move with a tighter framing of
+    the subject. Only scenes inside the rendered window are processed (previews
+    render a fragment). Returns a warning when depth is unavailable – parallax
+    scenes then fall back to the plain 2D drift.
     """
     t0, t1 = plan.time_offset, plan.time_offset + plan.duration
-    todo = [s for s in plan.scenes if s.effect == "parallax" and s.end > t0 and s.start < t1]
+    use_cuts = phrase_cuts and bool(words)
+    cuts: dict[int, list[float]] = {}
+    for i, s in enumerate(plan.scenes):
+        if use_cuts and s.end > t0 and s.start < t1:
+            cuts[i] = cut_points(words, s.start, s.end)
+    todo = [s for i, s in enumerate(plan.scenes)
+            if s.end > t0 and s.start < t1 and (s.effect == "parallax" or cuts.get(i))]
     images = list(dict.fromkeys(s.image for s in todo))
     for folder in {Path(img).parent for img in images}:
         depth_mod.prune(folder)
     subjects: dict[str, dict] = {}
     warning = None
+    no_depth = False
     for i, img in enumerate(images):
         if check:
             check()  # raises when the job is cancelled
         if progress:
-            progress(i / max(1, len(images)), f"Карты глубины для 3D-параллакса: {i + 1} из {len(images)}")
-        try:
-            subjects[img] = depth_mod.ensure(Path(img), (lambda m: progress(0.0, m)) if progress else None)
-        except depth_mod.DepthUnavailable as e:
-            warning = f"3D-параллакс выключен: {e}"
-            log.warning("%s", warning)
-            break
-        except Exception as e:  # a broken image must not kill the whole render
-            log.warning("depth failed for %s: %s", img, e)
+            progress(i / max(1, len(images)), f"Анализ кадров для монтажа: {i + 1} из {len(images)}")
+        if not no_depth:
+            try:
+                subjects[img] = depth_mod.ensure(Path(img), (lambda m: progress(0.0, m)) if progress else None)
+                continue
+            except depth_mod.DepthUnavailable as e:
+                no_depth = True
+                if any(s.effect == "parallax" for s in todo):
+                    warning = f"3D-параллакс выключен: {e}"
+                log.warning("depth unavailable: %s", e)
+            except Exception as e:  # a broken image must not kill the whole render
+                log.warning("depth failed for %s: %s", img, e)
+                continue
+        try:  # no depth model: closer shots still aim at a face
+            subjects[img] = {**depth_mod.face_subject(Path(img)), "flat_only": True}
+        except Exception as e:
+            log.warning("subject search failed for %s: %s", img, e)
 
     scenes = []
-    for s in plan.scenes:
-        if s.effect != "parallax":
+    for i, s in enumerate(plan.scenes):
+        subject = subjects.get(s.image)
+        scene_cuts = cuts.get(i) or []
+        if s.effect == "parallax" and subject is not None and not subject.get("flat_only"):
+            for j, (a, b, shot) in enumerate(make_shots(s.start, s.end, scene_cuts, subject, seed=s.seed,
+                                                        intensity=plan.intensity, depth_of_field=depth_of_field)):
+                scenes.append(replace(s, start=a, end=b, shot=shot, transition=s.transition if j == 0 else "cut"))
+            continue
+        if s.effect == "parallax":
+            s = replace(s, effect="drift")
+        if subject is None or not scene_cuts:
             scenes.append(s)
             continue
-        subject = subjects.get(s.image)
-        if subject is None:
-            scenes.append(replace(s, effect="drift"))
-            continue
-        cuts = cut_points(words, s.start, s.end) if (phrase_cuts and words) else []
-        for j, (a, b, shot) in enumerate(make_shots(s.start, s.end, cuts, subject, seed=s.seed,
-                                                    intensity=plan.intensity, depth_of_field=depth_of_field)):
-            scenes.append(replace(s, start=a, end=b, shot=shot, transition=s.transition if j == 0 else "cut"))
+        for j, (a, b, framing) in enumerate(make_flat_shots(s.start, s.end, scene_cuts, subject, seed=s.seed)):
+            scenes.append(replace(s, start=a, end=b, framing=framing, span=[s.start, s.end],
+                                  transition=s.transition if j == 0 else "cut"))
     plan.scenes = scenes
     return warning
 
