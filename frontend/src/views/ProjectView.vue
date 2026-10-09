@@ -436,7 +436,7 @@ const hasOverrides = computed(() => !!project.value && Object.keys(project.value
             size="small"
           />
         </div>
-        <SettingsForm v-model="projSettings" mode="project" />
+        <SettingsForm v-model="projSettings" mode="project" :project-id="project.id" />
         <div class="sticky bottom-0 -mx-5 flex justify-end gap-2 border-t border-line-soft bg-panel px-5 py-3">
           <Button v-if="hasOverrides" label="Вернуть настройки канала" severity="secondary" text @click="resetSettings" />
           <Button label="Сохранить" @click="saveSettings" />

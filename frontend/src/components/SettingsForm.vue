@@ -18,12 +18,14 @@ import type { LumeanTemplate, PipelineSettings } from '@/api/types'
 import { useAppStore } from '@/stores/app'
 import { useNotify } from '@/composables/useNotify'
 import FormField from './FormField.vue'
+import FxPreview, { type FxPreviewTarget } from './FxPreview.vue'
 import VoicePicker from './VoicePicker.vue'
 
 const s = defineModel<PipelineSettings>({ required: true })
 const props = defineProps<{
   mode: 'channel' | 'project'
   channelId?: number
+  projectId?: number
   references?: { path: string; url: string }[]
 }>()
 const emit = defineEmits<{ referencesChanged: [] }>()
@@ -43,6 +45,17 @@ const sections = [
   { id: 'publish', label: 'Публикация', icon: 'pi-youtube' },
 ] as const
 const active = ref<(typeof sections)[number]['id']>('voice')
+
+// ----------------------------------------------------------------- effect previews
+const previewOpen = ref(false)
+const previewTarget = ref<FxPreviewTarget | null>(null)
+function openPreview(kind: FxPreviewTarget['kind'], effect: string, title: string) {
+  previewTarget.value = { kind, effect, title }
+  previewOpen.value = true
+}
+function previewSettings() {
+  return JSON.parse(JSON.stringify({ ...s.value.render, atmosphere: s.value.atmosphere }))
+}
 
 // ----------------------------------------------------------------- atmosphere
 const atmosphereEffects = [
@@ -544,15 +557,21 @@ onMounted(async () => {
           </div>
           <p class="mt-2 text-[13px] text-ink-3">1440p даёт заметно лучшее качество после сжатия YouTube, но рендерится дольше.</p>
         </FormField>
-        <FormField label="Движение камеры" hint="Для каждой сцены выбирается случайно из отмеченных">
+        <FormField label="Движение камеры" hint="Для каждой сцены выбирается случайно из отмеченных. ▶ — превью с текущей интенсивностью">
           <div class="flex flex-wrap gap-2">
-            <button
+            <span
               v-for="e in store.meta?.effects"
               :key="e.id"
-              class="rounded-md border px-3 py-1.5 text-[13px] transition-colors"
-              :class="s.render.motion_effects.includes(e.id) ? 'border-tally bg-tally/10 text-ink' : 'border-line text-ink-3 hover:text-ink-2'"
-              @click="s.render.motion_effects = toggleIn(s.render.motion_effects, e.id)"
-            >{{ e.name }}</button>
+              class="inline-flex overflow-hidden rounded-md border text-[13px] transition-colors"
+              :class="s.render.motion_effects.includes(e.id) ? 'border-tally bg-tally/10 text-ink' : 'border-line text-ink-3'"
+            >
+              <button class="py-1.5 pl-3 pr-2 hover:text-ink-2" @click="s.render.motion_effects = toggleIn(s.render.motion_effects, e.id)">{{ e.name }}</button>
+              <button
+                class="border-l border-line px-2 text-ink-3 hover:text-tally"
+                title="Превью"
+                @click="openPreview('motion', e.id, `Движение камеры: ${e.name}`)"
+              ><i class="pi pi-play text-[9px]" /></button>
+            </span>
           </div>
         </FormField>
         <FormField label="Интенсивность движения" :value="`${Math.round(s.render.motion_intensity * 100)}%`">
@@ -568,13 +587,19 @@ onMounted(async () => {
         </template>
         <FormField label="Переходы">
           <div class="flex flex-wrap gap-2">
-            <button
+            <span
               v-for="t in store.meta?.transitions"
               :key="t.id"
-              class="rounded-md border px-3 py-1.5 text-[13px] transition-colors"
-              :class="s.render.transitions.includes(t.id) ? 'border-tally bg-tally/10 text-ink' : 'border-line text-ink-3 hover:text-ink-2'"
-              @click="s.render.transitions = toggleIn(s.render.transitions, t.id)"
-            >{{ t.name }}</button>
+              class="inline-flex overflow-hidden rounded-md border text-[13px] transition-colors"
+              :class="s.render.transitions.includes(t.id) ? 'border-tally bg-tally/10 text-ink' : 'border-line text-ink-3'"
+            >
+              <button class="py-1.5 pl-3 pr-2 hover:text-ink-2" @click="s.render.transitions = toggleIn(s.render.transitions, t.id)">{{ t.name }}</button>
+              <button
+                class="border-l border-line px-2 text-ink-3 hover:text-tally"
+                title="Превью"
+                @click="openPreview('transition', t.id, `Переход: ${t.name}`)"
+              ><i class="pi pi-play text-[9px]" /></button>
+            </span>
           </div>
         </FormField>
         <FormField label="Длительность перехода" :value="`${s.render.transition_duration.toFixed(1)} с`">
@@ -621,9 +646,30 @@ onMounted(async () => {
           Едва заметная жизнь в статичной картинке. Каждый рендер получает свой ритм, так что эффекты ещё и уникализируют видео.
           Зерно и дрожание линий заметно увеличивают размер файла.
         </p>
+        <div>
+          <Button
+            label="Превью всех включённых"
+            icon="pi pi-play"
+            severity="secondary"
+            size="small"
+            :disabled="!atmosphereEffects.some((e) => s.atmosphere[e[0]])"
+            @click="openPreview('atmosphere', 'all', 'Атмосфера: все включённые эффекты')"
+          />
+        </div>
         <template v-for="e in atmosphereEffects" :key="e[0]">
           <FormField :label="e[1]" :hint="e[2]">
-            <ToggleSwitch v-model="s.atmosphere[e[0]]" class="mt-1.5" />
+            <div class="flex items-center gap-3">
+              <ToggleSwitch v-model="s.atmosphere[e[0]]" class="mt-1.5" />
+              <Button
+                label="Превью"
+                icon="pi pi-play"
+                severity="secondary"
+                size="small"
+                text
+                class="mt-1"
+                @click="openPreview('atmosphere', e[0], `Атмосфера: ${e[1]}`)"
+              />
+            </div>
           </FormField>
           <FormField v-if="s.atmosphere[e[0]]" label="Сила" :value="`${Math.round(s.atmosphere[`${e[0]}_strength`] * 100)}%`">
             <Slider v-model="s.atmosphere[`${e[0]}_strength`]" :min="0.05" :max="1" :step="0.05" class="mt-3" />
@@ -797,5 +843,13 @@ onMounted(async () => {
         </FormField>
       </template>
     </div>
+
+    <FxPreview
+      v-model:visible="previewOpen"
+      :target="previewTarget"
+      :channel-id="channelId"
+      :project-id="projectId"
+      :settings="previewSettings"
+    />
   </div>
 </template>
