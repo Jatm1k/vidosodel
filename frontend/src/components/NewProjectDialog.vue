@@ -56,10 +56,10 @@ watch(visible, async (v) => {
     const ch = await api.get<{ effective_settings: PipelineSettings }>(`/api/channels/${props.channelId}`)
     channelSettings.value = ch.effective_settings
     if (!keep) projSettings.value = JSON.parse(JSON.stringify(ch.effective_settings)) as PipelineSettings
-    // A fresh draft starts with the channel's main language.
+    // A fresh draft starts with only the channel's main language, not the 'ru' fallback or template keys.
     const main = ch.effective_settings.voice.master_language
     if (main && !name.value && !script.value) {
-      if (!languages.value.includes(main)) languages.value = [main, ...languages.value]
+      languages.value = [main]
       master.value = main
     }
   } catch (e) {
