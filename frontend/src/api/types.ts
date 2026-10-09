@@ -77,6 +77,11 @@ export interface PipelineSettings {
     transitions: string[]; transition_duration: number; cut_ratio: number; fade_in: number; fade_out: number
     encoder: string; quality: 'max' | 'high' | 'balanced' | 'fast'; workers: number; loudness: number
   }
+  atmosphere: {
+    line_boil: boolean; line_boil_strength: number; grain_boil: boolean; grain_boil_strength: number; boil_hold: number
+    breathing: boolean; breathing_strength: number; light_pulse: boolean; light_pulse_strength: number
+    vignette_breathing: boolean; vignette_breathing_strength: number; dust: boolean; dust_strength: number
+  }
   subtitles: {
     enabled: boolean; style: 'plain' | 'karaoke' | 'box'; font: string; size: number; bold: boolean
     uppercase: boolean; primary_color: string; highlight_color: string; outline_color: string

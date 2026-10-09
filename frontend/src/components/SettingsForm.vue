@@ -37,13 +37,24 @@ const sections = [
   { id: 'images', label: 'Изображения', icon: 'pi-image' },
   { id: 'llm', label: 'Тексты и промпты', icon: 'pi-sparkles' },
   { id: 'render', label: 'Анимация и видео', icon: 'pi-video' },
+  { id: 'atmosphere', label: 'Атмосфера', icon: 'pi-sun' },
   { id: 'subtitles', label: 'Субтитры', icon: 'pi-align-center' },
   { id: 'unique', label: 'Уникализация', icon: 'pi-shield' },
   { id: 'publish', label: 'Публикация', icon: 'pi-youtube' },
 ] as const
 const active = ref<(typeof sections)[number]['id']>('voice')
 
-// ----------------------------------------------------------------- voice
+// ----------------------------------------------------------------- atmosphere
+const atmosphereEffects = [
+  ['dust', 'Пылинки в воздухе', 'Мелкие пылинки и размытые «боке» медленно плывут по кадру — как в луче света'],
+  ['breathing', 'Дыхание', 'Герой едва заметно «дышит». В 3D-параллаксе дышит только передний план, в остальных сценах — весь кадр от нижнего края'],
+  ['light_pulse', 'Пульсация света', 'Светлые места кадра медленно мягко светятся и гаснут'],
+  ['vignette_breathing', 'Дыхание виньетки', 'Затемнение по краям медленно сгущается и отпускает'],
+  ['grain_boil', 'Кипящее зерно', 'Крупное зерно, как фактура бумаги или плёнки, сменяется рывками, как в рисованной анимации. Заменяет обычное зерно уникализации'],
+  ['line_boil', 'Дрожание линий', 'Контуры чуть дрожат, будто каждый кадр перерисован от руки. Только для рисованных стилей: на фотореализме выглядит как брак'],
+] as const
+
+
 const templates = ref<LumeanTemplate[]>([])
 const templatesError = ref('')
 const pickerFor = ref<string | null>(null)
@@ -601,6 +612,35 @@ onMounted(async () => {
         </FormField>
         <FormField label="Процессов рендера" hint="0 — подобрать автоматически по числу ядер">
           <InputNumber v-model="s.render.workers" :min="0" :max="16" show-buttons class="w-32" />
+        </FormField>
+      </template>
+
+      <!-- ============================== ATMOSPHERE -->
+      <template v-else-if="active === 'atmosphere'">
+        <p class="text-ink-3">
+          Едва заметная жизнь в статичной картинке. Каждый рендер получает свой ритм, так что эффекты ещё и уникализируют видео.
+          Зерно и дрожание линий заметно увеличивают размер файла.
+        </p>
+        <template v-for="e in atmosphereEffects" :key="e[0]">
+          <FormField :label="e[1]" :hint="e[2]">
+            <ToggleSwitch v-model="s.atmosphere[e[0]]" class="mt-1.5" />
+          </FormField>
+          <FormField v-if="s.atmosphere[e[0]]" label="Сила" :value="`${Math.round(s.atmosphere[`${e[0]}_strength`] * 100)}%`">
+            <Slider v-model="s.atmosphere[`${e[0]}_strength`]" :min="0.05" :max="1" :step="0.05" class="mt-3" />
+          </FormField>
+        </template>
+        <FormField
+          v-if="s.atmosphere.line_boil || s.atmosphere.grain_boil"
+          label="Частота «кипения»"
+          hint="Как часто перерисовываются линии и зерно"
+        >
+          <SelectButton
+            v-model="s.atmosphere.boil_hold"
+            :options="[{ v: 2, l: 'Быстро (на двойках)' }, { v: 3, l: 'Классика (на тройках)' }, { v: 4, l: 'Медленно' }]"
+            option-value="v"
+            option-label="l"
+            :allow-empty="false"
+          />
         </FormField>
       </template>
 

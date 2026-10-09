@@ -1,5 +1,7 @@
 """Per-frame post-processing: colour grade, vignette, film grain, fades.
 
+Vignette breathing and grain boil (see :mod:`.atmosphere`) live here too.
+
 Every render draws a fresh random :class:`LookParams` (when uniqueness is on),
 so two renders of the same project differ at pixel level – colour balance,
 grain pattern, micro zoom, vignette – while looking the same to a viewer.
@@ -14,6 +16,7 @@ import cv2
 import numpy as np
 
 from ..settings_schema import UniqueSettings
+from .atmosphere import AtmosphereParams, boil_step, vignette_level
 
 
 @dataclass(slots=True)
@@ -61,12 +64,17 @@ def random_look(cfg: UniqueSettings, seed: int | None = None) -> LookParams:
 class LookProcessor:
     """Applies :class:`LookParams` to BGR frames of a fixed size."""
 
-    def __init__(self, params: LookParams, width: int, height: int):
+    def __init__(self, params: LookParams, width: int, height: int, atmo: AtmosphereParams | None = None):
         self.p = params
+        self.a = atmo or AtmosphereParams()
         self.w, self.h = width, height
         self._lut = self._build_lut()
-        self._vignette = self._build_vignette() if params.vignette > 0.01 else None
-        self._grain = self._build_grain() if params.grain > 0.3 else None
+        breathing = self.a.vignette_breathing > 0
+        self._vignette = self._build_vignette() if params.vignette > 0.01 or breathing else None
+        if self.a.grain_boil > 0:  # boiling grain replaces the per-frame one
+            self._grain = self._build_grain(2.2 + 4.5 * self.a.grain_boil, scale=3, chroma=0.35)
+        else:
+            self._grain = self._build_grain(params.grain) if params.grain > 0.3 else None
         self._grain_idx = 0
 
     def _build_lut(self) -> np.ndarray | None:
@@ -84,27 +92,43 @@ class LookProcessor:
         return np.clip(lut, 0, 255).astype(np.uint8).reshape(1, 256, 3)
 
     def _build_vignette(self) -> np.ndarray:
+        """Shape of the vignette at full strength (darkening × 255); scaled per frame."""
         yy, xx = np.mgrid[0:self.h, 0:self.w].astype(np.float32)
         nx = (xx - self.w / 2) / (self.w / 2)
         ny = (yy - self.h / 2) / (self.h / 2)
         d = np.sqrt(nx**2 * 0.85 + ny**2 * 1.0)
-        mask = 1 - self.p.vignette * np.clip((d - 0.45) / 0.95, 0, 1) ** 1.8
-        mask = (mask * 255).astype(np.uint8)
-        return cv2.merge([mask, mask, mask])
+        shape = (np.clip((d - 0.45) / 0.95, 0, 1) ** 1.8 * 255).astype(np.uint8)
+        return cv2.merge([shape, shape, shape])
 
-    def _build_grain(self) -> list[tuple[np.ndarray, np.ndarray]]:
-        """A few monochrome noise tiles (half resolution, upscaled → filmic grain)."""
+    def _build_grain(self, amount: float, scale: int = 2, chroma: float = 0.0) -> list[tuple[np.ndarray, np.ndarray]]:
+        """A few noise tiles (generated at 1/``scale`` resolution and upscaled → filmic grain).
+
+        ``chroma`` adds a little independent noise per colour channel.
+        """
         rng = np.random.default_rng(self.p.seed)
+        gh, gw = self.h // scale, self.w // scale
         tiles = []
         for _ in range(6):
-            n = rng.normal(0, self.p.grain, (self.h // 2, self.w // 2)).astype(np.float32)
-            n = cv2.resize(n, (self.w, self.h), interpolation=cv2.INTER_LINEAR)
-            pos = np.clip(n, 0, 255).astype(np.uint8)
-            neg = np.clip(-n, 0, 255).astype(np.uint8)
-            tiles.append((cv2.merge([pos, pos, pos]), cv2.merge([neg, neg, neg])))
+            mono = rng.normal(0, amount, (gh, gw)).astype(np.float32)
+            chans = [mono + rng.normal(0, amount * chroma, (gh, gw)).astype(np.float32) if chroma else mono
+                     for _c in range(3)]
+            n = cv2.resize(cv2.merge(chans), (self.w, self.h), interpolation=cv2.INTER_LINEAR)
+            tiles.append((np.clip(n, 0, 255).astype(np.uint8), np.clip(-n, 0, 255).astype(np.uint8)))
         return tiles
 
-    def apply(self, frame: np.ndarray, fade: float = 1.0) -> np.ndarray:
+    def _grain_tile(self, t: float) -> tuple[np.ndarray, np.ndarray]:
+        if self.a.grain_boil <= 0:
+            self._grain_idx += 1
+            return self._grain[self._grain_idx % len(self._grain)]
+        # held for a few frames, then a random other tile (pure function of the step)
+        step = boil_step(self.a, t)
+        n = len(self._grain)
+        idx = random.Random(self.p.seed * 7919 + step).randrange(n)
+        if idx == random.Random(self.p.seed * 7919 + step - 1).randrange(n):
+            idx = (idx + 1) % n
+        return self._grain[idx]
+
+    def apply(self, frame: np.ndarray, fade: float = 1.0, t: float = 0.0) -> np.ndarray:
         """Grade a frame in place-ish; ``fade`` < 1 darkens (fade in/out from black)."""
         if self._lut is not None:
             frame = cv2.LUT(frame, self._lut)
@@ -112,10 +136,10 @@ class LookProcessor:
             gray = cv2.cvtColor(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
             frame = cv2.addWeighted(frame, self.p.saturation, gray, 1 - self.p.saturation, 0)
         if self._vignette is not None:
-            frame = cv2.multiply(frame, self._vignette, scale=1 / 255)
+            k = vignette_level(self.a, self.p.vignette, t)
+            frame = cv2.subtract(frame, cv2.multiply(frame, self._vignette, scale=k / 255))
         if self._grain is not None:
-            pos, neg = self._grain[self._grain_idx % len(self._grain)]
-            self._grain_idx += 1
+            pos, neg = self._grain_tile(t)
             frame = cv2.subtract(cv2.add(frame, pos), neg)
         if fade < 0.999:
             frame = cv2.convertScaleAbs(frame, alpha=max(0.0, fade))

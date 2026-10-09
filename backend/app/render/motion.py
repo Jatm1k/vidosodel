@@ -113,13 +113,17 @@ def make_motion(effect: str, intensity: float, seed: int):
     return lambda u: _clamp_center(fn(u))
 
 
+#: Height stretch of the whole frame at the peak of a breath (idle breathing at full strength).
+BREATH_STRETCH = 0.006
+
+
 def render_view(src: np.ndarray, view: View, out_w: int, out_h: int, extra_zoom: float = 1.0,
-                offset: tuple[float, float] = (0.0, 0.0)) -> np.ndarray:
+                offset: tuple[float, float] = (0.0, 0.0), breath: float = 0.0) -> np.ndarray:
     """Sample the visible window of ``src`` into an ``out_w``×``out_h`` frame.
 
     ``src`` must already have the output aspect ratio (see ``media.cover_fit``).
     ``extra_zoom``/``offset`` are the global per-render micro-zoom used for
-    uniqueness.
+    uniqueness. ``breath`` 0..1 stretches the picture up from the bottom edge (idle breathing).
     """
     sh, sw = src.shape[:2]
     zoom = view.zoom * extra_zoom
@@ -138,6 +142,12 @@ def render_view(src: np.ndarray, view: View, out_w: int, out_h: int, extra_zoom:
         [cos_r, -sin_r, src_cx - cos_r * dst_cx + sin_r * dst_cy],
         [sin_r, cos_r, src_cy - sin_r * dst_cx - cos_r * dst_cy],
     ], dtype=np.float64)
+    if breath > 1e-5:
+        # Destination is pre-scaled around the bottom centre: the picture grows upwards, a little wider.
+        b = BREATH_STRETCH * breath
+        sx, sy = 1 / (1 + b * 0.35), 1 / (1 + b)
+        pre = np.array([[sx, 0, dst_cx * (1 - sx)], [0, sy, out_h * (1 - sy)], [0, 0, 1]])
+        m = m @ pre
     # Bicubic only when the source is magnified (closer shots); bilinear is enough otherwise.
     interp = cv2.INTER_CUBIC if s < 0.95 else cv2.INTER_LINEAR
     return cv2.warpAffine(src, m, (out_w, out_h), flags=interp | cv2.WARP_INVERSE_MAP,

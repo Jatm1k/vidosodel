@@ -11,6 +11,7 @@ from ..db import session_scope
 from ..models import Track
 from ..pipeline import llm_tasks
 from ..render.engine import RESOLUTIONS, PlanScene, RenderPlan, render_video
+from ..render.atmosphere import make_params as atmosphere_params
 from ..render.look import random_look
 from ..render.media import pick_encoder
 from ..render import parallax
@@ -84,7 +85,8 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
     plan = RenderPlan(
         width=width, height=height, fps=fps,
         duration=length if preview else duration,
-        scenes=plan_scenes, look=look.to_dict(), intensity=s.render.motion_intensity,
+        scenes=plan_scenes, look=look.to_dict(), atmosphere=atmosphere_params(s.atmosphere, look.seed).to_dict(),
+        intensity=s.render.motion_intensity,
         transition_duration=s.render.transition_duration,
         fade_in=0.0 if preview and start > 0 else s.render.fade_in,
         fade_out=s.render.fade_out, time_offset=start if preview else 0.0,

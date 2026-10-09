@@ -138,6 +138,31 @@ class RenderSettings(_Base):
     loudness: float = -14.0
 
 
+class AtmosphereSettings(_Base):
+    """Subtle life in still pictures (see render.atmosphere). Each effect: switch + strength 0..1."""
+
+    #: Lines wobble by a pixel or two, redrawn like hand-drawn animation (for drawn styles).
+    line_boil: bool = False
+    line_boil_strength: float = 0.4
+    #: Coarse grain that changes in steps, like a paper/film texture.
+    grain_boil: bool = False
+    grain_boil_strength: float = 0.4
+    #: Boil redraw rate: every N frames of 30 fps (2 – on twos, 3 – on threes).
+    boil_hold: int = 3
+    #: The subject slowly "breathes" (near layers only in 3D-parallax shots).
+    breathing: bool = False
+    breathing_strength: float = 0.5
+    #: Slow glow of the highlights.
+    light_pulse: bool = False
+    light_pulse_strength: float = 0.4
+    #: The vignette slowly deepens and lifts.
+    vignette_breathing: bool = False
+    vignette_breathing_strength: float = 0.5
+    #: Specks and out-of-focus motes drifting through the frame.
+    dust: bool = False
+    dust_strength: float = 0.5
+
+
 class SubtitleSettings(_Base):
     """Burned-in subtitles (an .srt file is always exported regardless)."""
 
@@ -204,6 +229,7 @@ class PipelineSettings(_Base):
     images: ImageSettings = Field(default_factory=ImageSettings)
     llm: LlmSettings = Field(default_factory=LlmSettings)
     render: RenderSettings = Field(default_factory=RenderSettings)
+    atmosphere: AtmosphereSettings = Field(default_factory=AtmosphereSettings)
     subtitles: SubtitleSettings = Field(default_factory=SubtitleSettings)
     unique: UniqueSettings = Field(default_factory=UniqueSettings)
     publish: PublishSettings = Field(default_factory=PublishSettings)

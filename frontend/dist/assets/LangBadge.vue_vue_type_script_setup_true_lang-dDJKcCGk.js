@@ -1,0 +1,1 @@
+import{d as n,k as t,c as o,t as r}from"./index-zRjWAgOQ.js";const s={class:"inline-flex h-[18px] min-w-[26px] items-center justify-center rounded-[4px] border border-line px-1 text-[10px] font-semibold uppercase leading-none tracking-wide text-ink-2"},p=n({__name:"LangBadge",props:{code:{}},setup(e){return(a,c)=>(t(),o("span",s,r(e.code),1))}});export{p as _};

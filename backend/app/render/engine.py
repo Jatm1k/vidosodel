@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import ffmpeg_bin
+from .atmosphere import Atmosphere, AtmosphereParams, breath
 from .look import LookParams, LookProcessor
 from .media import CREATE_NO_WINDOW, cover_fit, encoder_args, imread, run
 from . import depth as depth_mod
@@ -73,6 +74,8 @@ class RenderPlan:
     duration: float
     scenes: list[PlanScene]
     look: dict
+    #: :class:`.atmosphere.AtmosphereParams` as a dict; empty → no atmosphere effects.
+    atmosphere: dict = field(default_factory=dict)
     intensity: float = 0.5
     transition_duration: float = 0.6
     fade_in: float = 0.6
@@ -106,7 +109,9 @@ class FrameRenderer:
 
     def __init__(self, plan: RenderPlan):
         self.plan = plan
-        self.look = LookProcessor(LookParams(**plan.look), plan.width, plan.height)
+        self.atmo = AtmosphereParams(**plan.atmosphere)
+        self.look = LookProcessor(LookParams(**plan.look), plan.width, plan.height, self.atmo)
+        self.fx = Atmosphere(self.atmo, plan.width, plan.height)
         self._zmax = max_zoom(plan.intensity)
         if any(s.framing for s in plan.scenes):
             self._zmax *= FRAMING_HEADROOM  # closer shots sample the source at a higher magnification
@@ -163,20 +168,21 @@ class FrameRenderer:
         a, b = self._window[idx]
         u = (t - a) / max(0.1, b - a)
         lp = self.look.p
+        br = breath(self.atmo, t)
         if s.shot:
             layers = self._layers(s.image)
             if layers is not None:
                 if self._parallax is None:
                     self._parallax = ParallaxRenderer(self.plan.width, self.plan.height)
                 return self._parallax.frame(layers, s.shot, u, t, extra_zoom=lp.micro_zoom,
-                                            offset=(lp.offset_x, lp.offset_y))
+                                            offset=(lp.offset_x, lp.offset_y), breath=br)
         view = self._motions[idx](u)
         if s.framing:
             f = s.framing
             fz = f["zoom"]
             view = View(view.zoom * fz, f["cx"] + (view.cx - 0.5) / fz, f["cy"] + (view.cy - 0.5) / fz, view.rot)
         return render_view(self._source(s.image), view, self.plan.width, self.plan.height,
-                           extra_zoom=lp.micro_zoom, offset=(lp.offset_x, lp.offset_y))
+                           extra_zoom=lp.micro_zoom, offset=(lp.offset_x, lp.offset_y), breath=br)
 
     def _scene_index(self, t: float) -> int:
         lo, hi = 0, len(self._starts) - 1
@@ -213,7 +219,9 @@ class FrameRenderer:
         end_t = p.extra.get("video_end", p.duration + p.time_offset)
         if p.fade_out > 0 and t > end_t - p.fade_out:
             fade = min(fade, max(0.0, (end_t - t) / p.fade_out))
-        return self.look.apply(frame, fade)
+        if self.fx.active:
+            frame = self.fx.apply(frame, t)
+        return self.look.apply(frame, fade, t)
 
 
 # ================================================================ worker process

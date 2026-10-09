@@ -38,6 +38,8 @@ log = logging.getLogger(__name__)
 
 #: Source buffer size relative to the output (headroom for camera travel and close-ups).
 SOURCE_SCALE = 1.25
+#: Height stretch of the near layers at the peak of a breath (idle breathing at full strength).
+BREATH_STRETCH = 0.014
 #: Shortest shot produced by a phrase cut, seconds.
 MIN_SHOT = 1.8
 _PUNCT = set(".,!?;:…—–")
@@ -215,7 +217,8 @@ class ParallaxRenderer:
         self.Y = (ys * 2 + 0.5) / height - 0.5   # fraction of the frame height
 
     def frame(self, layers, shot: dict, u: float, t: float, *, extra_zoom: float = 1.0,
-              offset: tuple[float, float] = (0.0, 0.0)) -> np.ndarray:
+              offset: tuple[float, float] = (0.0, 0.0), breath: float = 0.0) -> np.ndarray:
+        """``breath`` 0..1 stretches the near layers up from the bottom edge (idle breathing)."""
         src, blur, depth = layers
         sh, sw = src.shape[:2]
         aspect = self.w / self.h
@@ -239,11 +242,18 @@ class ParallaxRenderer:
         cy = min(max(shot["cy"] + hy + offset[1] / z, half), 1 - half)
         mx = ((cx + X / z) * sw).astype(np.float32)
         my = ((cy + Y / z) * sh).astype(np.float32)
+        b = BREATH_STRETCH * breath
         d = None
         for _ in range(3):  # fixed point: sample depth where the pixel actually comes from
             d = cv2.remap(depth, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE) - focus
-            mx = ((cx + (X - tx * d - X * k * d) / z) * sw).astype(np.float32)
-            my = ((cy + (Y - ty * d - Y * k * d) / z) * sh).astype(np.float32)
+            Xs, Ys = X, Y
+            if b > 1e-5:
+                # the subject plane and everything nearer breathes, the background stays
+                fg = np.clip((d + 0.12) / 0.24, 0, 1) * b
+                Xs = X - X * fg * 0.35
+                Ys = Y - (Y - 0.5) * fg
+            mx = ((cx + (Xs - tx * d - Xs * k * d) / z) * sw).astype(np.float32)
+            my = ((cy + (Ys - ty * d - Ys * k * d) / z) * sh).astype(np.float32)
         size = (self.w, self.h)
         mx = cv2.resize(mx, size, interpolation=cv2.INTER_LINEAR)
         my = cv2.resize(my, size, interpolation=cv2.INTER_LINEAR)
