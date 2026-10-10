@@ -15,6 +15,7 @@ import type { PipelineSettings, ProjectDetail } from '@/api/types'
 import { useAppStore } from '@/stores/app'
 import { useNotify } from '@/composables/useNotify'
 import { diffSettings } from '@/composables/useTrackActions'
+import { RUN_TARGETS } from '@/composables/useProduction'
 import SettingsForm from './SettingsForm.vue'
 
 const visible = defineModel<boolean>('visible', { required: true })
@@ -29,8 +30,29 @@ const script = ref('')
 const languages = ref<string[]>(props.defaultLanguages?.length ? props.defaultLanguages : ['ru'])
 const master = ref(languages.value[0])
 const imageMode = ref<'shared' | 'per_language'>('shared')
-const runAll = ref(true)
 const busy = ref(false)
+
+// How far to run the pipeline right after creation: a per-viewer habit, remembered in the browser.
+const RUN_KEY = 'vidosodel.newProjectRunUntil'
+const runOptions = [{ id: 'none', label: 'Не запускать', icon: 'pi pi-pause', hint: '' }, ...RUN_TARGETS]
+function savedRunUntil(): string {
+  try {
+    const v = localStorage.getItem(RUN_KEY)
+    return runOptions.some((o) => o.id === v) ? v! : 'all'
+  } catch {
+    return 'all'
+  }
+}
+const runUntil = ref(savedRunUntil())
+watch(runUntil, (v) => {
+  try {
+    localStorage.setItem(RUN_KEY, v)
+  } catch {
+    /* storage unavailable – keep the choice for this visit only */
+  }
+})
+const runTarget = computed(() => RUN_TARGETS.find((t) => t.id === runUntil.value) ?? null)
+const willRun = computed(() => !!runTarget.value && !!script.value.trim())
 
 // ------------------------------------------------------------ per-project settings
 const channelSettings = ref<PipelineSettings | null>(null)
@@ -94,10 +116,11 @@ async function create() {
       master_language: master.value, image_mode: imageMode.value, script: script.value,
       settings: overrides.value,
     })
-    if (runAll.value && script.value.trim()) {
-      // No explicit steps: the server runs everything, honouring "metadata in the pipeline" from the settings.
-      await api.post(`/api/projects/${p.id}/run`, {})
-      notify.ok('Проект создан', 'Конвейер запущен — следите за ходом на странице проекта')
+    if (willRun.value) {
+      // No explicit steps (full pipeline): the server honours "metadata in the pipeline" from the settings.
+      const steps = runTarget.value!.steps
+      await api.post(`/api/projects/${p.id}/run`, steps ? { steps } : {})
+      notify.ok('Проект создан', `Конвейер запущен${steps ? ` (${runTarget.value!.label.toLowerCase()})` : ''} — следите за ходом на странице проекта`)
     }
     visible.value = false
     await store.loadChannels()
@@ -172,14 +195,25 @@ async function create() {
         <Button label="Изменить" severity="secondary" outlined size="small" :disabled="!projSettings" @click="showSettings = true" />
       </div>
 
-      <label v-if="script.trim()" class="flex items-center gap-2.5">
-        <Checkbox v-model="runAll" binary />
-        <span>Сразу запустить весь конвейер: озвучка, сцены, картинки, видео{{ publishEnabled ? ', метаданные' : '' }}</span>
-      </label>
+      <div v-if="script.trim()" class="flex flex-col gap-1.5">
+        <div class="flex items-center gap-3">
+          <span class="text-ink-2">Сразу запустить конвейер</span>
+          <Select v-model="runUntil" :options="runOptions" option-value="id" option-label="label" class="w-56">
+            <template #option="{ option }">
+              <i :class="option.icon" class="mr-2 text-ink-3" />{{ option.label }}
+            </template>
+          </Select>
+        </div>
+        <span class="text-[13px] text-ink-3">
+          <template v-if="!runTarget">Проект создастся без запуска — шаги можно запустить со страницы проекта.</template>
+          <template v-else-if="runTarget.steps">{{ runTarget.hint }}. Продолжить можно в любой момент со страницы проекта.</template>
+          <template v-else>Озвучка, сцены, картинки, видео{{ publishEnabled ? ', метаданные и обложки' : '' }}.</template>
+        </span>
+      </div>
 
       <div class="flex justify-end gap-2">
         <Button label="Отмена" severity="secondary" text @click="visible = false" />
-        <Button type="submit" :label="runAll && script.trim() ? 'Создать и запустить' : 'Создать проект'" :loading="busy" :disabled="!name.trim() || !languages.length" />
+        <Button type="submit" :label="willRun ? 'Создать и запустить' : 'Создать проект'" :loading="busy" :disabled="!name.trim() || !languages.length" />
       </div>
     </form>
   </Dialog>

@@ -20,17 +20,30 @@ export const statusRank = (s: ProductionStatus) => STATUSES.findIndex((x) => x.i
 export const statusTitle = (s: ProductionStatus) => STATUSES.find((x) => x.id === s)?.title ?? s
 
 /** "Run up to…" targets: `steps: null` is the full pipeline (with metadata, if enabled in settings). */
-export const RUN_TARGETS: { label: string; icon: string; steps: string[] | null; below: ProductionStatus }[] = [
-  { label: 'До озвучки', icon: 'pi pi-microphone', steps: ['translate', 'voice'], below: 'voiced' },
+export const RUN_TARGETS: {
+  id: string; label: string; icon: string; hint: string; steps: string[] | null; below: ProductionStatus
+}[] = [
   {
-    label: 'До раскадровки', icon: 'pi pi-images',
+    id: 'voice', label: 'До озвучки', icon: 'pi pi-microphone', hint: 'Перевод и озвучка — дальше вручную',
+    steps: ['translate', 'voice'], below: 'voiced',
+  },
+  {
+    id: 'scenes', label: 'До сцен', icon: 'pi pi-th-large', hint: 'Озвучка и разбивка на сцены — можно поправить границы',
+    steps: ['translate', 'voice', 'scenes'], below: 'storyboard',
+  },
+  {
+    id: 'prompts', label: 'До промптов', icon: 'pi pi-pencil', hint: 'Всё до промптов картинок — проверить их, прежде чем тратить кредиты',
+    steps: ['translate', 'voice', 'scenes', 'characters', 'prompts'], below: 'storyboard',
+  },
+  {
+    id: 'images', label: 'До раскадровки', icon: 'pi pi-images', hint: 'Картинки готовы, видео не собирается',
     steps: ['translate', 'voice', 'scenes', 'characters', 'prompts', 'images'], below: 'storyboard',
   },
   {
-    label: 'До видео', icon: 'pi pi-video',
+    id: 'video', label: 'До видео', icon: 'pi pi-video', hint: 'Собранное видео без метаданных и обложек',
     steps: ['translate', 'voice', 'scenes', 'characters', 'prompts', 'images', 'render'], below: 'video',
   },
-  { label: 'Весь конвейер', icon: 'pi pi-play', steps: null, below: 'ready' },
+  { id: 'all', label: 'Весь конвейер', icon: 'pi pi-play', hint: '', steps: null, below: 'ready' },
 ]
 
 /** Date of a user mark (unix seconds) as "5 окт". */
