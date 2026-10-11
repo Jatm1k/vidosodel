@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
+import Textarea from 'primevue/textarea'
 import { useConfirm } from 'primevue/useconfirm'
 import { api } from '@/api/client'
 import type { ProjectDetail, TrackSummary } from '@/api/types'
@@ -64,6 +65,68 @@ async function upload(kind: 'audio' | 'srt', ev: Event) {
   }
 }
 
+// ---- правка отдельных фрагментов озвучки
+interface VoiceChunk { index: number; duration: number; text: string | null; chars: number | null; edited: boolean }
+interface VoiceChunks { expired: boolean; busy: boolean; max_length: number; script_chars: number; chunks: VoiceChunk[] }
+
+const chunkData = ref<VoiceChunks | null>(null)
+const chunksLoading = ref(false)
+const playing = ref<number | null>(null)
+const editing = ref<number | null>(null)
+const draft = ref('')
+const retimeScenes = ref(true)
+
+const canFixChunks = computed(() => props.track.audio_origin === 'lumean' && !!props.track.audio_url)
+const fixRunning = computed(() => props.track.active_jobs?.some((j: { kind: string }) => ['voice', 'voice_fix'].includes(j.kind)) ?? false)
+
+async function loadChunks() {
+  chunksLoading.value = true
+  try {
+    chunkData.value = await api.get<VoiceChunks>(`/api/tracks/${props.track.id}/voice/chunks`)
+  } catch (e) {
+    notify.error(e)
+  } finally {
+    chunksLoading.value = false
+  }
+}
+
+function startEdit(c: VoiceChunk) {
+  playing.value = null
+  editing.value = c.index
+  draft.value = c.text ?? ''
+}
+
+const editedChunk = computed(() => chunkData.value?.chunks.find((c) => c.index === editing.value) ?? null)
+const draftChanged = computed(() => draft.value.trim() !== (editedChunk.value?.text ?? '').trim())
+const costShare = computed(() => {
+  const total = chunkData.value?.script_chars || 0
+  return total ? Math.max(1, Math.round((draft.value.trim().length / total) * 100)) : null
+})
+
+function submitFix() {
+  const c = editedChunk.value
+  if (!c) return
+  const text = draft.value.trim()
+  confirm.require({
+    header: `Переозвучить фрагмент №${c.index + 1}?`,
+    message: `Платно озвучится только этот фрагмент (${text.length} симв.${costShare.value ? `, ~${costShare.value}% стоимости всей озвучки` : ''}). `
+      + 'Сценарий, картинки и промпты не меняются'
+      + (retimeScenes.value ? '; границы сцен подстроятся под новое аудио.' : '; границы сцен останутся как есть.'),
+    acceptLabel: 'Переозвучить',
+    rejectLabel: 'Отмена',
+    rejectProps: { severity: 'secondary', text: true },
+    accept: async () => {
+      await run('voice_fix', { chunk_index: c.index, text, retime_scenes: retimeScenes.value }, 'Фрагмент переозвучивается')
+      editing.value = null
+    },
+  })
+}
+
+// после правки список перечитывается сам (озвучка обновилась на сервере)
+watch(() => props.track.voice_meta?.fixed_at, () => {
+  if (chunkData.value) void loadChunks()
+})
+
 async function estimateTimings() {
   try {
     await api.post(`/api/tracks/${props.track.id}/timings/estimate`)
@@ -76,7 +139,7 @@ async function estimateTimings() {
 
 <template>
   <div class="flex flex-col gap-6">
-    <ActiveJobs :track="track" :kinds="['voice', 'transcribe']" />
+    <ActiveJobs :track="track" :kinds="['voice', 'voice_fix', 'transcribe']" />
 
     <section v-if="track.audio_url" class="rounded-lg border border-line-soft bg-panel p-5">
       <div class="flex flex-wrap items-baseline justify-between gap-3">
@@ -105,6 +168,86 @@ async function estimateTimings() {
       <div v-if="track.audio_origin === 'upload' && (!track.timings_origin || track.timings_origin === 'estimate')" class="mt-4">
         <Button label="Распознать тайминги из аудио" icon="pi pi-wave-pulse" size="small" :loading="starting === 'transcribe'" @click="run('transcribe', {}, 'Распознавание запущено')" />
       </div>
+    </section>
+
+    <section v-if="canFixChunks" class="rounded-lg border border-line-soft p-5">
+      <div class="flex flex-wrap items-baseline justify-between gap-3">
+        <div>
+          <div class="font-medium">Исправить произношение</div>
+          <p class="mt-0.5 text-[13px] text-ink-3">
+            Переозвучивается один фрагмент, а не вся озвучка. Платно только он: обычно доли рубля.
+            Сценарий, сцены и картинки не затрагиваются.
+          </p>
+        </div>
+        <Button
+          v-if="!chunkData"
+          label="Показать фрагменты"
+          icon="pi pi-list"
+          severity="secondary"
+          outlined
+          size="small"
+          :loading="chunksLoading"
+          @click="loadChunks"
+        />
+        <Button v-else label="Обновить" icon="pi pi-refresh" severity="secondary" text size="small" :loading="chunksLoading" @click="loadChunks" />
+      </div>
+
+      <p v-if="chunkData?.expired" class="mt-3 text-[13px] text-tally">
+        Файлы заказа удалены Lumean по сроку хранения — точечная правка недоступна, озвучьте заново.
+      </p>
+      <ul v-else-if="chunkData" class="mt-4 flex flex-col divide-y divide-line-soft">
+        <li v-for="c in chunkData.chunks" :key="c.index" class="py-3">
+          <div class="flex items-start gap-3">
+            <span class="tnum w-8 shrink-0 pt-0.5 text-[13px] text-ink-3">№{{ c.index + 1 }}</span>
+            <div class="min-w-0 flex-1">
+              <p v-if="editing !== c.index" class="line-clamp-2 text-[13px] text-ink-2">{{ c.text ?? '(текст недоступен)' }}</p>
+              <template v-else>
+                <Textarea v-model="draft" auto-resize rows="4" :maxlength="chunkData.max_length" class="w-full" />
+                <p class="mt-1 text-[13px] text-ink-3">
+                  Пишите так, как слово должно звучать: «Python» → «Пайтон», ударение — символом ´ после гласной.
+                  Субтитры сохранят прежнее написание, если число слов не меняется.
+                </p>
+                <label class="mt-2 flex items-center gap-2 text-[13px]">
+                  <Checkbox v-model="retimeScenes" binary />Подстроить границы сцен под новое аудио (рекомендуется)
+                </label>
+                <div class="mt-3 flex items-center gap-2">
+                  <Button
+                    label="Переозвучить фрагмент"
+                    icon="pi pi-microphone"
+                    size="small"
+                    :disabled="!draft.trim() || !draftChanged || fixRunning"
+                    :loading="starting === 'voice_fix'"
+                    @click="submitFix"
+                  />
+                  <Button label="Отмена" severity="secondary" text size="small" @click="editing = null" />
+                  <span class="tnum ml-auto text-[13px] text-ink-3">{{ draft.length }} / {{ chunkData.max_length }}</span>
+                </div>
+              </template>
+              <audio
+                v-if="playing === c.index"
+                :src="`/api/tracks/${track.id}/voice/chunks/${c.index}/audio`"
+                controls
+                autoplay
+                class="mt-2 w-full"
+                @ended="playing = null"
+              />
+            </div>
+            <div v-if="editing !== c.index" class="flex shrink-0 items-center gap-1">
+              <span v-if="c.edited" class="mr-1 rounded bg-raised px-1.5 py-0.5 text-[11px] text-ink-3">исправлено</span>
+              <span class="tnum mr-2 text-[13px] text-ink-3">{{ duration(c.duration) }}</span>
+              <Button
+                :icon="playing === c.index ? 'pi pi-stop' : 'pi pi-play'"
+                severity="secondary"
+                text
+                size="small"
+                :aria-label="`Прослушать фрагмент ${c.index + 1}`"
+                @click="playing = playing === c.index ? null : c.index"
+              />
+              <Button icon="pi pi-pencil" severity="secondary" text size="small" :disabled="!c.text || fixRunning" :aria-label="`Править фрагмент ${c.index + 1}`" @click="startEdit(c)" />
+            </div>
+          </div>
+        </li>
+      </ul>
     </section>
 
     <div class="grid gap-4 lg:grid-cols-3">

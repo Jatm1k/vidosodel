@@ -176,6 +176,37 @@ def _norm(token: str) -> str:
     return re.sub(r"[^\w]", "", token.lower())
 
 
+def keep_written_words(new: Timings, old: Timings) -> str:
+    """Carry the *written* words of ``old`` over to ``new`` after a pronunciation fix.
+
+    A fixed chunk is voiced from respelled text (``Python`` → ``Пайтон``) but the
+    subtitles must keep the author's spelling. The unchanged head and tail of both
+    word lists are located, and when the differing middle has the same number of
+    words, the old spelling is restored there (timing stays the new one).
+
+    Returns ``"same"`` (nothing differs), ``"restored"`` or ``"changed"`` (the word
+    count differs – the new, spoken spelling is kept).
+    """
+    a = [_norm(w.w) for w in new.words]
+    b = [_norm(w.w) for w in old.words]
+    limit = min(len(a), len(b))
+    head = 0
+    while head < limit and a[head] == b[head]:
+        head += 1
+    tail = 0
+    while tail < limit - head and a[-1 - tail] == b[-1 - tail]:
+        tail += 1
+    mid_new = new.words[head:len(a) - tail]
+    mid_old = old.words[head:len(b) - tail]
+    if not mid_new and not mid_old:
+        return "same"
+    if len(mid_new) != len(mid_old):
+        return "changed"
+    for w, ow in zip(mid_new, mid_old):
+        w.w = ow.w
+    return "restored"
+
+
 def assign_paragraphs(timings: Timings, script: str) -> None:
     """Tag every timed word with the index of the script paragraph it belongs to.
 

@@ -194,6 +194,14 @@ class LumeanClient:
     def item_text(self, order_id: str, item_id: str) -> dict[str, Any]:
         return self._req("GET", f"/orders/{order_id}/items/{item_id}/text")
 
+    def regenerate_item(self, order_id: str, item_id: str, text: str) -> dict[str, Any]:
+        """Paid re-voicing of one *completed* chunk; Lumean re-stitches the final track itself.
+
+        Not retried on network errors: a blind repeat could be billed twice.
+        """
+        return self._req("POST", f"/orders/{order_id}/items/{item_id}/regenerate",
+                         json={"text": text}, attempts=1, retry_429=False)
+
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         return self._req("POST", f"/orders/{order_id}/cancel")
 
@@ -203,6 +211,16 @@ class LumeanClient:
 
     def download(self, path: str, dest: Path) -> Path:
         return download_file(self.file_url(path), dest)
+
+
+def current_chunks(items: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """Latest completed version (chunk / retry / regeneration) of every chunk, by ``chunk_index``."""
+    out: dict[int, dict[str, Any]] = {}
+    for it in sorted(items, key=lambda i: i.get("created_at") or ""):
+        if it.get("item_type") in ("chunk", "retry", "regeneration") and it.get("chunk_index") is not None \
+                and it.get("status") == "completed":
+            out[int(it["chunk_index"])] = it
+    return out
 
 
 def pick_service_file(order: dict[str, Any], basename: str) -> str | None:

@@ -49,6 +49,13 @@ const checks = computed(() => [
 ])
 const canRender = computed(() => checks.value[0].ok && checks.value[1].ok && (imagesReady.value || allowMissing.value))
 const meta = computed(() => props.track.video_meta ?? {})
+/** Озвучку переделали (целиком или фрагмент) позже, чем собрали видео. */
+const voiceNewer = computed(() => {
+  const vm = props.track.voice_meta ?? {}
+  const voiceAt = Math.max(vm.completed_at ?? 0, vm.fixed_at ?? 0)
+  const renderedAt = meta.value.rendered_at ?? 0
+  return !!props.track.video_url && voiceAt > 0 && renderedAt > 0 && voiceAt > renderedAt
+})
 const estimate = computed(() => {
   const d = props.track.audio_duration ?? 0
   // Measured: 1080p renders at ~0.25× real time with a GPU encoder, ~0.6× on CPU only.
@@ -72,6 +79,11 @@ function startRender() {
 
     <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
       <section class="min-w-0">
+        <div v-if="voiceNewer" class="mb-3 flex items-center gap-3 rounded-lg border border-line-soft bg-panel px-4 py-3 text-[13px]">
+          <i class="pi pi-exclamation-triangle text-tally" />
+          <span class="text-ink-2">Озвучка обновлена после сборки этого видео — в нём ещё старый звук. Пересоберите, чтобы применить правки.</span>
+          <Button label="Собрать заново" size="small" class="ml-auto shrink-0" :disabled="!canRender" :loading="starting === 'render'" @click="startRender" />
+        </div>
         <div class="mb-3 flex gap-1">
           <button
             v-for="t in ([['video', 'Готовое видео'], ['preview', 'Превью']] as const)"

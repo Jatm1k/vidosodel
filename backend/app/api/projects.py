@@ -8,11 +8,12 @@ import sys
 import tempfile
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,7 +31,7 @@ from ..pipeline.timings import Timings, estimate, from_srt, parse_srt
 from ..render.media import imread, imwrite, probe_duration
 from ..services.http import ApiError
 from ..services.limiter import limiter
-from ..services.lumean import LumeanClient
+from ..services.lumean import LumeanClient, current_chunks
 from ..settings_schema import effective_settings, template_for_language
 from ..storage import project_dir, safe_filename, to_abs, to_rel, track_dir, unique_name
 from .pipeline_runner import STEP_ORDER, run_pipeline
@@ -40,7 +41,7 @@ router = APIRouter(prefix="/api", tags=["projects"])
 
 AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-JOB_KINDS = {"voice", "transcribe", "translate", "scenes", "prompts", "images", "render", "preview",
+JOB_KINDS = {"voice", "voice_fix", "transcribe", "translate", "scenes", "prompts", "images", "render", "preview",
              "metadata", "thumbnail_ideas", "thumbnails", "watermarks"}
 
 
@@ -333,7 +334,8 @@ def start_job(track_id: int, kind: str, params: dict[str, Any] | None = None, db
     if kind not in JOB_KINDS:
         raise HTTPException(400, "Неизвестное действие")
     t = _track(db, track_id)
-    _busy(track_id, {kind})
+    # A chunk fix and a full voice-over rewrite the same audio – never run them together.
+    _busy(track_id, {kind} | ({"voice", "voice_fix", "transcribe"} if kind in ("voice", "voice_fix") else set()))
     job = runner.enqueue(kind, project_id=t.project_id, track_id=t.id, params=params or {},
                          title=f"{kind_title(kind)} · {t.language.upper()}")
     return {"job_id": job.id}
@@ -363,6 +365,63 @@ def estimate_voice(track_id: int, db: Session = Depends(get_db)) -> dict[str, An
         "cost_lmc": summary.get("cost_lmc"), "blocked_chunks": summary.get("blocked_chunks") or [],
         "caps_ok": summary.get("caps_ok", True),
     }
+
+
+def _lumean_voice_track(db: Session, track_id: int) -> Track:
+    t = _track(db, track_id)
+    if not t.lumean_order_id or t.audio_origin != "lumean" or not t.audio_file:
+        raise HTTPException(400, "Правка по фрагментам доступна только для озвучки, сгенерированной в Lumean")
+    return t
+
+
+@router.get("/tracks/{track_id}/voice/chunks")
+def voice_chunks(track_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Chunks of the Lumean order with their current text – the units that can be re-voiced."""
+    t = _lumean_voice_track(db, track_id)
+    order_id = t.lumean_order_id
+    try:
+        with LumeanClient() as lm:
+            order = lm.order(order_id)
+            items = lm.order_items(order_id)
+            cur = current_chunks(items)
+            texts: dict[int, dict[str, Any]] = {}
+            if not order.get("files_expired"):
+                def one(idx: int) -> tuple[int, dict[str, Any]]:
+                    try:
+                        return idx, lm.item_text(order_id, cur[idx]["id"])
+                    except ApiError:
+                        return idx, {}
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    texts = dict(pool.map(one, sorted(cur)))
+    except ApiError as exc:
+        raise HTTPException(400, exc.message) from exc
+    limit = next((x.get("max_billable_length") for x in texts.values() if x.get("max_billable_length")), 999)
+    return {
+        "expired": bool(order.get("files_expired")),
+        "busy": any(i.get("status") in ("pending", "processing") for i in items),
+        "max_length": limit,
+        "script_chars": len(normalize_script(t.script)),
+        "chunks": [
+            {"index": idx, "duration": (it.get("duration_ms") or 0) / 1000,
+             "text": texts.get(idx, {}).get("text"), "chars": it.get("current_text_length"),
+             "edited": it.get("item_type") != "chunk"}
+            for idx, it in sorted(cur.items())
+        ],
+    }
+
+
+@router.get("/tracks/{track_id}/voice/chunks/{index}/audio")
+def voice_chunk_audio(track_id: int, index: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    """Redirect to a temporary Lumean URL of this chunk's audio (for the in-panel preview)."""
+    t = _lumean_voice_track(db, track_id)
+    try:
+        with LumeanClient() as lm:
+            it = current_chunks(lm.order_items(t.lumean_order_id)).get(index)
+            if it is None or not it.get("result_file"):
+                raise HTTPException(404, "Фрагмент не найден")
+            return RedirectResponse(lm.file_url(it["result_file"]), status_code=307)
+    except ApiError as exc:
+        raise HTTPException(400, exc.message) from exc
 
 
 # ----------------------------------------------------------------- uploads

@@ -16,13 +16,13 @@ from ..pipeline import llm_tasks
 from ..pipeline.align import align_scenes
 from ..pipeline.languages import LANGUAGES
 from ..pipeline.text import normalize_script, paragraphs
-from ..pipeline.timings import Timings, assign_paragraphs, from_lumean, from_stt
+from ..pipeline.timings import Timings, assign_paragraphs, from_lumean, from_stt, keep_written_words
 from ..render.media import probe_duration, run
 from ..render.subtitles import build_cues, write_srt
 from ..config import ffmpeg_bin
 from ..services.fastgen import FastgenClient, file_to_data_uri
 from ..services.http import ApiError
-from ..services.lumean import TERMINAL_FAIL, TERMINAL_OK, LumeanClient, pick_service_file
+from ..services.lumean import TERMINAL_FAIL, TERMINAL_OK, LumeanClient, current_chunks, pick_service_file
 from ..settings_schema import template_for_language
 from ..storage import to_abs, to_rel, track_dir
 from .common import load_timings, load_track, text_hash
@@ -33,11 +33,13 @@ log = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------ timings commit
-def apply_timings(db: Session, track: Track, timings: Timings, *, srt_from_lumean: Path | None = None) -> None:
+def apply_timings(db: Session, track: Track, timings: Timings, *, srt_from_lumean: Path | None = None,
+                  retime_scenes: bool = True) -> None:
     """Persist new timings for a track, refresh its SRT and re-time existing scenes.
 
     Existing scenes keep their prompts/images: boundaries are moved to the same
     *text* positions on the new timeline (e.g. estimate → real voice-over).
+    ``retime_scenes=False`` leaves scene boundaries exactly as they are.
     """
     old = load_timings(track)
     tdir = track_dir(track.project_id, track.id, "audio")
@@ -52,7 +54,7 @@ def apply_timings(db: Session, track: Track, timings: Timings, *, srt_from_lumea
         write_srt(build_cues(timings.words), srt_path)
     track.srt_file = to_rel(srt_path)
     scenes = list(track.scenes)
-    if old and scenes and old.words and timings.words:
+    if retime_scenes and old and scenes and old.words and timings.words:
         aligned = align_scenes(old, [(s.id, s.start, s.end) for s in scenes], timings)
         kept = {a.source_scene_id: a for a in aligned}
         for s in scenes:
@@ -207,6 +209,133 @@ def voice_job(ctx: JobContext) -> dict[str, Any]:
             apply_timings(db, t, timings, srt_from_lumean=srt_local)
     track_changed(track_id, "voice")
     return {"message": f"Озвучка готова: {int(duration // 60)} мин {int(duration % 60)} с", "order_id": order_id}
+
+
+# ----------------------------------------------------------------------- voice fix
+def _fix_error(exc: ApiError) -> JobError:
+    reasons = {
+        "insufficient_balance": "Недостаточно средств на балансе Lumean",
+        "insufficient_allowance": "Недостаточно лимита ключа Lumean",
+        "text_over_capacity": "Текст фрагмента слишком длинный для Lumean",
+        "content_blocked": "Lumean заблокирует этот текст по контентной политике — перефразируйте",
+        "text_not_voiceable": "В тексте нечего озвучивать",
+        "input_expired": "Исходный текст заказа удалён по сроку хранения — озвучьте заново",
+        "stitch_in_progress": "В заказе идёт склейка — повторите через минуту",
+        "token_quota_exceeded": "Исчерпана токен-квота ключа Lumean",
+    }
+    return JobError(reasons.get(exc.reason or "", f"Lumean: {exc.message}"))
+
+
+@register("voice_fix", "voice", "Правка озвучки (фрагмент)")
+def voice_fix_job(ctx: JobContext) -> dict[str, Any]:
+    """Re-voice ONE chunk of the existing Lumean order (``regenerate``) – pays for that chunk only.
+
+    The fixed text is used only for the voice: the script, subtitles' spelling, scene
+    prompts and images stay as they are; scene boundaries are re-timed to the new audio
+    unless ``retime_scenes`` is false.
+    """
+    chunk = ctx.params.get("chunk_index")
+    text = str(ctx.params.get("text") or "").strip()
+    retime = bool(ctx.params.get("retime_scenes", True))
+    if chunk is None or not text:
+        raise JobError("Не указан фрагмент или текст для озвучки")
+    chunk = int(chunk)
+    with session_scope() as db:
+        t = db.get(Track, ctx.track_id)
+        if t is None or not t.lumean_order_id or t.audio_origin != "lumean":
+            raise JobError("Правка по фрагментам доступна только для озвучки, сгенерированной в Lumean")
+        order_id, project_id, track_id = t.lumean_order_id, t.project_id, t.id
+
+    with LumeanClient() as lm:
+        order = lm.order(order_id)
+        if order.get("files_expired"):
+            raise JobError("Файлы заказа удалены по сроку хранения — озвучьте заново")
+        items = lm.order_items(order_id)
+        if any(i.get("status") in ("pending", "processing") for i in items):
+            raise JobError("В заказе Lumean ещё идёт обработка — повторите через минуту")
+        cur = current_chunks(items).get(chunk)
+        if cur is None:
+            raise JobError(f"Фрагмент №{chunk + 1} не найден в заказе")
+        old_stitches = {i["id"] for i in items if i.get("item_type") == "stitch"}
+        ctx.check()
+        ctx.progress(0.05, f"Переозвучка фрагмента №{chunk + 1}", force=True)
+        try:
+            new_item = lm.regenerate_item(order_id, cur["id"], text)
+        except ApiError as exc:
+            raise _fix_error(exc) from exc
+
+        # The order stays "completed" the whole time: wait for the new item and its stitch.
+        started = time.time()
+        voiced_at: float | None = None
+        while True:
+            if ctx.should_stop():
+                raise JobError("Отменено. Lumean всё равно завершит правку; чтобы забрать результат, нажмите "
+                               "«Озвучить заново» — заказ подхватится без повторной оплаты.")
+            now = lm.order_items(order_id)
+            mine = next((i for i in now if i["id"] == new_item["id"]), None)
+            stitches = [i for i in now if i.get("item_type") == "stitch" and i["id"] not in old_stitches]
+            if mine and mine.get("status") in ("failed", "policy_flagged"):
+                raise JobError("Lumean не смог озвучить этот текст"
+                               + (" (контентная политика) — перефразируйте" if mine["status"] == "policy_flagged" else "")
+                               + ". Прежняя озвучка осталась без изменений.")
+            if any(s.get("status") == "failed" for s in stitches):
+                raise JobError("Lumean не смог склеить итоговую дорожку. Повторите правку позже.")
+            if mine and mine.get("status") == "completed":
+                if stitches and all(s.get("status") == "completed" for s in stitches):
+                    break
+                voiced_at = voiced_at or time.time()
+                if not stitches and time.time() - voiced_at > 120:
+                    raise JobError("Lumean не начал склейку итоговой дорожки. Попробуйте позже.")
+                ctx.progress(0.6, "Склейка итоговой дорожки")
+            else:
+                ctx.progress(0.25, f"Озвучка фрагмента №{chunk + 1}")
+            if time.time() - started > 900:
+                raise JobError("Lumean слишком долго обрабатывает правку. Заказ не потерян — попробуйте позже.")
+            time.sleep(4)
+
+        ctx.progress(0.8, "Скачивание обновлённого аудио", force=True)
+        order = lm.order(order_id)
+        files = (order.get("result") or {}).get("files") or []
+        result_path = pick_service_file(order, "result.json")
+        srt_remote = pick_service_file(order, "subtitles.srt")
+        if not files or not result_path:
+            raise JobError("Lumean не вернул обновлённые файлы заказа")
+        adir = track_dir(project_id, track_id, "audio")
+        tmp_audio = adir / f"voice.fix{Path(files[0]).suffix or '.mp3'}"
+        tmp_json = adir / "lumean_result.fix.json"
+        lm.download(files[0], tmp_audio)
+        lm.download(result_path, tmp_json)
+        tmp_srt = lm.download(srt_remote, adir / "lumean_subtitles.fix.srt") if srt_remote else None
+
+    duration = probe_duration(tmp_audio)
+    raw = json.loads(tmp_json.read_text(encoding="utf-8"))
+    with session_scope() as db:
+        tc = load_track(db, track_id)
+        t = tc.track
+        old = load_timings(t)
+        timings = from_lumean(raw, None)
+        timings.duration = max(timings.duration, duration)
+        state = keep_written_words(timings, old) if old and old.words else "same"
+        assign_paragraphs(timings, t.script)
+        audio_path = to_abs(t.audio_file) or (adir / tmp_audio.name.replace(".fix", ""))
+        tmp_audio.replace(audio_path)
+        tmp_json.replace(adir / "lumean_result.json")
+        lumean_srt = None
+        if tmp_srt and state == "same":  # Lumean's own subtitles are right only when the spelling did not change
+            lumean_srt = tmp_srt.replace(adir / "lumean_subtitles.srt")
+        t.audio_file = to_rel(audio_path)
+        t.audio_duration = duration
+        meta = dict(t.voice_meta or {})
+        fixes = list(meta.get("fixes") or [])[-49:]
+        fixes.append({"chunk": chunk, "text": text[:400], "at": time.time()})
+        t.voice_meta = {**meta, "fixes": fixes, "fixed_at": time.time(),
+                        "cost_rub": order.get("price_formatted") or meta.get("cost_rub"),
+                        "tokens": order.get("tokens_spent") or meta.get("tokens")}
+        apply_timings(db, t, timings, srt_from_lumean=lumean_srt, retime_scenes=retime)
+    track_changed(track_id, "voice")
+    note = " Число слов в правке изменилось — субтитры в этом месте покажут озвученное написание." if state == "changed" else ""
+    return {"message": f"Фрагмент №{chunk + 1} переозвучен, итоговая дорожка обновлена: "
+                       f"{int(duration // 60)} мин {int(duration % 60)} с.{note}"}
 
 
 # --------------------------------------------------------------------- transcribe
