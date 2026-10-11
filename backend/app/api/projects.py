@@ -41,7 +41,7 @@ router = APIRouter(prefix="/api", tags=["projects"])
 AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 JOB_KINDS = {"voice", "transcribe", "translate", "scenes", "prompts", "images", "render", "preview",
-             "metadata", "thumbnails", "watermarks"}
+             "metadata", "thumbnail_ideas", "thumbnails", "watermarks"}
 
 
 # ============================================================== helpers

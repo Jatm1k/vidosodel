@@ -216,7 +216,7 @@ class PublishSettings(_Base):
     #: Appended to every generated description (links, socials, disclaimers).
     description_footer: str = ""
     with_chapters: bool = True
-    thumbnail_count: int = 2
+    thumbnail_count: int = 3
     #: Let the image model draw a short headline on the thumbnail.
     thumbnail_text: bool = True
     thumbnail_style: str = "bold high-contrast YouTube thumbnail, expressive, eye-catching, clean composition"

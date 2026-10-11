@@ -23,7 +23,7 @@ from ..services.fastgen import FastgenClient
 from ..storage import safe_filename, to_abs, to_rel, track_dir
 from .common import TrackCtx, load_timings, load_track, scene_image, text_hash
 from .events import track_changed
-from .runner import JobContext, JobError, register
+from .runner import JobContext, JobError, register, runner
 
 
 def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float | None = None,
@@ -225,11 +225,77 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
                         chapters.append((0.0 if not chapters else w.s, " ".join(x.w for x in timings.words[i:i + 25])))
                         last = w.s
         script, lang, llm, pub, track_id = track.script, track.language, tc.settings.llm, tc.settings.publish, track.id
+        old_meta = dict(track.publish_meta or {})
+        old_files = list(track.thumbnails or [])
+    # Ideas that already have images are the user's to manage (new ideas / redraw buttons);
+    # plain "recreate metadata" must not throw them away. A forced pipeline run asks for new ones.
+    kept = llm_tasks.thumbnail_files(old_meta, old_files)
+    new_ideas = bool(ctx.params.get("ideas")) or not any(c.get("file") for c in kept)
     with FastgenClient() as fg:
         ctx.progress(0.1, "Генерация названия, описания и тегов", force=True)
         meta = llm_tasks.publish_metadata(fg, script, lang, chapters, llm, pub)
+        if new_ideas and pub.thumbnail_count > 0:
+            ctx.progress(0.6, "Идеи для обложек", force=True)
+            meta["thumbnails"] = llm_tasks.thumbnail_concepts(
+                fg, script, lang, meta["titles"], llm, pub, pub.thumbnail_count)
+        else:
+            meta["thumbnails"] = kept
     meta["description_full"] = llm_tasks.build_description(meta, pub)
     with session_scope() as db:
-        db.get(Track, track_id).publish_meta = meta
+        t = db.get(Track, track_id)
+        t.publish_meta = meta
+        if new_ideas:  # images of the replaced ideas
+            for rel in old_files:
+                p = to_abs(rel)
+                if p and p.exists():
+                    p.unlink(missing_ok=True)
+            t.thumbnails = []
     track_changed(track_id, "metadata")
-    return {"message": f"Названий: {len(meta['titles'])}, тегов: {len(meta['tags'])}, глав: {len(meta['chapters'])}"}
+    return {"message": f"Названий: {len(meta['titles'])}, тегов: {len(meta['tags'])}, глав: {len(meta['chapters'])}, "
+                       f"идей обложек: {len(meta['thumbnails'])}"}
+
+
+@register("thumbnail_ideas", "llm", "Идеи для обложек")
+def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
+    """New thumbnail ideas: all of them, or only ``index`` (the others are kept and avoided)."""
+    index = ctx.params.get("index")
+    with session_scope() as db:
+        tc = load_track(db, ctx.track_id)
+        track = tc.track
+        meta = dict(track.publish_meta or {})
+        if not track.script.strip():
+            raise JobError("Нет сценария")
+        concepts = llm_tasks.thumbnail_files(meta, list(track.thumbnails or []))
+        script, lang, llm, pub, track_id = track.script, track.language, tc.settings.llm, tc.settings.publish, track.id
+        project_id = tc.project.id
+    titles = meta.get("titles") or []
+    count = 1 if index is not None else max(1, pub.thumbnail_count)
+    if index is not None and not 0 <= int(index) < len(concepts):
+        raise JobError("Такой идеи уже нет")
+    # Whatever was shown before (including the idea being replaced) must not come back.
+    avoid = [c for c in concepts if c.get("prompt")]
+    with FastgenClient() as fg:
+        ctx.progress(0.2, "Придумываю новые идеи", force=True)
+        fresh = llm_tasks.thumbnail_concepts(fg, script, lang, titles, llm, pub, count, avoid=avoid)
+    if not fresh:
+        raise JobError("Модель не предложила ни одной идеи — попробуйте ещё раз")
+    removed: list[str | None] = []
+    if index is None:
+        removed = [c.get("file") for c in concepts]
+        concepts = fresh
+    else:
+        removed = [concepts[int(index)].get("file")]
+        concepts[int(index)] = fresh[0]
+    with session_scope() as db:
+        t = db.get(Track, track_id)
+        t.publish_meta = {**(t.publish_meta or {}), "thumbnails": concepts}
+        t.thumbnails = [c["file"] for c in concepts if c.get("file")]
+    for rel in removed:
+        p = to_abs(rel)
+        if p and p.exists():
+            p.unlink(missing_ok=True)
+    track_changed(track_id, "metadata")
+    if ctx.params.get("draw"):
+        runner.enqueue("thumbnails", project_id=project_id, track_id=track_id,
+                       params={"index": int(index)} if index is not None else {})
+    return {"message": f"Идей: {len(fresh)}"}

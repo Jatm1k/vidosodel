@@ -500,18 +500,11 @@ def publish_metadata(
         "into the description – chapters are added automatically from the \"chapters\" field. "
         "Tags: relevant search phrases. "
         "Chapters: pick 5–12 moments ONLY from the candidate list (use their seconds), first must be 0. "
-        "Thumbnail concepts: English image prompts for a 16:9 thumbnail (one strong focal subject, emotion, "
-        f"contrast) and a 2–4 word headline in {name}. The thumbnail art style is FIXED and added "
-        f"automatically: «{publish.thumbnail_style}». Describe only WHAT is shown (characters, emotion, "
-        "action, objects, composition, background) so that it fits this style – e.g. for a cartoon style "
-        "describe cartoon characters, not real people. Never use style, medium, camera or quality words "
-        "(photo, photorealistic, realistic, cinematic, 8k, detailed skin, lens, illustration, render). "
         'Answer ONLY with JSON: {"titles": [...], "description": "...", "tags": [...], '
-        '"chapters": [{"t": 0, "title": "..."}], "thumbnails": [{"prompt": "...", "headline": "..."}]}'
+        '"chapters": [{"t": 0, "title": "..."}]}'
     )
     user = (
-        f"{_niche(llm)}Number of titles: {publish.title_variants}. Number of tags: {publish.tags_count}. "
-        f"Number of thumbnail concepts: {publish.thumbnail_count}.\n\n"
+        f"{_niche(llm)}Number of titles: {publish.title_variants}. Number of tags: {publish.tags_count}.\n\n"
         f"CHAPTER CANDIDATES (seconds: paragraph start):\n{chapter_lines}\n\nSCRIPT:\n{script[:100_000]}"
     )
     data = fg.chat_json([{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -535,8 +528,130 @@ def publish_metadata(
         "description": strip_timestamps(str(data.get("description") or "")),
         "tags": [str(t).strip() for t in data.get("tags") or []][: publish.tags_count],
         "chapters": chapters_out,
-        "thumbnails": [t for t in data.get("thumbnails") or [] if isinstance(t, dict) and t.get("prompt")],
     }
+
+
+#: Hook devices a thumbnail can be built on; the model must use a different one per concept.
+_THUMB_ANGLES = (
+    "reaction (a face or creature reacting with extreme emotion to something off-frame or half-hidden)",
+    "threat (something looming, breaking, burning, closing in on the subject)",
+    "contrast (two things side by side: before/after, small/huge, rich/poor, old/new)",
+    "impossible object (a familiar thing that should not look like this: giant, glowing, cracked, floating)",
+    "secret reveal (the subject points at, holds or uncovers one mysterious detail)",
+    "stakes (a single object or number that shows what is at risk: money, time, a life, a planet)",
+)
+
+
+def thumbnail_concepts(
+    fg: FastgenClient, script: str, language: str, titles: list[str], llm: LlmSettings,
+    publish: PublishSettings, count: int, avoid: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Click-optimised thumbnail ideas that work together with the video titles.
+
+    Each idea is ``{"prompt", "headline", "title_index", "angle"}``. ``avoid`` are ideas that were
+    already shown (kept or rejected): the new ones must differ from them in subject and hook.
+    """
+    name = language_name(language)
+    system = (
+        "You are a senior YouTube thumbnail art director. Your only goal is the highest possible "
+        "click-through rate for an HONEST thumbnail of the video. Design thumbnails by these rules.\n"
+        "1. ONE hook per thumbnail: a single focal subject (a character, creature or object) that makes a "
+        "viewer instantly ask a question. Never a scene overview, never a collage.\n"
+        "2. EMOTION: if a character is shown, its face is a large close-up or medium close-up with an "
+        "exaggerated, readable emotion (shock, fear, awe, disbelief, triumph). Name the emotion explicitly.\n"
+        "3. THE VIEWER'S PATH: (a) sees the thumbnail and instantly understands the TOPIC and gets a question "
+        "or a tension; (b) reads the title, which confirms the topic and sharpens that interest; (c) clicks. "
+        "So the thumbnail must be understandable ON ITS OWN: the image plus the headline tell what the video "
+        "is about. The title then adds the angle, it does not rescue an unclear thumbnail. Do not paste the "
+        "title's phrase into the headline, but the headline MUST name the concrete subject of the video.\n"
+        f"4. HEADLINE in {name}: 2–5 words (max 36 characters), at most 2 lines. It must be CONCRETE and "
+        "self-explanatory for a person who has never heard of the video: it names the real subject "
+        "(a thing, person, place, event, number with its object) AND carries the tension: a claim, a "
+        "question, a contrast or a consequence. Good pattern: «subject + what is wrong/surprising about it» "
+        "(e.g. «Вода в лёгких за 3 секунды», «Этот мост рухнет?», «99% людей путают это»). BAD: one "
+        "abstract word or a vague emotion («Шок», «Тайна», «Невероятно», «Правда»), a bare adjective, "
+        "any phrase that could fit any video. Test: if the headline were put on a different video, it "
+        "would be wrong – then it is good. No emoji, no hashtags, no trailing period.\n"
+        "5. COMPOSITION for a phone screen (readable at 170 px width): the subject fills 50–60% of the frame "
+        "and sits on the left or right third; the opposite third is calm negative space reserved for the "
+        "headline; at most 3 visual elements in total; simple uncluttered background; clear contrast "
+        "between subject and background.\n"
+        "6. HONEST: it must show something that is really in this video.\n"
+        "7. VARIETY: concepts must differ in subject, emotion, pose and hook device – never in colour scheme, "
+        "the colours are dictated by the fixed style. Use a "
+        "different hook device for each concept: " + "; ".join(_THUMB_ANGLES) + ".\n"
+        f"The art style is FIXED, MANDATORY and added automatically: «{publish.thumbnail_style}». It decides "
+        "everything about colour, background, lighting, text colour and rendering. Never name a background "
+        "colour, lighting colour, colour scheme or text colour in the prompt and never contradict the style. "
+        "Describe only WHAT is shown and WHERE (subject, emotion, pose, action, object details, left/right "
+        "placement) so that it fits that style – for a cartoon style describe cartoon "
+        "characters, not real people. Never use style, medium, camera or quality words (photo, "
+        "photorealistic, realistic, cinematic, 8k, lens, illustration, render). The image prompt is in "
+        "English, 40–80 words, and does NOT contain the headline text.\n"
+        'Answer ONLY with JSON: {"thumbnails": [{"title_index": 0, "angle": "hook device in 2–5 words, '
+        'English", "prompt": "...", "headline": "..."}]}. '
+        "title_index is the index (from 0) of the title the thumbnail is designed to sit next to."
+    )
+    titles_block = "\n".join(f"{i}: {t}" for i, t in enumerate(titles)) or "(no titles yet – invent the hook)"
+    user = f"{_niche(llm)}Number of thumbnail concepts: {count}.\n\nTITLES:\n{titles_block}\n\n"
+    if avoid:
+        shown = "\n".join(f"- {a.get('prompt', '')} / «{a.get('headline', '')}»" for a in avoid if a.get("prompt"))
+        user += (f"ALREADY USED IDEAS – do not repeat or paraphrase them; use a different subject, emotion, "
+                 f"pose and hook device:\n{shown}\n\n")
+    user += f"SCRIPT:\n{script[:100_000]}"
+    data = fg.chat_json([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                        model=llm.model, temperature=0.95)
+    items = data.get("thumbnails") if isinstance(data, dict) else data
+    out: list[dict[str, Any]] = []
+    for it in items or []:
+        if not isinstance(it, dict) or not str(it.get("prompt", "")).strip():
+            continue
+        try:
+            idx = int(it.get("title_index", 0))
+        except (TypeError, ValueError):
+            idx = 0
+        headline = re.sub(r"\s+", " ", str(it.get("headline") or "")).strip().strip('"«»“”').rstrip(".")
+        out.append({
+            "prompt": str(it["prompt"]).strip(),
+            "headline": headline if len(headline.split()) <= 6 and len(headline) <= 44 else "",
+            "title_index": idx if 0 <= idx < max(1, len(titles)) else 0,
+            "angle": str(it.get("angle") or "").strip()[:60],
+        })
+    return out[:count]
+
+
+def thumbnail_image_prompt(concept: dict[str, Any], publish: PublishSettings) -> str:
+    """Final image prompt: style first (models weigh early words most), idea, layout rules, headline."""
+    parts = [publish.thumbnail_style.strip().rstrip("."), strip_style_words(str(concept.get("prompt", "")))]
+    parts.append(
+        "YouTube thumbnail composition: one dominant focal subject filling about half of the frame, placed "
+        "on one side, expressive readable emotion, very few elements, simple uncluttered background, "
+        "clear silhouette that stays readable at a tiny phone size"
+    )
+    headline = str(concept.get("headline") or "").strip()
+    if publish.thumbnail_text and headline:
+        parts.append(
+            f'Headline text «{headline}» spelled exactly letter for letter, huge ultra-bold sans-serif '
+            "capitals in at most 2 lines, each line at least a sixth of the image height, filling the empty side of the frame and never "
+            "over the subject's face; text colours exactly as the style says, otherwise high contrast "
+            "with the background"
+        )
+    # Said again at the end: the channel's colours and look win over anything above.
+    parts.append("MANDATORY STYLE, its colours, background and text colours override everything else: "
+                 + publish.thumbnail_style.strip().rstrip("."))
+    return ". ".join(p for p in parts if p)
+
+
+def thumbnail_files(meta: dict[str, Any], files: list[str] | None) -> list[dict[str, Any]]:
+    """Thumbnail concepts with their image path under ``file``.
+
+    Old projects stored images in a separate list lined up by index; those are mapped on the fly.
+    """
+    concepts = [dict(c) for c in meta.get("thumbnails") or [] if isinstance(c, dict)]
+    if concepts and not any("file" in c for c in concepts):
+        for c, rel in zip(concepts, files or []):
+            c["file"] = rel
+    return concepts
 
 
 #: A line that is a time code entry: "00:00 — Intro", "1:38 Title", "(12:05) - ...".

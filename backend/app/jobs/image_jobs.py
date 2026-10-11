@@ -286,42 +286,52 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
 # ------------------------------------------------------------------------ thumbnails
 @register("thumbnails", "images", "Превью (обложки)")
 def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
+    """Draw the thumbnails of the saved ideas; ``index`` redraws one idea (same idea, new render)."""
+    only = ctx.params.get("index")
     with session_scope() as db:
         tc = load_track(db, ctx.track_id)
-        concepts = (tc.track.publish_meta or {}).get("thumbnails") or []
+        meta = tc.track.publish_meta or {}
+        concepts = llm_tasks.thumbnail_files(meta, list(tc.track.thumbnails or []))
         if not concepts:
             raise JobError("Сначала сгенерируйте метаданные — в них есть идеи для обложек.")
         pub, images, llm = tc.settings.publish, tc.settings.images, tc.settings.llm
         project_id, track_id = tc.project.id, tc.track.id
+    if only is not None and not 0 <= int(only) < len(concepts):
+        raise JobError("Такой идеи уже нет")
+    todo = [int(only)] if only is not None else list(range(min(len(concepts), max(1, pub.thumbnail_count))))
     out_dir = track_dir(project_id, track_id, "thumbs")
     thumb_images = images.model_copy(update={
-        "style_prompt": pub.thumbnail_style,
-        "avoid": "watermark, logo, signature, blurry, low quality" + ("" if pub.thumbnail_text else ", text, letters"),
+        "style_prompt": "",  # the style is already at the start of the prompt
+        "avoid": "watermark, logo, signature, blurry, low quality, clutter, many small objects, collage, "
+                 "split screen, tiny text, small captions, extra text, misspelled letters"
+                 + ("" if pub.thumbnail_text else ", text, letters"),
         "upscale_2x": False,
     })
-    results: list[str] = []
+    done = 0
     with FastgenClient() as fg:
-        for k, concept in enumerate(concepts[: pub.thumbnail_count]):
-            ctx.progress(k / max(1, pub.thumbnail_count), f"Обложка {k + 1}")
-            # The style goes first (and again at the end via compose_prompt): models weigh early words most.
-            prompt = f"{pub.thumbnail_style.strip().rstrip('.')}. {llm_tasks.strip_style_words(concept['prompt'])}"
-            if pub.thumbnail_text and concept.get("headline"):
-                prompt += (f'. Large bold readable headline text "{concept["headline"]}" with strong contrast, '
-                           "placed on the side, not covering the main subject")
-            path, _ = generate_one(fg, prompt, out_dir, f"thumb_src_{k}", thumb_images, llm, [], ctx,
-                                   operation=pub.thumbnail_operation)
+        for n, k in enumerate(todo):
+            ctx.progress(n / len(todo), f"Обложка {k + 1}")
+            path, _ = generate_one(fg, llm_tasks.thumbnail_image_prompt(concepts[k], pub), out_dir,
+                                   f"thumb_src_{k}", thumb_images, llm, [], ctx, operation=pub.thumbnail_operation)
             final = make_thumbnail(path, out_dir / unique_name(f"thumb_{k}", ".jpg"))
             path.unlink(missing_ok=True)
-            results.append(to_rel(final))
-    with session_scope() as db:
-        t = db.get(Track, track_id)
-        for old in t.thumbnails or []:
+            # Saved one by one: a stop or an error later does not lose the finished ones.
+            with session_scope() as db:
+                t = db.get(Track, track_id)
+                fresh = llm_tasks.thumbnail_files(t.publish_meta or {}, list(t.thumbnails or []))
+                if k >= len(fresh):  # the ideas were replaced while drawing
+                    final.unlink(missing_ok=True)
+                    continue
+                old = fresh[k].get("file")
+                fresh[k]["file"] = to_rel(final)
+                t.publish_meta = {**(t.publish_meta or {}), "thumbnails": fresh}
+                t.thumbnails = [c["file"] for c in fresh if c.get("file")]
             p = to_abs(old)
-            if p and p.exists() and old not in results:
+            if p and p.exists() and old != to_rel(final):
                 p.unlink(missing_ok=True)
-        t.thumbnails = results
-    track_changed(track_id, "thumbnails")
-    return {"message": f"Обложек: {len(results)}"}
+            done += 1
+            track_changed(track_id, "thumbnails")
+    return {"message": f"Обложек: {done}"}
 
 
 

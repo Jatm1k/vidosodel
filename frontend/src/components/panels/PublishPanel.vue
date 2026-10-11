@@ -14,6 +14,10 @@ const { run, starting } = useTrackActions(() => props.track.id)
 
 const meta = computed(() => props.track.publish_meta ?? {})
 const hasMeta = computed(() => !!meta.value.titles?.length)
+/** Ideas and drawings share one image budget and one list: one job at a time keeps them consistent. */
+const thumbsBusy = computed(() =>
+  props.track.active_jobs.some((j) => ['thumbnail_ideas', 'thumbnails', 'metadata'].includes(j.kind)),
+)
 
 async function copy(text: string, what: string) {
   await copyText(text)
@@ -23,7 +27,7 @@ async function copy(text: string, what: string) {
 
 <template>
   <div class="flex flex-col gap-5">
-    <ActiveJobs :track="track" :kinds="['metadata', 'thumbnails']" />
+    <ActiveJobs :track="track" :kinds="['metadata', 'thumbnail_ideas', 'thumbnails']" />
 
     <div class="flex flex-wrap items-center gap-2">
       <Button
@@ -37,15 +41,27 @@ async function copy(text: string, what: string) {
         @click="run('metadata', {}, 'Метаданные создаются')"
       />
       <Button
-        :label="track.thumbnails.length ? 'Новые обложки' : 'Создать обложки'"
-        icon="pi pi-image"
+        :label="meta.thumbnails?.length ? 'Новые идеи обложек' : 'Придумать обложки'"
+        icon="pi pi-lightbulb"
         severity="secondary"
         outlined
         size="small"
-        :disabled="!meta.thumbnails?.length"
+        :disabled="!hasMeta || thumbsBusy"
+        :loading="starting === 'thumbnail_ideas'"
+        v-tooltip.top="!hasMeta ? 'Сначала создайте метаданные — идеи строятся от названий' : 'Совсем другие идеи и сразу новые обложки'"
+        @click="run('thumbnail_ideas', { draw: true }, 'Идеи и обложки создаются')"
+      />
+      <Button
+        v-if="meta.thumbnails?.length"
+        label="Перерисовать все"
+        icon="pi pi-refresh"
+        severity="secondary"
+        outlined
+        size="small"
+        :disabled="thumbsBusy"
         :loading="starting === 'thumbnails'"
-        v-tooltip.top="!meta.thumbnails?.length ? 'Сначала создайте метаданные — в них идеи для обложек' : undefined"
-        @click="run('thumbnails', {}, 'Обложки создаются')"
+        v-tooltip.top="'Те же идеи, новая отрисовка каждой'"
+        @click="run('thumbnails', {}, 'Обложки перерисовываются')"
       />
       <div class="flex-1" />
       <div v-if="track.published_at" class="flex items-center gap-2 text-[13px]">
@@ -64,7 +80,7 @@ async function copy(text: string, what: string) {
       />
     </div>
 
-    <div v-if="!hasMeta && !track.thumbnails.length" class="rounded-lg border border-dashed border-line p-10 text-center text-ink-3">
+    <div v-if="!hasMeta && !meta.thumbnails?.length" class="rounded-lg border border-dashed border-line p-10 text-center text-ink-3">
       Здесь появятся варианты названия, описание с главами, теги и обложки для загрузки на YouTube.
     </div>
 
@@ -82,13 +98,61 @@ async function copy(text: string, what: string) {
         </ul>
       </section>
 
-      <section v-if="track.thumbnails.length" class="rounded-lg border border-line-soft bg-panel p-5">
+      <section v-if="meta.thumbnails?.length" class="rounded-lg border border-line-soft bg-panel p-5 xl:col-span-2">
         <h3 class="font-medium">Обложки 1280×720</h3>
-        <div class="mt-3 grid grid-cols-2 gap-3">
-          <a v-for="(src, i) in track.thumbnails" :key="src" :href="src" :download="`thumbnail_${track.language}_${i + 1}.jpg`" class="group relative overflow-hidden rounded-md">
-            <img :src="src" alt="Вариант обложки" class="aspect-video w-full object-cover" />
-            <span class="absolute inset-0 hidden items-center justify-center bg-black/50 group-hover:flex"><i class="pi pi-download text-white" /></span>
-          </a>
+        <p class="mt-1 text-[13px] text-ink-3">
+          Каждая обложка рассчитана на своё название. «Перерисовать» — та же идея, новая отрисовка (если на картинке артефакт);
+          «Другая идея» — заменит только эту идею и нарисует её заново.
+        </p>
+        <div class="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <article v-for="(c, i) in meta.thumbnails" :key="i" class="flex flex-col gap-2">
+            <a
+              v-if="c.image"
+              :href="c.image"
+              :download="`thumbnail_${track.language}_${i + 1}.jpg`"
+              class="group relative overflow-hidden rounded-md"
+            >
+              <img :src="c.image" alt="Вариант обложки" class="aspect-video w-full object-cover" />
+              <span class="absolute inset-0 hidden items-center justify-center bg-black/50 group-hover:flex"><i class="pi pi-download text-white" /></span>
+            </a>
+            <div v-else class="flex aspect-video w-full items-center justify-center rounded-md border border-dashed border-line text-[13px] text-ink-3">
+              Ещё не нарисована
+            </div>
+            <div class="flex flex-col gap-0.5 text-[13px]">
+              <span v-if="c.headline" class="font-medium">«{{ c.headline }}»</span>
+              <span v-if="meta.titles?.[c.title_index ?? 0]" class="text-ink-2">к названию: {{ meta.titles[c.title_index ?? 0] }}</span>
+              <span v-if="c.angle" class="text-ink-3">{{ c.angle }}</span>
+            </div>
+            <div class="flex flex-wrap gap-1">
+              <Button
+                :label="c.image ? 'Перерисовать' : 'Нарисовать'"
+                icon="pi pi-refresh"
+                text
+                size="small"
+                severity="secondary"
+                :disabled="thumbsBusy"
+                @click="run('thumbnails', { index: i }, 'Обложка перерисовывается')"
+              />
+              <Button
+                label="Другая идея"
+                icon="pi pi-lightbulb"
+                text
+                size="small"
+                severity="secondary"
+                :disabled="thumbsBusy"
+                @click="run('thumbnail_ideas', { index: i, draw: true }, 'Новая идея создаётся')"
+              />
+              <Button
+                icon="pi pi-copy"
+                text
+                size="small"
+                severity="secondary"
+                aria-label="Скопировать промпт"
+                v-tooltip.top="'Скопировать промпт'"
+                @click="copy(c.prompt, 'Промпт')"
+              />
+            </div>
+          </article>
         </div>
       </section>
 

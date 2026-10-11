@@ -19,7 +19,7 @@ const KINDS: Record<StageId, string[]> = {
   voice: ['voice', 'transcribe'],
   storyboard: ['scenes', 'characters', 'prompts', 'images', 'watermarks'],
   video: ['render', 'preview'],
-  publish: ['metadata', 'thumbnails'],
+  publish: ['metadata', 'thumbnail_ideas', 'thumbnails'],
 }
 
 const stages = computed(() => {

@@ -94,6 +94,8 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
                     after.append(master_jobs["translate"])
             if step == "images" and force:
                 params["force"] = True
+            if step == "metadata" and force:
+                params["ideas"] = True  # redo = new thumbnail ideas too
             if step == "prompts" and force:
                 params["overwrite"] = True
             if step == "render" and options.get("allow_missing"):

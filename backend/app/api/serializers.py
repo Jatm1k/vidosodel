@@ -10,7 +10,7 @@ from ..jobs.common import scene_to_dict
 from ..jobs.runner import job_to_dict
 from ..models import Channel, Job, Project, Scene, Track
 from ..pipeline.languages import LANGUAGES
-from ..pipeline.llm_tasks import build_description
+from ..pipeline.llm_tasks import build_description, thumbnail_files
 from ..settings_schema import effective_settings
 from ..storage import media_url
 from .characters import character_to_dict
@@ -50,6 +50,10 @@ def _scene_stats(db: Session, track: Track) -> dict[str, int]:
 def _publish_meta(track: Track) -> dict[str, Any]:
     """Metadata with the full description rebuilt from the current settings (footer, chapters)."""
     meta = dict(track.publish_meta or {})
+    concepts = thumbnail_files(meta, list(track.thumbnails or []))
+    for c in concepts:
+        c["image"] = media_url(c.pop("file", None))
+    meta["thumbnails"] = concepts
     if meta.get("description") is not None:
         project = track.project
         publish = effective_settings(project.channel.settings, project.settings).publish
