@@ -166,7 +166,7 @@ export interface PublishMeta {
   description_full?: string
   tags?: string[]
   chapters?: { t: number; title: string }[]
-  thumbnails?: { prompt: string; headline?: string; angle?: string; title_index?: number; image?: string | null }[]
+  thumbnails?: { prompt: string; headline?: string; angle?: string; title?: string; title_index?: number; image?: string | null }[]
 }
 
 export interface TrackSummary {

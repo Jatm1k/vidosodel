@@ -531,14 +531,18 @@ def publish_metadata(
     }
 
 
-#: Hook devices a thumbnail can be built on; the model must use a different one per concept.
+#: Ways to show the idea of a title; a different one per concept. Concrete titles use the first
+#: group (a literal picture), concept titles the second one (a visual metaphor of the core opposition).
 _THUMB_ANGLES = (
-    "reaction (a face or creature reacting with extreme emotion to something off-frame or half-hidden)",
-    "threat (something looming, breaking, burning, closing in on the subject)",
-    "contrast (two things side by side: before/after, small/huge, rich/poor, old/new)",
-    "impossible object (a familiar thing that should not look like this: giant, glowing, cracked, floating)",
-    "secret reveal (the subject points at, holds or uncovers one mysterious detail)",
-    "stakes (a single object or number that shows what is at risk: money, time, a life, a planet)",
+    "concrete: the real object/place/creature in extreme close-up with its key problem or detail visible",
+    "concrete: a person doing the real action, mid-moment, with a readable reaction on the face",
+    "concrete: before/after or A vs B of the real subject, the difference obvious at a glance",
+    "concrete: the moment right before the consequence, the real thing about to break, fail or be found",
+    "concept: two iconic characters or objects side by side, each embodying one key term of the title",
+    "concept: one character who embodies the quality in a single unmistakable pose or attribute, with a hint "
+    "of its opposite beside it",
+    "concept: the quality and its common imitation as a before/after or a wrong-vs-right pair",
+    "concept: a simple iconic scene everyone reads in one second that stands for the title's claim",
 )
 
 
@@ -553,54 +557,82 @@ def thumbnail_concepts(
     """
     name = language_name(language)
     system = (
-        "You are a senior YouTube thumbnail art director. Your only goal is the highest possible "
-        "click-through rate for an HONEST thumbnail of the video. Design thumbnails by these rules.\n"
-        "1. ONE hook per thumbnail: a single focal subject (a character, creature or object) that makes a "
-        "viewer instantly ask a question. Never a scene overview, never a collage.\n"
-        "2. EMOTION: if a character is shown, its face is a large close-up or medium close-up with an "
-        "exaggerated, readable emotion (shock, fear, awe, disbelief, triumph). Name the emotion explicitly.\n"
-        "3. THE VIEWER'S PATH: (a) sees the thumbnail and instantly understands the TOPIC and gets a question "
-        "or a tension; (b) reads the title, which confirms the topic and sharpens that interest; (c) clicks. "
-        "So the thumbnail must be understandable ON ITS OWN: the image plus the headline tell what the video "
-        "is about. The title then adds the angle, it does not rescue an unclear thumbnail. Do not paste the "
-        "title's phrase into the headline, but the headline MUST name the concrete subject of the video.\n"
-        f"4. HEADLINE in {name}: 2–5 words (max 36 characters), at most 2 lines. It must be CONCRETE and "
-        "self-explanatory for a person who has never heard of the video: it names the real subject "
-        "(a thing, person, place, event, number with its object) AND carries the tension: a claim, a "
-        "question, a contrast or a consequence. Good pattern: «subject + what is wrong/surprising about it» "
-        "(e.g. «Вода в лёгких за 3 секунды», «Этот мост рухнет?», «99% людей путают это»). BAD: one "
-        "abstract word or a vague emotion («Шок», «Тайна», «Невероятно», «Правда»), a bare adjective, "
-        "any phrase that could fit any video. Test: if the headline were put on a different video, it "
-        "would be wrong – then it is good. No emoji, no hashtags, no trailing period.\n"
-        "5. COMPOSITION for a phone screen (readable at 170 px width): the subject fills 50–60% of the frame "
-        "and sits on the left or right third; the opposite third is calm negative space reserved for the "
-        "headline; at most 3 visual elements in total; simple uncluttered background; clear contrast "
-        "between subject and background.\n"
-        "6. HONEST: it must show something that is really in this video.\n"
-        "7. VARIETY: concepts must differ in subject, emotion, pose and hook device – never in colour scheme, "
-        "the colours are dictated by the fixed style. Use a "
-        "different hook device for each concept: " + "; ".join(_THUMB_ANGLES) + ".\n"
+        "You are a senior YouTube thumbnail art director. Your goal is the highest possible click-through "
+        "rate for an HONEST thumbnail. A thumbnail, its headline and the video title are ONE package that "
+        "the viewer reads in this order: (1) the PICTURE catches the eye and raises a question, (2) the "
+        "HEADLINE ON THE THUMBNAIL sharpens that question, (3) the VIDEO TITLE confirms it and promises the "
+        "answer, (4) click. So every part is derived from the previous one in the opposite direction: "
+        "TITLE → HEADLINE → PICTURE. The title is given and fixed.\n"
+        "STEP 1 – READ THE TITLE. Decide its type and extract its core:\n"
+        "• type «concept»: the title is about an idea, quality, behaviour, feeling, psychology, philosophy, "
+        "strategy (e.g. «Мудрость – это не интеллект: чем отличаются мудрые люди?»). Its core is the key "
+        "terms and the opposition or claim between them (wisdom vs intellect).\n"
+        "• type «concrete»: the title is about a specific thing, person, place, event, product, number "
+        "(e.g. «Почему рухнул этот мост»). Its core is that subject and the question about it.\n"
+        "Then write the title's promise: the question or claim it puts into the viewer's head.\n"
+        f"STEP 2 – HEADLINE in {name}. A short text for the thumbnail that COMPLEMENTS the title: it gives "
+        "the first sharp half of the answer, the verdict, the contrast, the stake or the pointed question "
+        "that the title opens. «Headline + title» must read as one thought, and the headline must be "
+        "unmistakably about the title's core – a viewer must feel that the headline answers THIS title. "
+        "Never copy or paraphrase the title, never repeat its key words. 2–6 words (max 40 characters), at "
+        "most 2 lines, no emoji, no trailing period. A bare abstract word («Шок», «Тайна») or a phrase that "
+        "fits any video is wrong. For «concept» titles a contrast of two short halves works well "
+        "(«Умный знает. Мудрый чувствует»), as does a provocative one-line verdict.\n"
+        "STEP 3 – PICTURE = the visual form of THE HEADLINE (and so of the title's core):\n"
+        "• «concrete» title: a LITERAL picture of the real subject in a dramatic situation, with accurate "
+        "details from the script (real names, objects, places).\n"
+        "• «concept» title: a clear VISUAL METAPHOR of the title's core opposition or claim. Give each key "
+        "term of the title an unmistakable visual embodiment (a character, an object, a pose) and show them "
+        "together in an obvious contrast or relation, or show one character who embodies the quality next "
+        "to a hint of its opposite. It must be readable in one second WITHOUT the script and fit the "
+        "headline as its caption. Use simple iconic symbols that people read instantly; avoid vague glowing "
+        "abstractions.\n"
+        "NEVER build the picture on a particular anecdote, example or side scene from the script (a boy "
+        "helping an old woman, a story told in passing) unless the TITLE itself is about that example. The "
+        "script only provides accurate details and vocabulary. Final check before answering: if a stranger "
+        "saw only the picture and the headline and then read the title, would all three feel like one idea "
+        "about the title's core? If not, redo it.\n"
+        "COMPOSITION: one focal subject (or a clear two-part contrast) filling 50–60% of the frame; calm "
+        "negative space for the headline; at most 3 elements; simple uncluttered background; readable at "
+        "170 px width. A large close-up face with an exaggerated readable emotion only when a person or "
+        "creature is the focal subject.\n"
+        "VARIETY: when several concepts are asked, each reads the title's promise differently – a different "
+        "headline and, following from it, a different picture (ways of showing: " +
+        "; ".join(_THUMB_ANGLES) + "). Never vary the colour scheme.\n"
         f"The art style is FIXED, MANDATORY and added automatically: «{publish.thumbnail_style}». It decides "
         "everything about colour, background, lighting, text colour and rendering. Never name a background "
         "colour, lighting colour, colour scheme or text colour in the prompt and never contradict the style. "
-        "Describe only WHAT is shown and WHERE (subject, emotion, pose, action, object details, left/right "
-        "placement) so that it fits that style – for a cartoon style describe cartoon "
-        "characters, not real people. Never use style, medium, camera or quality words (photo, "
-        "photorealistic, realistic, cinematic, 8k, lens, illustration, render). The image prompt is in "
-        "English, 40–80 words, and does NOT contain the headline text.\n"
-        'Answer ONLY with JSON: {"thumbnails": [{"title_index": 0, "angle": "hook device in 2–5 words, '
-        'English", "prompt": "...", "headline": "..."}]}. '
-        "title_index is the index (from 0) of the title the thumbnail is designed to sit next to."
+        "Describe only WHAT is shown and WHERE (subjects, pose, action, object details, left/right "
+        "placement) so that it fits that style – for a cartoon style describe cartoon characters, not real "
+        "people. Never use style, medium, camera or quality words (photo, photorealistic, realistic, "
+        "cinematic, 8k, lens, illustration, render). The image prompt is in English, 40–80 words, describes "
+        "exactly what the headline is about, and does NOT contain the headline text.\n"
+        'Answer ONLY with JSON, fields in THIS order (the chain of reasoning): {"thumbnails": [{"title_index": '
+        '0, "title_type": "concept or concrete", "title_core": "the key terms and the opposition/claim of '
+        'the title, one English sentence", "title_promise": "what the title makes the viewer wonder, one '
+        'English sentence", "headline": "...", "headline_vs_title": "what the headline adds that the title '
+        'does not say, one English sentence", "subject": "what the picture shows, 2–8 English words", '
+        '"prompt": "...", "angle": "how it is shown, 2–5 English words"}]}. '
+        "title_index is the index (from 0) of the title the thumbnail is built for."
     )
-    titles_block = "\n".join(f"{i}: {t}" for i, t in enumerate(titles)) or "(no titles yet – invent the hook)"
-    user = f"{_niche(llm)}Number of thumbnail concepts: {count}.\n\nTITLES:\n{titles_block}\n\n"
+    titles_block = "\n".join(f"{i}: {t}" for i, t in enumerate(titles)) or "(no titles yet – invent a strong one)"
+    user = f"{_niche(llm)}Number of thumbnail concepts: {count}.\n\nVIDEO TITLE(S):\n{titles_block}\n\n"
+    if len(titles) == 1:
+        user += (f"All {count} concepts are for this ONE title (title_index 0). Give clearly different ways "
+                 "to complement it: a different headline and, following from it, a different picture. The "
+                 f"title may be written in another language; the headline is still in {name}.\n\n")
     if avoid:
-        shown = "\n".join(f"- {a.get('prompt', '')} / «{a.get('headline', '')}»" for a in avoid if a.get("prompt"))
-        user += (f"ALREADY USED IDEAS – do not repeat or paraphrase them; use a different subject, emotion, "
-                 f"pose and hook device:\n{shown}\n\n")
-    user += f"SCRIPT:\n{script[:100_000]}"
+        shown = "\n".join(
+            f"- title «{a.get('title', '')}» / headline «{a.get('headline', '')}» / picture: {a.get('prompt', '')}"
+            for a in avoid if a.get("prompt"))
+        user += (f"ALREADY MADE (for this or other titles) – the new concepts must not repeat or paraphrase "
+                 f"their headline or their picture; a different title means a different promise, so a "
+                 f"different thumbnail:\n{shown}\n\n")
+    # The opening usually states the thesis; a whole long script only drags the model to its anecdotes.
+    user += ("SCRIPT BEGINNING – only a source of accurate details and vocabulary, not a menu of scenes:\n"
+             f"{script[:8_000]}")
     data = fg.chat_json([{"role": "system", "content": system}, {"role": "user", "content": user}],
-                        model=llm.model, temperature=0.95)
+                        model=llm.model, temperature=0.8)
     items = data.get("thumbnails") if isinstance(data, dict) else data
     out: list[dict[str, Any]] = []
     for it in items or []:
@@ -616,6 +648,7 @@ def thumbnail_concepts(
             "headline": headline if len(headline.split()) <= 6 and len(headline) <= 44 else "",
             "title_index": idx if 0 <= idx < max(1, len(titles)) else 0,
             "angle": str(it.get("angle") or "").strip()[:60],
+            "subject": str(it.get("subject") or "").strip()[:80],
         })
     return out[:count]
 
@@ -625,8 +658,9 @@ def thumbnail_image_prompt(concept: dict[str, Any], publish: PublishSettings) ->
     parts = [publish.thumbnail_style.strip().rstrip("."), strip_style_words(str(concept.get("prompt", "")))]
     parts.append(
         "YouTube thumbnail composition: one dominant focal subject filling about half of the frame, placed "
-        "on one side, expressive readable emotion, very few elements, simple uncluttered background, "
-        "clear silhouette that stays readable at a tiny phone size"
+        "on one side, very few elements, simple uncluttered background, instantly readable meaning, clear "
+        "silhouette that stays readable at a tiny phone size; if a face is shown, its emotion is large and "
+        "readable"
     )
     headline = str(concept.get("headline") or "").strip()
     if publish.thumbnail_text and headline:

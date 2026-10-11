@@ -287,7 +287,9 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
 @register("thumbnails", "images", "Превью (обложки)")
 def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
     """Draw the thumbnails of the saved ideas; ``index`` redraws one idea (same idea, new render)."""
-    only = ctx.params.get("index")
+    only = ctx.params.get("indices")
+    if only is None and ctx.params.get("index") is not None:
+        only = [ctx.params["index"]]
     with session_scope() as db:
         tc = load_track(db, ctx.track_id)
         meta = tc.track.publish_meta or {}
@@ -296,9 +298,9 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
             raise JobError("Сначала сгенерируйте метаданные — в них есть идеи для обложек.")
         pub, images, llm = tc.settings.publish, tc.settings.images, tc.settings.llm
         project_id, track_id = tc.project.id, tc.track.id
-    if only is not None and not 0 <= int(only) < len(concepts):
+    todo = sorted({int(i) for i in only if 0 <= int(i) < len(concepts)}) if only is not None else list(range(len(concepts)))
+    if not todo:
         raise JobError("Такой идеи уже нет")
-    todo = [int(only)] if only is not None else list(range(min(len(concepts), max(1, pub.thumbnail_count))))
     out_dir = track_dir(project_id, track_id, "thumbs")
     thumb_images = images.model_copy(update={
         "style_prompt": "",  # the style is already at the start of the prompt

@@ -14,6 +14,19 @@ const { run, starting } = useTrackActions(() => props.track.id)
 
 const meta = computed(() => props.track.publish_meta ?? {})
 const hasMeta = computed(() => !!meta.value.titles?.length)
+/** The user's own title first, then the generated variants (without a duplicate of the own one). */
+const titleRows = computed(() => {
+  const own = (props.project.name ?? '').trim()
+  const rows = own ? [{ text: own, own: true }] : []
+  for (const t of meta.value.titles ?? []) if (t && t.trim() !== own) rows.push({ text: t, own: false })
+  return rows
+})
+
+/** The title an idea was made for (old ideas only remember its index). */
+function ideaTitle(c: { title?: string; title_index?: number }): string {
+  return c.title || meta.value.titles?.[c.title_index ?? 0] || ''
+}
+
 /** Ideas and drawings share one image budget and one list: one job at a time keeps them consistent. */
 const thumbsBusy = computed(() =>
   props.track.active_jobs.some((j) => ['thumbnail_ideas', 'thumbnails', 'metadata'].includes(j.kind)),
@@ -48,7 +61,7 @@ async function copy(text: string, what: string) {
         size="small"
         :disabled="!hasMeta || thumbsBusy"
         :loading="starting === 'thumbnail_ideas'"
-        v-tooltip.top="!hasMeta ? 'Сначала создайте метаданные — идеи строятся от названий' : 'Совсем другие идеи и сразу новые обложки'"
+        v-tooltip.top="!hasMeta ? 'Сначала создайте метаданные' : 'Заменит ВСЕ текущие идеи и обложки новыми к названию проекта. Чтобы добавить, не заменяя, — кнопка у нужного названия'"
         @click="run('thumbnail_ideas', { draw: true }, 'Идеи и обложки создаются')"
       />
       <Button
@@ -85,13 +98,32 @@ async function copy(text: string, what: string) {
     </div>
 
     <div v-else class="grid gap-5 xl:grid-cols-2">
-      <section v-if="meta.titles?.length" class="rounded-lg border border-line-soft bg-panel p-5">
+      <section v-if="meta.titles?.length || project.name" class="rounded-lg border border-line-soft bg-panel p-5">
         <h3 class="font-medium">Варианты названия</h3>
+        <p class="mt-1 text-[13px] text-ink-3">
+          Кнопка с картинкой рядом с названием придумает для него новые обложки и добавит к уже имеющимся, ничего не заменяя.
+        </p>
         <ul class="mt-3 flex flex-col">
-          <li v-for="(t, i) in meta.titles" :key="i" class="group flex items-start gap-3 border-b border-line-soft py-2.5 last:border-b-0">
-            <span class="flex-1">{{ t }}</span>
-            <span class="tnum shrink-0 text-xs" :class="t.length > 70 ? 'text-bad' : 'text-ink-3'">{{ t.length }}</span>
-            <button class="text-ink-3 hover:text-ink" aria-label="Копировать название" @click="copy(t, 'Название')">
+          <li
+            v-for="(t, i) in titleRows"
+            :key="i"
+            class="group flex items-start gap-3 border-b border-line-soft py-2.5 last:border-b-0"
+          >
+            <div class="flex-1">
+              <span v-if="t.own" class="mb-0.5 block text-[11px] uppercase tracking-wide text-ink-3">Ваше название</span>
+              <span>{{ t.text }}</span>
+            </div>
+            <span class="tnum shrink-0 text-xs" :class="t.text.length > 70 ? 'text-bad' : 'text-ink-3'">{{ t.text.length }}</span>
+            <button
+              class="text-ink-3 hover:text-ink disabled:opacity-40"
+              aria-label="Создать обложки к этому названию"
+              v-tooltip.top="'Обложки к этому названию (добавятся к имеющимся)'"
+              :disabled="thumbsBusy || !track.script_chars"
+              @click="run('thumbnail_ideas', { title: t.text, append: true, draw: true }, 'Обложки к названию создаются')"
+            >
+              <i class="pi pi-image text-sm" />
+            </button>
+            <button class="text-ink-3 hover:text-ink" aria-label="Копировать название" @click="copy(t.text, 'Название')">
               <i class="pi pi-copy text-sm" />
             </button>
           </li>
@@ -101,7 +133,8 @@ async function copy(text: string, what: string) {
       <section v-if="meta.thumbnails?.length" class="rounded-lg border border-line-soft bg-panel p-5 xl:col-span-2">
         <h3 class="font-medium">Обложки 1280×720</h3>
         <p class="mt-1 text-[13px] text-ink-3">
-          Каждая обложка рассчитана на своё название. «Перерисовать» — та же идея, новая отрисовка (если на картинке артефакт);
+          Каждая обложка рассчитана на своё название; по умолчанию идеи делаются к названию, которое вы ввели при создании
+          проекта. «Перерисовать» — та же идея, новая отрисовка (если на картинке артефакт);
           «Другая идея» — заменит только эту идею и нарисует её заново.
         </p>
         <div class="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -120,7 +153,7 @@ async function copy(text: string, what: string) {
             </div>
             <div class="flex flex-col gap-0.5 text-[13px]">
               <span v-if="c.headline" class="font-medium">«{{ c.headline }}»</span>
-              <span v-if="meta.titles?.[c.title_index ?? 0]" class="text-ink-2">к названию: {{ meta.titles[c.title_index ?? 0] }}</span>
+              <span v-if="ideaTitle(c)" class="text-ink-2">к названию: {{ ideaTitle(c) }}</span>
               <span v-if="c.angle" class="text-ink-3">{{ c.angle }}</span>
             </div>
             <div class="flex flex-wrap gap-1">
