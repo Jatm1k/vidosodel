@@ -9,7 +9,7 @@ from typing import Any
 from ..config import get_settings
 from ..db import session_scope
 from ..models import Track
-from ..pipeline import llm_tasks
+from ..pipeline import llm_tasks, packaging
 from ..render.engine import RESOLUTIONS, PlanScene, RenderPlan, render_video
 from ..render.atmosphere import make_params as atmosphere_params
 from ..render.look import random_look
@@ -233,16 +233,23 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
     kept = llm_tasks.thumbnail_files(old_meta, old_files)
     new_ideas = bool(ctx.params.get("ideas")) or not any(c.get("file") for c in kept)
     with FastgenClient() as fg:
-        ctx.progress(0.1, "Генерация названия, описания и тегов", force=True)
-        meta = llm_tasks.publish_metadata(fg, script, lang, chapters, llm, pub)
+        ctx.progress(0.05, "Изучаю сценарий: о чём ролик и что в нём конкретного", force=True)
+        brief = packaging.build_brief(fg, script, lang, llm, project_name)
+        ctx.progress(0.3, "Подбираю названия: варианты, оценка, доработка лучших", force=True)
+        ranked = packaging.make_titles(fg, brief, lang, llm, pub.title_variants,
+                                       avoid=list(old_meta.get("titles") or []))
+        titles = [r["text"] for r in ranked]
+        title = _idea_title(project_name, titles)
+        ctx.progress(0.7, "Описание и теги", force=True)
+        meta = packaging.make_description(fg, brief, title, lang, chapters, llm, pub, script_head=script[:3000])
+        meta.update({"titles": titles, "title_info": ranked, "brief": brief})
         if new_ideas and pub.thumbnail_count > 0:
-            ctx.progress(0.6, "Идеи для обложек", force=True)
-            idea_titles = _idea_titles(project_name, meta["titles"])
-            meta["thumbnails"] = _titled(llm_tasks.thumbnail_concepts(
-                fg, script, lang, idea_titles, llm, pub, pub.thumbnail_count), idea_titles)
+            ctx.progress(0.85, "Идеи для обложек: текст и картинка к названию", force=True)
+            meta["thumbnails"] = packaging.thumbnail_concepts(
+                fg, brief, script[:6000], lang, title, llm, pub, pub.thumbnail_count)
         else:
             meta["thumbnails"] = kept
-    meta["description_full"] = llm_tasks.build_description(meta, pub)
+    meta["description_full"] = llm_tasks.build_description(meta, pub, lang)
     with session_scope() as db:
         t = db.get(Track, track_id)
         t.publish_meta = meta
@@ -257,17 +264,9 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
                        f"идей обложек: {len(meta['thumbnails'])}"}
 
 
-def _idea_titles(project_name: str, generated: list[str]) -> list[str]:
-    """The title the ideas are made for: the one the user typed for the project, else the generated ones."""
-    return [project_name.strip()] if project_name.strip() else [t for t in generated if t]
-
-
-def _titled(concepts: list[dict[str, Any]], titles: list[str]) -> list[dict[str, Any]]:
-    """Remember the title text on each idea (the title list may change later)."""
-    for c in concepts:
-        i = c.get("title_index", 0)
-        c["title"] = titles[i] if 0 <= i < len(titles) else (titles[0] if titles else "")
-    return concepts
+def _idea_title(project_name: str, generated: list[str]) -> str:
+    """The title the ideas are made for: the one the user typed for the project, else the best generated one."""
+    return project_name.strip() or next((t for t in generated if t), "")
 
 
 @register("thumbnail_ideas", "llm", "Идеи для обложек")
@@ -293,20 +292,24 @@ def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
     if index is not None and not 0 <= int(index) < len(concepts):
         raise JobError("Такой идеи уже нет")
     if append:
-        titles, count = [title], max(1, pub.thumbnail_count)
+        target, count = title, max(1, pub.thumbnail_count)
     elif index is not None:
         own = concepts[int(index)].get("title") or ""
         if not own:  # an idea from before titles were remembered
             i = concepts[int(index)].get("title_index", 0)
             own = generated[i] if 0 <= i < len(generated) else ""
-        titles, count = _idea_titles(own or project_name, generated), 1
+        target, count = own or _idea_title(project_name, generated), 1
     else:
-        titles, count = _idea_titles(project_name, generated), max(1, pub.thumbnail_count)
+        target, count = _idea_title(project_name, generated), max(1, pub.thumbnail_count)
     # Whatever was shown before (including the idea being replaced) must not come back.
     avoid = [c for c in concepts if c.get("prompt")]
     with FastgenClient() as fg:
-        ctx.progress(0.2, "Придумываю новые идеи", force=True)
-        fresh = _titled(llm_tasks.thumbnail_concepts(fg, script, lang, titles, llm, pub, count, avoid=avoid), titles)
+        brief = meta.get("brief")
+        if not brief:  # metadata made before briefs existed
+            ctx.progress(0.1, "Изучаю сценарий", force=True)
+            brief = packaging.build_brief(fg, script, lang, llm, project_name)
+        ctx.progress(0.4, "Придумываю текст и картинку обложки", force=True)
+        fresh = packaging.thumbnail_concepts(fg, brief, script[:6000], lang, target, llm, pub, count, avoid=avoid)
     if not fresh:
         raise JobError("Модель не предложила ни одной идеи — попробуйте ещё раз")
     removed: list[str | None] = []
@@ -322,7 +325,7 @@ def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
         new_indices = [int(index)]
     with session_scope() as db:
         t = db.get(Track, track_id)
-        t.publish_meta = {**(t.publish_meta or {}), "thumbnails": concepts}
+        t.publish_meta = {**(t.publish_meta or {}), "brief": brief, "thumbnails": concepts}
         t.thumbnails = [c["file"] for c in concepts if c.get("file")]
     for rel in removed:
         p = to_abs(rel)

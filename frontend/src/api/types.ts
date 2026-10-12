@@ -96,6 +96,7 @@ export interface PipelineSettings {
   publish: {
     enabled: boolean; title_variants: number; tags_count: number; description_footer: string; with_chapters: boolean
     thumbnail_count: number; thumbnail_text: boolean; thumbnail_style: string; thumbnail_operation: string
+    thumbnail_text_mode: 'overlay' | 'model'; thumbnail_text_color: string; thumbnail_accent_color: string
   }
 }
 
@@ -162,11 +163,13 @@ export interface SceneStats {
 
 export interface PublishMeta {
   titles?: string[]
+  /** Same order as titles: the critic's score (0–10) and the formula of each title. */
+  title_info?: { text: string; score: number; formula: string }[]
   description?: string
   description_full?: string
   tags?: string[]
   chapters?: { t: number; title: string }[]
-  thumbnails?: { prompt: string; headline?: string; angle?: string; title?: string; title_index?: number; image?: string | null }[]
+  thumbnails?: { prompt: string; headline?: string; accent?: string; side?: string; score?: number; subject?: string; angle?: string; title?: string; title_index?: number; image?: string | null }[]
 }
 
 export interface TrackSummary {

@@ -57,7 +57,7 @@ def _publish_meta(track: Track) -> dict[str, Any]:
     if meta.get("description") is not None:
         project = track.project
         publish = effective_settings(project.channel.settings, project.settings).publish
-        meta["description_full"] = build_description(meta, publish)
+        meta["description_full"] = build_description(meta, publish, track.language)
     return meta
 
 

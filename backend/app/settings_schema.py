@@ -217,8 +217,14 @@ class PublishSettings(_Base):
     description_footer: str = ""
     with_chapters: bool = True
     thumbnail_count: int = 3
-    #: Let the image model draw a short headline on the thumbnail.
+    #: Put a short headline on the thumbnail.
     thumbnail_text: bool = True
+    #: "overlay" – the program sets the headline itself (always spelled right, any language);
+    #: "model" – the image model draws it.
+    thumbnail_text_mode: str = "overlay"
+    thumbnail_text_color: str = "#FFFFFF"
+    #: Colour of the one highlighted word of the headline.
+    thumbnail_accent_color: str = "#FFD400"
     thumbnail_style: str = "bold high-contrast YouTube thumbnail, expressive, eye-catching, clean composition"
     thumbnail_operation: str = "nano_banana_pro_image_generate"
 

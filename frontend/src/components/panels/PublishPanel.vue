@@ -17,8 +17,14 @@ const hasMeta = computed(() => !!meta.value.titles?.length)
 /** The user's own title first, then the generated variants (without a duplicate of the own one). */
 const titleRows = computed(() => {
   const own = (props.project.name ?? '').trim()
-  const rows = own ? [{ text: own, own: true }] : []
-  for (const t of meta.value.titles ?? []) if (t && t.trim() !== own) rows.push({ text: t, own: false })
+  const rows: { text: string; own: boolean; score?: number; best?: boolean }[] = own ? [{ text: own, own: true }] : []
+  const info = new Map((meta.value.title_info ?? []).map((i) => [i.text, i.score]))
+  let first = true
+  for (const t of meta.value.titles ?? []) {
+    if (!t || t.trim() === own) continue
+    rows.push({ text: t, own: false, score: info.get(t), best: first && info.size > 0 })
+    first = false
+  }
   return rows
 })
 
@@ -111,9 +117,15 @@ async function copy(text: string, what: string) {
           >
             <div class="flex-1">
               <span v-if="t.own" class="mb-0.5 block text-[11px] uppercase tracking-wide text-ink-3">Ваше название</span>
+              <span v-else-if="t.best" class="mb-0.5 block text-[11px] uppercase tracking-wide text-ok">Сильнейший вариант</span>
               <span>{{ t.text }}</span>
             </div>
-            <span class="tnum shrink-0 text-xs" :class="t.text.length > 70 ? 'text-bad' : 'text-ink-3'">{{ t.text.length }}</span>
+            <span
+              v-if="t.score != null"
+              class="tnum shrink-0 text-xs text-ink-3"
+              v-tooltip.top="'Оценка критика: насколько название конкретно, интригует и честно (из 10)'"
+            >{{ t.score.toFixed(1) }}/10</span>
+            <span class="tnum shrink-0 text-xs" :class="t.text.length > 60 ? 'text-bad' : 'text-ink-3'">{{ t.text.length }}</span>
             <button
               class="text-ink-3 hover:text-ink disabled:opacity-40"
               aria-label="Создать обложки к этому названию"

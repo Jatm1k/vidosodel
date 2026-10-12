@@ -5,7 +5,7 @@
 * :func:`scene_prompts` – one English image prompt per scene (and who is in it), in batches.
 * :func:`soften_prompt` – rephrase a prompt rejected by a content filter.
 * :func:`translate_script` – paragraph-aligned translation of a script.
-* :func:`publish_metadata` – titles, description, tags, chapters, thumbnail ideas.
+* titles, description and thumbnail ideas – see :mod:`.packaging`.
 * :func:`text_accents` – key numbers and phrases shown big on screen.
 """
 from __future__ import annotations
@@ -485,193 +485,43 @@ def text_accents(fg: FastgenClient, script: str, language: str, count: int, llm:
 
 
 # ------------------------------------------------------------------------- metadata
-def publish_metadata(
-    fg: FastgenClient, script: str, language: str, chapters: list[tuple[float, str]],
-    llm: LlmSettings, publish: PublishSettings,
-) -> dict[str, Any]:
-    """YouTube title variants, description, tags, chapters and thumbnail concepts."""
-    name = language_name(language)
-    chapter_lines = "\n".join(f"{int(t)}s: {text[:160]}" for t, text in chapters)
-    system = (
-        "You are a YouTube growth strategist. Create upload metadata for a long-form narrated video. "
-        f"Write titles, description, tags and chapter titles in {name}. Titles: max 70 characters, curiosity-driven "
-        "but honest, no clickbait lies, no ALL CAPS. Description: 2 short hook paragraphs + key points; "
-        "no hashtag spam (max 3 hashtags at the end). NEVER put timestamps, time codes or a chapter list "
-        "into the description – chapters are added automatically from the \"chapters\" field. "
-        "Tags: relevant search phrases. "
-        "Chapters: pick 5–12 moments ONLY from the candidate list (use their seconds), first must be 0. "
-        'Answer ONLY with JSON: {"titles": [...], "description": "...", "tags": [...], '
-        '"chapters": [{"t": 0, "title": "..."}]}'
-    )
-    user = (
-        f"{_niche(llm)}Number of titles: {publish.title_variants}. Number of tags: {publish.tags_count}.\n\n"
-        f"CHAPTER CANDIDATES (seconds: paragraph start):\n{chapter_lines}\n\nSCRIPT:\n{script[:100_000]}"
-    )
-    data = fg.chat_json([{"role": "system", "content": system}, {"role": "user", "content": user}],
-                        model=llm.model, temperature=0.8)
-    if not isinstance(data, dict):
-        raise ValueError("LLM вернул метаданные в неверном формате")
-    valid_t = {int(t) for t, _ in chapters}
-    chapters_out = []
-    for ch in data.get("chapters") or []:
-        try:
-            t = int(ch["t"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if t in valid_t or t == 0:
-            chapters_out.append({"t": t, "title": str(ch.get("title", "")).strip()})
-    chapters_out.sort(key=lambda c: c["t"])
-    if chapters_out and chapters_out[0]["t"] != 0:
-        chapters_out[0]["t"] = 0
-    return {
-        "titles": [str(t).strip() for t in data.get("titles") or []][: publish.title_variants],
-        "description": strip_timestamps(str(data.get("description") or "")),
-        "tags": [str(t).strip() for t in data.get("tags") or []][: publish.tags_count],
-        "chapters": chapters_out,
-    }
+# Titles, description and thumbnail ideas live in pipeline/packaging.py.
 
 
-#: Ways to show the idea of a title; a different one per concept. Concrete titles use the first
-#: group (a literal picture), concept titles the second one (a visual metaphor of the core opposition).
-_THUMB_ANGLES = (
-    "concrete: the real object/place/creature in extreme close-up with its key problem or detail visible",
-    "concrete: a person doing the real action, mid-moment, with a readable reaction on the face",
-    "concrete: before/after or A vs B of the real subject, the difference obvious at a glance",
-    "concrete: the moment right before the consequence, the real thing about to break, fail or be found",
-    "concept: two iconic characters or objects side by side, each embodying one key term of the title",
-    "concept: one character who embodies the quality in a single unmistakable pose or attribute, with a hint "
-    "of its opposite beside it",
-    "concept: the quality and its common imitation as a before/after or a wrong-vs-right pair",
-    "concept: a simple iconic scene everyone reads in one second that stands for the title's claim",
-)
+def thumbnail_image_prompt(concept: dict[str, Any], publish: PublishSettings, *, overlay: bool = False) -> str:
+    """Final image prompt: style first (models weigh early words most), idea, layout rules, headline.
 
-
-def thumbnail_concepts(
-    fg: FastgenClient, script: str, language: str, titles: list[str], llm: LlmSettings,
-    publish: PublishSettings, count: int, avoid: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Click-optimised thumbnail ideas that work together with the video titles.
-
-    Each idea is ``{"prompt", "headline", "title_index", "angle"}``. ``avoid`` are ideas that were
-    already shown (kept or rejected): the new ones must differ from them in subject and hook.
+    ``overlay``: the headline is drawn by the program afterwards, so the picture gets a clean empty side
+    for it and no text at all (image models misspell non-English letters).
     """
-    name = language_name(language)
-    system = (
-        "You are a senior YouTube thumbnail art director. Your goal is the highest possible click-through "
-        "rate for an HONEST thumbnail. A thumbnail, its headline and the video title are ONE package that "
-        "the viewer reads in this order: (1) the PICTURE catches the eye and raises a question, (2) the "
-        "HEADLINE ON THE THUMBNAIL sharpens that question, (3) the VIDEO TITLE confirms it and promises the "
-        "answer, (4) click. So every part is derived from the previous one in the opposite direction: "
-        "TITLE → HEADLINE → PICTURE. The title is given and fixed.\n"
-        "STEP 1 – READ THE TITLE. Decide its type and extract its core:\n"
-        "• type «concept»: the title is about an idea, quality, behaviour, feeling, psychology, philosophy, "
-        "strategy (e.g. «Мудрость – это не интеллект: чем отличаются мудрые люди?»). Its core is the key "
-        "terms and the opposition or claim between them (wisdom vs intellect).\n"
-        "• type «concrete»: the title is about a specific thing, person, place, event, product, number "
-        "(e.g. «Почему рухнул этот мост»). Its core is that subject and the question about it.\n"
-        "Then write the title's promise: the question or claim it puts into the viewer's head.\n"
-        f"STEP 2 – HEADLINE in {name}. A short text for the thumbnail that COMPLEMENTS the title: it gives "
-        "the first sharp half of the answer, the verdict, the contrast, the stake or the pointed question "
-        "that the title opens. «Headline + title» must read as one thought, and the headline must be "
-        "unmistakably about the title's core – a viewer must feel that the headline answers THIS title. "
-        "Never copy or paraphrase the title, never repeat its key words. 2–6 words (max 40 characters), at "
-        "most 2 lines, no emoji, no trailing period. A bare abstract word («Шок», «Тайна») or a phrase that "
-        "fits any video is wrong. For «concept» titles a contrast of two short halves works well "
-        "(«Умный знает. Мудрый чувствует»), as does a provocative one-line verdict.\n"
-        "STEP 3 – PICTURE = the visual form of THE HEADLINE (and so of the title's core):\n"
-        "• «concrete» title: a LITERAL picture of the real subject in a dramatic situation, with accurate "
-        "details from the script (real names, objects, places).\n"
-        "• «concept» title: a clear VISUAL METAPHOR of the title's core opposition or claim. Give each key "
-        "term of the title an unmistakable visual embodiment (a character, an object, a pose) and show them "
-        "together in an obvious contrast or relation, or show one character who embodies the quality next "
-        "to a hint of its opposite. It must be readable in one second WITHOUT the script and fit the "
-        "headline as its caption. Use simple iconic symbols that people read instantly; avoid vague glowing "
-        "abstractions.\n"
-        "NEVER build the picture on a particular anecdote, example or side scene from the script (a boy "
-        "helping an old woman, a story told in passing) unless the TITLE itself is about that example. The "
-        "script only provides accurate details and vocabulary. Final check before answering: if a stranger "
-        "saw only the picture and the headline and then read the title, would all three feel like one idea "
-        "about the title's core? If not, redo it.\n"
-        "COMPOSITION: one focal subject (or a clear two-part contrast) filling 50–60% of the frame; calm "
-        "negative space for the headline; at most 3 elements; simple uncluttered background; readable at "
-        "170 px width. A large close-up face with an exaggerated readable emotion only when a person or "
-        "creature is the focal subject.\n"
-        "VARIETY: when several concepts are asked, each reads the title's promise differently – a different "
-        "headline and, following from it, a different picture (ways of showing: " +
-        "; ".join(_THUMB_ANGLES) + "). Never vary the colour scheme.\n"
-        f"The art style is FIXED, MANDATORY and added automatically: «{publish.thumbnail_style}». It decides "
-        "everything about colour, background, lighting, text colour and rendering. Never name a background "
-        "colour, lighting colour, colour scheme or text colour in the prompt and never contradict the style. "
-        "Describe only WHAT is shown and WHERE (subjects, pose, action, object details, left/right "
-        "placement) so that it fits that style – for a cartoon style describe cartoon characters, not real "
-        "people. Never use style, medium, camera or quality words (photo, photorealistic, realistic, "
-        "cinematic, 8k, lens, illustration, render). The image prompt is in English, 40–80 words, describes "
-        "exactly what the headline is about, and does NOT contain the headline text.\n"
-        'Answer ONLY with JSON, fields in THIS order (the chain of reasoning): {"thumbnails": [{"title_index": '
-        '0, "title_type": "concept or concrete", "title_core": "the key terms and the opposition/claim of '
-        'the title, one English sentence", "title_promise": "what the title makes the viewer wonder, one '
-        'English sentence", "headline": "...", "headline_vs_title": "what the headline adds that the title '
-        'does not say, one English sentence", "subject": "what the picture shows, 2–8 English words", '
-        '"prompt": "...", "angle": "how it is shown, 2–5 English words"}]}. '
-        "title_index is the index (from 0) of the title the thumbnail is built for."
-    )
-    titles_block = "\n".join(f"{i}: {t}" for i, t in enumerate(titles)) or "(no titles yet – invent a strong one)"
-    user = f"{_niche(llm)}Number of thumbnail concepts: {count}.\n\nVIDEO TITLE(S):\n{titles_block}\n\n"
-    if len(titles) == 1:
-        user += (f"All {count} concepts are for this ONE title (title_index 0). Give clearly different ways "
-                 "to complement it: a different headline and, following from it, a different picture. The "
-                 f"title may be written in another language; the headline is still in {name}.\n\n")
-    if avoid:
-        shown = "\n".join(
-            f"- title «{a.get('title', '')}» / headline «{a.get('headline', '')}» / picture: {a.get('prompt', '')}"
-            for a in avoid if a.get("prompt"))
-        user += (f"ALREADY MADE (for this or other titles) – the new concepts must not repeat or paraphrase "
-                 f"their headline or their picture; a different title means a different promise, so a "
-                 f"different thumbnail:\n{shown}\n\n")
-    # The opening usually states the thesis; a whole long script only drags the model to its anecdotes.
-    user += ("SCRIPT BEGINNING – only a source of accurate details and vocabulary, not a menu of scenes:\n"
-             f"{script[:8_000]}")
-    data = fg.chat_json([{"role": "system", "content": system}, {"role": "user", "content": user}],
-                        model=llm.model, temperature=0.8)
-    items = data.get("thumbnails") if isinstance(data, dict) else data
-    out: list[dict[str, Any]] = []
-    for it in items or []:
-        if not isinstance(it, dict) or not str(it.get("prompt", "")).strip():
-            continue
-        try:
-            idx = int(it.get("title_index", 0))
-        except (TypeError, ValueError):
-            idx = 0
-        headline = re.sub(r"\s+", " ", str(it.get("headline") or "")).strip().strip('"«»“”').rstrip(".")
-        out.append({
-            "prompt": str(it["prompt"]).strip(),
-            "headline": headline if len(headline.split()) <= 6 and len(headline) <= 44 else "",
-            "title_index": idx if 0 <= idx < max(1, len(titles)) else 0,
-            "angle": str(it.get("angle") or "").strip()[:60],
-            "subject": str(it.get("subject") or "").strip()[:80],
-        })
-    return out[:count]
-
-
-def thumbnail_image_prompt(concept: dict[str, Any], publish: PublishSettings) -> str:
-    """Final image prompt: style first (models weigh early words most), idea, layout rules, headline."""
     parts = [publish.thumbnail_style.strip().rstrip("."), strip_style_words(str(concept.get("prompt", "")))]
-    parts.append(
-        "YouTube thumbnail composition: one dominant focal subject filling about half of the frame, placed "
-        "on one side, very few elements, simple uncluttered background, instantly readable meaning, clear "
-        "silhouette that stays readable at a tiny phone size; if a face is shown, its emotion is large and "
-        "readable"
-    )
     headline = str(concept.get("headline") or "").strip()
-    if publish.thumbnail_text and headline:
+    if overlay:
+        side = "left" if str(concept.get("side")) == "left" else "right"
+        free = "right" if side == "left" else "left"
         parts.append(
-            f'Headline text «{headline}» spelled exactly letter for letter, huge ultra-bold sans-serif '
-            "capitals in at most 2 lines, each line at least a sixth of the image height, filling the empty side of the frame and never "
-            "over the subject's face; text colours exactly as the style says, otherwise high contrast "
-            "with the background"
+            f"YouTube thumbnail composition: the one dominant subject fills the {side} half of the frame, large "
+            f"and clear, very few elements; the {free} 45% of the frame is a calm, simple, empty background with "
+            "no objects, reserved for a caption added later. Instantly readable meaning, clear silhouette that "
+            "stays readable at a tiny phone size; if a face is shown, its emotion is large and readable. "
+            "No text, letters, numbers, captions, signs or logos anywhere in the image"
         )
+    else:
+        parts.append(
+            "YouTube thumbnail composition: one dominant focal subject filling about half of the frame, placed "
+            "on one side, very few elements, simple uncluttered background, instantly readable meaning, clear "
+            "silhouette that stays readable at a tiny phone size; if a face is shown, its emotion is large and "
+            "readable"
+        )
+        if publish.thumbnail_text and headline:
+            parts.append(
+                f'Headline text «{headline}» spelled exactly letter for letter, huge ultra-bold sans-serif '
+                "capitals in at most 2 lines, each line at least a sixth of the image height, filling the empty "
+                "side of the frame and never over the subject's face; text colours exactly as the style says, "
+                "otherwise high contrast with the background"
+            )
     # Said again at the end: the channel's colours and look win over anything above.
-    parts.append("MANDATORY STYLE, its colours, background and text colours override everything else: "
+    parts.append("MANDATORY STYLE, its colours and background override everything else: "
                  + publish.thumbnail_style.strip().rstrip("."))
     return ". ".join(p for p in parts if p)
 
@@ -723,12 +573,30 @@ def format_timestamp(seconds: float) -> str:
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
 
 
-def build_description(meta: dict[str, Any], publish: PublishSettings) -> str:
-    """Full description text: body + chapters (YouTube needs ≥3, first at 0:00) + footer."""
-    parts = [strip_timestamps(meta.get("description", ""))]
+def build_description(meta: dict[str, Any], publish: PublishSettings, language: str = "") -> str:
+    """Full description text: hook, about, "what you get" list, chapters (YouTube needs ≥3, first at 0:00),
+    footer and hashtags.
+
+    Metadata made before the parts existed has only the flat ``description``; its English headings
+    (e.g. «Key points:») are replaced with the heading of the video's language.
+    """
+    from .packaging import BULLET_HEADINGS, localize_headings  # noqa: PLC0415 – packaging imports this module
+
+    parts: list[str] = []
+    if meta.get("hook") or meta.get("about") or meta.get("bullets"):
+        parts += [meta.get("hook", ""), meta.get("about", "")]
+        bullets = [b for b in meta.get("bullets") or [] if b]
+        if bullets:
+            heading = meta.get("bullets_heading") or BULLET_HEADINGS.get(language, "")
+            parts.append("\n".join(([heading] if heading else []) + [f"• {b}" for b in bullets]))
+    else:
+        parts.append(strip_timestamps(meta.get("description", "")))
+    parts = [localize_headings(strip_timestamps(p), language) if language else strip_timestamps(p) for p in parts]
     chapters = meta.get("chapters") or []
     if publish.with_chapters and len(chapters) >= 3:
         parts.append("\n".join(f"{format_timestamp(c['t'])} {c['title']}" for c in chapters))
     if publish.description_footer.strip():
         parts.append(publish.description_footer.strip())
+    if meta.get("hashtags"):
+        parts.append(" ".join(f"#{h}" for h in meta["hashtags"]))
     return "\n\n".join(p for p in parts if p)

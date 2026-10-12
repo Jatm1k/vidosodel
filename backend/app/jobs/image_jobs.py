@@ -16,6 +16,7 @@ from ..models import Character, Scene, Track
 from ..pipeline import characters as chars
 from ..pipeline import llm_tasks
 from ..pipeline.image_plan import plan_project
+from ..render import thumb_text
 from ..render.media import imread, imwrite, make_thumbnail, remove_watermark
 from ..services.fastgen import IMAGE_OPS_BY_ID, FastgenClient, GenerationFailed, image_credits
 from ..services.http import ApiError
@@ -302,19 +303,31 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
     if not todo:
         raise JobError("Такой идеи уже нет")
     out_dir = track_dir(project_id, track_id, "thumbs")
-    thumb_images = images.model_copy(update={
-        "style_prompt": "",  # the style is already at the start of the prompt
-        "avoid": "watermark, logo, signature, blurry, low quality, clutter, many small objects, collage, "
-                 "split screen, tiny text, small captions, extra text, misspelled letters"
-                 + ("" if pub.thumbnail_text else ", text, letters"),
-        "upscale_2x": False,
-    })
+    base_avoid = ("watermark, logo, signature, blurry, low quality, clutter, many small objects, collage, "
+                  "split screen, tiny text, small captions, extra text, misspelled letters")
     done = 0
     with FastgenClient() as fg:
         for n, k in enumerate(todo):
             ctx.progress(n / len(todo), f"Обложка {k + 1}")
-            path, _ = generate_one(fg, llm_tasks.thumbnail_image_prompt(concepts[k], pub), out_dir,
-                                   f"thumb_src_{k}", thumb_images, llm, [], ctx, operation=pub.thumbnail_operation)
+            concept = concepts[k]
+            headline = str(concept.get("headline") or "").strip() if pub.thumbnail_text else ""
+            # The program sets the headline itself (right letters in any language); the image model
+            # draws it only when asked to or when the font cannot cover the language.
+            overlay = bool(headline) and pub.thumbnail_text_mode != "model" and thumb_text.can_render(headline)
+            thumb_images = images.model_copy(update={
+                "style_prompt": "",  # the style is already at the start of the prompt
+                "avoid": base_avoid + (", text, letters, numbers, captions" if overlay or not headline else ""),
+                "upscale_2x": False,
+            })
+            prompt = llm_tasks.thumbnail_image_prompt(concept, pub, overlay=overlay or not headline)
+            path, _ = generate_one(fg, prompt, out_dir, f"thumb_src_{k}", thumb_images, llm, [], ctx,
+                                   operation=pub.thumbnail_operation)
+            if overlay:
+                img = thumb_text.draw_headline(
+                    imread(path), headline, side="right" if concept.get("side") == "left" else "left",
+                    color=pub.thumbnail_text_color, accent_color=pub.thumbnail_accent_color,
+                    accent=str(concept.get("accent") or ""))
+                imwrite(path, img, quality=95)
             final = make_thumbnail(path, out_dir / unique_name(f"thumb_{k}", ".jpg"))
             path.unlink(missing_ok=True)
             # Saved one by one: a stop or an error later does not lose the finished ones.

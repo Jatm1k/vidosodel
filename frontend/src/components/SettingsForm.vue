@@ -835,9 +835,33 @@ onMounted(async () => {
         <FormField label="Модель для обложек">
           <Select v-model="s.publish.thumbnail_operation" :options="imageOps" option-value="id" option-label="name" class="w-72" />
         </FormField>
-        <FormField label="Заголовок на обложке" hint="Модель нарисует 2–4 слова крупным шрифтом">
+        <FormField label="Заголовок на обложке" hint="Короткая фраза крупным шрифтом, которая дополняет название">
           <ToggleSwitch v-model="s.publish.thumbnail_text" class="mt-1.5" />
         </FormField>
+        <template v-if="s.publish.thumbnail_text">
+          <FormField
+            label="Кто рисует заголовок"
+            hint="«Программа» — текст набирается поверх картинки жирным шрифтом с обводкой: без ошибок в буквах на любом языке. «Модель» — текст рисует нейросеть, часто с опечатками"
+          >
+            <Select
+              v-model="s.publish.thumbnail_text_mode"
+              :options="[{ id: 'overlay', name: 'Программа (рекомендуется)' }, { id: 'model', name: 'Модель картинок' }]"
+              option-value="id"
+              option-label="name"
+              class="w-72"
+            />
+          </FormField>
+          <FormField v-if="s.publish.thumbnail_text_mode === 'overlay'" label="Цвета заголовка">
+            <div class="flex items-center gap-5 text-[13px] text-ink-2">
+              <label class="flex items-center gap-2">
+                <ColorPicker :model-value="s.publish.thumbnail_text_color.slice(1)" @update:model-value="(v: any) => (s.publish.thumbnail_text_color = hex(v))" />Текст
+              </label>
+              <label class="flex items-center gap-2">
+                <ColorPicker :model-value="s.publish.thumbnail_accent_color.slice(1)" @update:model-value="(v: any) => (s.publish.thumbnail_accent_color = hex(v))" />Главное слово
+              </label>
+            </div>
+          </FormField>
+        </template>
         <FormField label="Стиль обложек">
           <Textarea v-model="s.publish.thumbnail_style" auto-resize rows="2" class="w-full" />
         </FormField>
