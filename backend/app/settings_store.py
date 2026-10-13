@@ -33,6 +33,8 @@ class AppConfig(BaseModel):
     lumean_parallel_orders: int = 3
     #: How many renders may run at the same time (each is itself multi-process).
     parallel_renders: int = 1
+    #: Remove final videos (and depth maps) of versions published this many days ago; 0 – never.
+    cleanup_published_after_days: int = 0
 
 
 _SECRET_KEYS = ("lumean_api_key", "fastgen_api_key")

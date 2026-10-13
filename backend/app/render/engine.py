@@ -34,7 +34,7 @@ import numpy as np
 from ..config import ffmpeg_bin
 from .atmosphere import Atmosphere, AtmosphereParams, breath
 from .look import LookParams, LookProcessor
-from .media import CREATE_NO_WINDOW, cover_fit, encoder_args, imread, run
+from .media import CAP_BY_REENCODE, CREATE_NO_WINDOW, cover_fit, encoder_args, imread, run
 from . import depth as depth_mod
 from .motion import View, make_motion, max_zoom, render_view
 from .parallax import ParallaxRenderer, prepare_layers
@@ -84,6 +84,8 @@ class RenderPlan:
     time_offset: float = 0.0
     encoder: str = "libx264"
     quality: str = "high"
+    #: Bitrate ceiling, Mbit/s (0 - no limit), see :func:`.media.encoder_args`.
+    max_mbps: int = 0
     preview: bool = False
     subtitles_ass: str | None = None
     fonts_dir: str | None = None
@@ -254,7 +256,8 @@ def _render_segment(plan_dict: dict, first: int, last: int, out_path: str, threa
     cmd = [
         ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{plan.width}x{plan.height}", "-r", str(plan.fps), "-i", "pipe:0",
-        "-vf", ",".join(vf), *encoder_args(plan.encoder, plan.quality, plan.fps, threads, preview=plan.preview),
+        "-vf", ",".join(vf), *encoder_args(plan.encoder, plan.quality, plan.fps, threads, preview=plan.preview,
+                                          max_mbps=plan.max_mbps),
         "-an", out.name,
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd,
@@ -285,7 +288,22 @@ def _render_segment(plan_dict: dict, first: int, last: int, out_path: str, threa
     if rc != 0:
         tail = b"".join(stderr_chunks).decode("utf-8", "replace")[-1500:]
         raise RuntimeError(f"ffmpeg (сегмент) завершился с ошибкой:\n{tail}")
+    if not cancel_ev.is_set():
+        _cap_bitrate(plan, out, (last - first) / plan.fps, threads)
     return out_path
+
+
+def _cap_bitrate(plan: RenderPlan, seg: Path, seconds: float, threads: int) -> None:
+    """Re-encode a segment that came out over the bitrate limit (encoders without a capped quality mode)."""
+    if plan.preview or not plan.max_mbps or plan.encoder not in CAP_BY_REENCODE or seconds <= 0:
+        return
+    if seg.stat().st_size * 8 / seconds <= plan.max_mbps * 1e6 * 1.05:
+        return  # light content keeps the quality setting – the limit would only make it bigger
+    tmp = seg.with_name(seg.stem + "_cap.mp4")
+    run([ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", "-i", seg.name,
+         *encoder_args(plan.encoder, plan.quality, plan.fps, threads, max_mbps=plan.max_mbps, capped=True),
+         "-an", tmp.name], cwd=seg.parent)
+    tmp.replace(seg)
 
 
 # ===================================================================== audio

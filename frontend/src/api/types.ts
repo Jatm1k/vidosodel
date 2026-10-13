@@ -75,7 +75,7 @@ export interface PipelineSettings {
     resolution: '1080p' | '1440p' | '2160p'; fps: number; motion_effects: string[]; motion_intensity: number
     phrase_cuts: boolean; depth_of_field: boolean
     transitions: string[]; transition_duration: number; cut_ratio: number; fade_in: number; fade_out: number
-    encoder: string; quality: 'max' | 'high' | 'balanced' | 'fast'; workers: number; loudness: number
+    encoder: string; quality: 'max' | 'high' | 'balanced' | 'fast'; max_bitrate: number; workers: number; loudness: number
   }
   atmosphere: {
     line_boil: boolean; line_boil_strength: number; grain_boil: boolean; grain_boil_strength: number; boil_hold: number
@@ -286,6 +286,17 @@ export interface AppConfig {
   fastgen_token_ratio: number
   lumean_parallel_orders: number
   parallel_renders: number
+  cleanup_published_after_days: number
+}
+
+export type CleanupKind = 'published_videos' | 'depth' | 'previews' | 'work' | 'orphans'
+
+export interface StorageUsage {
+  total: number
+  categories: Record<string, { bytes: number; files: number }>
+  cleanable: Record<CleanupKind, { bytes: number; files: number }>
+  published_versions: number
+  auto_days: number
 }
 
 export interface ImagePlan {

@@ -38,7 +38,7 @@ const stages = computed(() => {
     { id: 'storyboard' as const, title: 'Раскадровка', state: storyboardState,
       note: !st.total ? 'Нет сцен' : t.shares_images ? `${st.total} сцен, картинки основного языка` : `${st.images}/${st.total} картинок` },
     { id: 'video' as const, title: 'Видео', state: t.stages.video,
-      note: t.video_meta?.resolution ? `${t.video_meta.resolution}` : 'Не собрано' },
+      note: t.video_url && t.video_meta?.resolution ? `${t.video_meta.resolution}` : t.video_meta?.removed_at ? 'Удалено после публикации' : 'Не собрано' },
     { id: 'publish' as const, title: 'Публикация', state: t.stages.publish,
       note: t.publish_meta?.titles?.length ? 'Метаданные готовы' : props.publishEnabled === false ? 'Вручную, по желанию' : 'Нет метаданных' },
   ].map((s) => ({ ...s, running: running(s.id), queued: queued(s.id), failed: failed(s.id) }))

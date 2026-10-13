@@ -9,7 +9,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import channels, characters, jobs, previews, projects, system
+from . import cleanup
+from .api import channels, characters, jobs, previews, projects, storage, system
 from .config import get_settings
 from .db import init_db
 from .jobs import runner
@@ -44,6 +45,7 @@ async def lifespan(_app: FastAPI):
     bus.bind_loop(asyncio.get_running_loop())
     runner.start()
     updates.start()
+    cleanup.start()
     log.info("Vidosodel %s started, data dir: %s", __version__, get_settings().data_dir)
     yield
     runner.stop()
@@ -51,7 +53,8 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Vidosodel", version=__version__, lifespan=lifespan)
 
-for r in (system.router, channels.router, projects.router, characters.router, jobs.router, previews.router):
+for r in (system.router, channels.router, projects.router, characters.router, jobs.router, previews.router,
+          storage.router):
     app.include_router(r)
 
 

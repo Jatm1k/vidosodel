@@ -110,9 +110,15 @@ function startRender() {
             autoplay
             class="aspect-video w-full"
           />
-          <div v-else class="flex aspect-video flex-col items-center justify-center gap-2 text-center text-ink-3">
+          <div v-else class="flex aspect-video flex-col items-center justify-center gap-2 px-8 text-center text-ink-3">
             <i class="pi pi-video text-3xl" />
-            {{ tab === 'video' ? 'Видео ещё не собрано' : 'Соберите короткое превью, чтобы проверить движение, переходы и субтитры' }}
+            {{
+              tab === 'preview'
+                ? 'Соберите короткое превью, чтобы проверить движение, переходы и субтитры'
+                : meta.removed_at
+                  ? `Видео удалено ${relativeDate(new Date(meta.removed_at * 1000).toISOString())}, чтобы освободить место: ролик уже опубликован. Сцены и озвучка сохранены — его можно собрать заново.`
+                  : 'Видео ещё не собрано'
+            }}
           </div>
         </div>
         <div v-if="tab === 'video' && track.video_url" class="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-ink-3">

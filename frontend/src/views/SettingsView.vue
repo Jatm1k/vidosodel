@@ -8,6 +8,7 @@ import { api } from '@/api/client'
 import type { AppConfig } from '@/api/types'
 import { useAppStore } from '@/stores/app'
 import { useNotify } from '@/composables/useNotify'
+import StoragePanel from '@/components/StoragePanel.vue'
 
 const store = useAppStore()
 const notify = useNotify()
@@ -135,6 +136,24 @@ async function check(service: 'lumean' | 'fastgen') {
           Каждый рендер сам использует все ядра процессора ({{ store.meta?.cpu_count }}). Энкодеры:
           {{ store.meta?.encoders.join(', ') }}.
         </p>
+      </section>
+
+      <section>
+        <h2 class="text-base font-semibold">Хранилище</h2>
+        <p class="mt-1 text-[13px] text-ink-3">
+          Почти всё место занимают готовые видео. Сценарий, озвучка и картинки сохраняются всегда, поэтому удалённый ролик
+          можно собрать заново. Почистить отдельный канал можно на его странице, во вкладке «Хранилище».
+        </p>
+        <label class="mt-4 flex flex-col gap-1.5">
+          <span class="text-ink-2">Удалять видео опубликованных роликов через, дней</span>
+          <div class="flex items-center gap-3">
+            <InputNumber v-model="cfg.cleanup_published_after_days" :min="0" :max="365" show-buttons class="w-40" />
+            <span class="text-[13px] text-ink-3">
+              {{ cfg.cleanup_published_after_days ? 'вместе с картами глубины, проверка раз в час' : '0 — не удалять автоматически' }}
+            </span>
+          </div>
+        </label>
+        <StoragePanel class="mt-6" />
       </section>
 
       <section class="text-[13px] text-ink-3">

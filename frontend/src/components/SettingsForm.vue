@@ -623,6 +623,18 @@ onMounted(async () => {
             :allow-empty="false"
           />
         </FormField>
+        <FormField
+          label="Ограничение битрейта"
+          hint="YouTube всё равно пережимает видео. При 12 Мбит/с качество на глаз то же, а ролики с зерном и 3D весят вдвое меньше"
+        >
+          <SelectButton
+            v-model="s.render.max_bitrate"
+            :options="[{ v: 8, l: '8 Мбит/с' }, { v: 12, l: '12 Мбит/с' }, { v: 0, l: 'Без ограничения' }]"
+            option-value="v"
+            option-label="l"
+            :allow-empty="false"
+          />
+        </FormField>
         <FormField label="Энкодер" hint="Аппаратный энкодер видеокарты быстрее, программный — чуть качественнее">
           <Select
             v-model="s.render.encoder"

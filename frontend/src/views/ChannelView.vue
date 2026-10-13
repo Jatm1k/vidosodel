@@ -13,6 +13,7 @@ import ProjectCard from '@/components/ProjectCard.vue'
 import ProjectBoard from '@/components/ProjectBoard.vue'
 import SettingsForm from '@/components/SettingsForm.vue'
 import NewProjectDialog from '@/components/NewProjectDialog.vue'
+import StoragePanel from '@/components/StoragePanel.vue'
 
 const props = defineProps<{ id: number }>()
 const route = useRoute()
@@ -25,9 +26,10 @@ const channel = ref<ChannelDetail | null>(null)
 const settings = ref<PipelineSettings | null>(null)
 const savedJson = ref('')
 const saving = ref(false)
-const tab = computed<'projects' | 'settings'>({
-  get: () => (route.query.tab === 'settings' ? 'settings' : 'projects'),
-  set: (v) => router.replace({ query: v === 'settings' ? { tab: 'settings' } : {} }),
+type Tab = 'projects' | 'settings' | 'storage'
+const tab = computed<Tab>({
+  get: () => (route.query.tab === 'settings' || route.query.tab === 'storage' ? route.query.tab : 'projects'),
+  set: (v) => router.replace({ query: v === 'projects' ? {} : { tab: v } }),
 })
 const showNew = ref(false)
 
@@ -187,7 +189,7 @@ onMounted(load)
 
     <div class="mt-6 flex items-center gap-1 border-b border-line-soft">
       <button
-        v-for="t in ([['projects', `Проекты · ${channel.projects.length}`], ['settings', 'Настройки канала']] as const)"
+        v-for="t in ([['projects', `Проекты · ${channel.projects.length}`], ['settings', 'Настройки канала'], ['storage', 'Хранилище']] as const)"
         :key="t[0]"
         class="-mb-px border-b-2 px-4 py-2.5 transition-colors"
         :class="tab === t[0] ? 'border-tally text-ink' : 'border-transparent text-ink-3 hover:text-ink-2'"
@@ -217,6 +219,10 @@ onMounted(load)
       <div v-else class="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
         <ProjectCard v-for="p in channel.projects" :key="p.id" :project="p" />
       </div>
+    </section>
+
+    <section v-else-if="tab === 'storage'" class="mt-6 max-w-3xl">
+      <StoragePanel :channel-id="channel.id" />
     </section>
 
     <section v-else class="mt-6">

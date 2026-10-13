@@ -23,6 +23,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..cleanup import video_removed
 from ..jobs.runner import runner
 from ..models import Project, Track
 from ..settings_schema import effective_settings
@@ -47,7 +48,7 @@ def _done(track: Track, step: str, shares: bool) -> bool:
     if step == "images":
         return shares or (bool(scenes) and all(s.image_status == "done" and s.image_file for s in scenes))
     if step == "render":
-        return bool(track.video_file)
+        return bool(track.video_file) or video_removed(track)
     if step == "metadata":
         return bool(track.publish_meta)
     if step == "thumbnails":

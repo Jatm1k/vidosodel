@@ -91,6 +91,7 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
         fade_in=0.0 if preview and start > 0 else s.render.fade_in,
         fade_out=s.render.fade_out, time_offset=start if preview else 0.0,
         encoder=pick_encoder(s.render.encoder), quality=s.render.quality, preview=preview,
+        max_mbps=max(0, s.render.max_bitrate),
         fonts_dir=str(get_settings().fonts_dir),
         extra={"video_end": duration},
     )

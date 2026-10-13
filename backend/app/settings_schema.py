@@ -132,6 +132,9 @@ class RenderSettings(_Base):
     #: ``auto`` picks a hardware encoder when available, otherwise libx264.
     encoder: str = "auto"
     quality: Literal["max", "high", "balanced", "fast"] = "high"
+    #: Bitrate ceiling of the final video, Mbit/s (0 – no limit). YouTube re-encodes anyway and
+    #: recommends ~8 Mbit/s for 1080p30; grain and parallax otherwise blow files up to 25+ Mbit/s.
+    max_bitrate: int = 12
     #: Parallel render processes; 0 = automatic.
     workers: int = 0
     #: Target integrated loudness (YouTube normalises to −14 LUFS).

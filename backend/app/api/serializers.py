@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..cleanup import video_removed
 from ..jobs.common import scene_to_dict
 from ..jobs.runner import job_to_dict
 from ..models import Channel, Job, Project, Scene, Track
@@ -105,7 +106,7 @@ def track_summary(db: Session, track: Track) -> dict[str, Any]:
         "scenes": stage(total > 0),
         "prompts": stage(shares and total > 0 or (total > 0 and stats["prompts"] == total), stats["prompts"] > 0),
         "images": stage(total > 0 and (shares or stats["images"] == total), stats["images"] > 0),
-        "video": stage(bool(track.video_file)),
+        "video": stage(bool(track.video_file) or video_removed(track)),
         "publish": stage(bool(track.publish_meta), bool(track.thumbnails)),
     }
     return {

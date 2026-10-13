@@ -108,23 +108,40 @@ _QUALITY = {
 }
 
 
-def encoder_args(encoder: str, quality: str, fps: int, threads: int | None = None, *, preview: bool = False) -> list[str]:
-    """Video encoder arguments producing YouTube-friendly H.264 High, yuv420p, BT.709."""
+#: Encoders without a "quality, but at most N Mbit/s" mode: a segment over the limit is re-encoded at it.
+CAP_BY_REENCODE = ("h264_amf", "h264_qsv")
+
+
+def encoder_args(encoder: str, quality: str, fps: int, threads: int | None = None, *, preview: bool = False,
+                 max_mbps: int = 0, capped: bool = False) -> list[str]:
+    """Video encoder arguments producing YouTube-friendly H.264 High, yuv420p, BT.709.
+
+    ``max_mbps`` limits the bitrate (0 – no limit). libx264 and NVENC keep their quality mode with a
+    ceiling; AMF and QSV have no such mode, so they encode by quality and a segment that came out
+    over the limit is encoded again with ``capped=True`` (peak-constrained VBR at the limit).
+    """
     crf, x264_preset, nv_preset = _QUALITY.get(quality, _QUALITY["high"])
     gop = str(max(1, fps * 2))
+    cap = max(0, int(max_mbps))
     if preview:
         args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
     elif encoder == "h264_nvenc":
         args = ["-c:v", "h264_nvenc", "-preset", nv_preset, "-rc", "vbr", "-cq", str(crf + 1), "-b:v", "0",
-                "-maxrate", "24M", "-bufsize", "48M", "-spatial-aq", "1", "-bf", "2"]
+                "-maxrate", f"{cap or 24}M", "-bufsize", f"{(cap or 24) * 2}M", "-spatial-aq", "1", "-bf", "2"]
+    elif encoder == "h264_qsv" and capped and cap:
+        args = ["-c:v", "h264_qsv", "-preset", "slower", "-b:v", f"{cap}M", "-maxrate", f"{cap * 3 // 2}M",
+                "-bufsize", f"{cap * 2}M", "-look_ahead", "1"]
     elif encoder == "h264_qsv":
         args = ["-c:v", "h264_qsv", "-preset", "slower", "-global_quality", str(crf + 2), "-look_ahead", "1"]
+    elif encoder == "h264_amf" and capped and cap:
+        args = ["-c:v", "h264_amf", "-quality", "quality", "-rc", "vbr_peak", "-b:v", f"{cap}M",
+                "-maxrate", f"{cap * 3 // 2}M", "-bufsize", f"{cap * 2}M"]
     elif encoder == "h264_amf":
         args = ["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp",
                 "-qp_i", str(crf), "-qp_p", str(crf + 2), "-qp_b", str(crf + 4)]
     else:
         args = ["-c:v", "libx264", "-preset", x264_preset, "-crf", str(crf),
-                "-maxrate", "30M", "-bufsize", "60M", "-tune", "film"]
+                "-maxrate", f"{cap or 30}M", "-bufsize", f"{(cap or 30) * 2}M", "-tune", "film"]
         if threads:
             args += ["-threads", str(threads)]
     args += ["-profile:v", "high", "-pix_fmt", "yuv420p", "-g", gop,
