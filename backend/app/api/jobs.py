@@ -55,24 +55,46 @@ def retry_job(job_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
         raise HTTPException(404, "Задача не найдена")
     if job.status in ("queued", "running"):
         raise HTTPException(400, "Задача ещё выполняется")
-    params = {k: v for k, v in (job.params or {}).items() if k != "_after"}
+    params = {k: v for k, v in (job.params or {}).items() if k not in _DEP_KEYS}
     new = runner.enqueue(job.kind, project_id=job.project_id, track_id=job.track_id, params=params, title=job.title)
     # Resume the rest of the pipeline chain that was skipped because this step failed.
     mapping = {job.id: new.id}
+    # Skipped steps, plus images that followed the prompts and stopped when the prompts failed.
+    skipped = [j for j in db.scalars(select(Job).where(Job.status.in_(("cancelled", "failed")),
+                                                       Job.project_id == job.project_id, Job.id > job.id)
+                                     .order_by(Job.id))
+               if (j.status == "cancelled" and j.started_at is None) or (j.params or {}).get("follow")]
     pending = [job.id]
     resumed = 0
     while pending:
         parent = pending.pop(0)
-        children = db.scalars(select(Job).where(Job.depends_on_id == parent, Job.status == "cancelled",
-                                                Job.started_at.is_(None)).order_by(Job.id))
-        for child in children:
-            child_params = {k: v for k, v in (child.params or {}).items() if k != "_after"}
+        for child in skipped:
+            if child.id in mapping or parent not in _dep_ids(child) or                     ((child.params or {}).get("follow") and child.started_at and child.params["follow"] != parent):
+                continue
+            # Dependencies are re-pointed to the clones; the ones that are not re-run are already satisfied.
+            child_params = {k: v for k, v in (child.params or {}).items() if k not in _DEP_KEYS}
+            for key in _DEP_KEYS:
+                ids = [mapping[int(i)] for i in (child.params or {}).get(key, []) if int(i) in mapping]
+                if ids:
+                    child_params[key] = ids
+            if child_params.get("follow") in mapping:
+                child_params["follow"] = mapping[child_params["follow"]]
             clone = runner.enqueue(child.kind, project_id=child.project_id, track_id=child.track_id,
-                                   params=child_params, depends_on=mapping[parent], title=child.title)
+                                   params=child_params, depends_on=mapping.get(child.depends_on_id),
+                                   title=child.title)
             mapping[child.id] = clone.id
             pending.append(child.id)
             resumed += 1
     return {"job_id": new.id, "resumed": resumed}
+
+
+#: Extra dependencies kept in job params (see jobs.runner).
+_DEP_KEYS = ("_after", "_started", "_wait")
+
+
+def _dep_ids(job: Job) -> set[int]:
+    ids = {int(i) for key in _DEP_KEYS for i in (job.params or {}).get(key, [])}
+    return ids | ({job.depends_on_id} if job.depends_on_id else set())
 
 
 @router.post("/jobs/cancel-all")

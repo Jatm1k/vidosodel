@@ -12,7 +12,7 @@ from typing import Any
 import cv2
 
 from ..db import session_scope
-from ..models import Character, Scene, Track
+from ..models import Character, Job, Scene, Track
 from ..pipeline import characters as chars
 from ..pipeline import llm_tasks
 from ..pipeline.image_plan import plan_project
@@ -141,46 +141,74 @@ def generate_one(
 
 @register("images", "images", "Генерация изображений")
 def images_job(ctx: JobContext) -> dict[str, Any]:
+    """Generate the scene images.
+
+    Params: ``scene_ids`` – only these; ``force`` – redraw ready ones too;
+    ``follow`` – id of a prompts job that is still writing prompts: scenes are
+    drawn as soon as their prompts appear, and the job ends after that job;
+    ``follow_overwrite`` – that job rewrites existing prompts, so a scene waits
+    for its new prompt (or for the prompts job to end).
+    """
     only_ids = set(ctx.params.get("scene_ids") or [])
     force = bool(ctx.params.get("force"))
+    follow = ctx.params.get("follow")
     with session_scope() as db:
         tc = load_track(db, ctx.track_id)
         if tc.shares_images:
             raise JobError("Этот язык использует картинки основного языка — генерируйте их там.")
-        scenes = [s for s in tc.track.scenes if (s.id in only_ids) or
-                  (not only_ids and (force or s.image_status != "done" or not s.image_file))]
-        no_prompt = [s.idx + 1 for s in scenes if not s.prompt.strip()]
-        scenes = [s for s in scenes if s.prompt.strip()]
-        if no_prompt and not scenes:
-            raise JobError(f"У сцен нет промптов (№ {', '.join(map(str, no_prompt[:15]))}"
-                           f"{'…' if len(no_prompt) > 15 else ''}). Сначала создайте промпты.")
+        wanted = {s.id for s in tc.track.scenes if (s.id in only_ids) or
+                  (not only_ids and (force or s.image_status != "done" or not s.image_file))}
+        stale = ({s.id: s.prompt for s in tc.track.scenes
+                  if s.id in wanted and s.prompt.strip() and not s.prompt_locked}
+                 if follow and ctx.params.get("follow_overwrite") else {})
         images, llm = tc.settings.images, tc.settings.llm
-        plan = plan_project(tc.project, images, limiter.hourly_budget())
-        jobs = [(s.id, s.prompt, plan.ops.get(s.id, images.operation)) for s in scenes]
-        cast = list(tc.project.characters) if images.character_refs else []
-        # scene id → characters in it (only when the scene's model can take reference images)
-        scene_cast = {s.id: chars.scene_character_ids(s, cast) for s in scenes} if cast else {}
-        for s in scenes:
-            s.image_status, s.image_error = "queued", None
         project_id, track_id = tc.project.id, tc.track.id
-    if not jobs:
+    if not wanted:
         return {"message": "Все изображения уже готовы"}
-    track_changed(track_id, "images")
 
     out_dir = track_dir(project_id, track_id, "images")
-    if any(scene_cast.values()):
-        from .character_jobs import ensure_portraits  # noqa: PLC0415 – avoids an import cycle
-
-        ensure_portraits(project_id, ctx)
+    submitted: set[int] = set()
+    # scene id → characters in it (only when the scene's model can take reference images)
+    scene_cast: dict[int, list[int]] = {}
     # character id → (name, file name of the input, description, image data URI)
     portraits: dict[int, tuple[str, str, str, str]] = {}
-    if scene_cast:
-        taken: set[str] = set()
+    refs: list[str] = []
+    by_op: dict[str, int] = {}
+
+    def take(final: bool) -> list[tuple[int, str, str]]:
+        """Wanted scenes with a ready prompt not taken yet, marked as queued. ``final`` – no new prompts will come."""
+        nonlocal refs
         with session_scope() as db:
-            for c in db.query(Character).filter(Character.project_id == project_id):
-                if c.image_file and (uri := image_data_uri(c.image_file, 1024)):
-                    portraits[c.id] = (c.name, chars.reference_name(c.name, taken), c.description or "", uri)
-    refs = reference_inputs(images, {op for _, _, op in jobs})
+            track = db.get(Track, track_id)
+            if track is None:
+                return []
+            ready = [s for s in track.scenes if s.id in wanted and s.id not in submitted and s.prompt.strip()
+                     and (final or s.id not in stale or s.prompt != stale[s.id])]
+            if not ready:
+                return []
+            plan = plan_project(track.project, images, limiter.hourly_budget())
+            cast = list(track.project.characters) if images.character_refs else []
+            for s in ready:
+                if cast:
+                    scene_cast[s.id] = chars.scene_character_ids(s, cast)
+                s.image_status, s.image_error = "queued", None
+            batch = [(s.id, s.prompt, plan.ops.get(s.id, images.operation)) for s in ready]
+        submitted.update(sid for sid, _, _ in batch)
+        if not portraits and any(scene_cast.get(sid) for sid, _, _ in batch):
+            from .character_jobs import ensure_portraits  # noqa: PLC0415 – avoids an import cycle
+
+            ensure_portraits(project_id, ctx)
+            taken: set[str] = set()
+            with session_scope() as db:
+                for c in db.query(Character).filter(Character.project_id == project_id):
+                    if c.image_file and (uri := image_data_uri(c.image_file, 1024)):
+                        portraits[c.id] = (c.name, chars.reference_name(c.name, taken), c.description or "", uri)
+        if not refs:
+            refs = reference_inputs(images, {op for _, _, op in batch})
+        for _, _, op in batch:
+            by_op[op] = by_op.get(op, 0) + 1
+        track_changed(track_id, "images")
+        return batch
 
     def scene_inputs(scene_id: int, operation: str) -> tuple[list[Any], str]:
         """Reference inputs and the note for one scene: its characters first, then the style refs.
@@ -200,9 +228,6 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             note += "The style_reference images show only the art style, not these characters. "
         return inputs[:chars.MAX_INPUTS], note
 
-    by_op: dict[str, int] = {}
-    for _, _, op in jobs:
-        by_op[op] = by_op.get(op, 0) + 1
     done = failed = 0
     lock = threading.Lock()
     wait_msg = {"text": ""}
@@ -265,27 +290,61 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
 
     workers = max(1, limiter.status()["threads"])
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        pending = {pool.submit(work, sid, prompt, op) for sid, prompt, op in jobs}
-        while pending:
-            # Wake up regularly so the status line stays fresh while workers wait for budget.
-            _, pending = wait(pending, timeout=3, return_when=FIRST_COMPLETED)
-            msg = f"Готово {done}/{len(jobs)}" + (f", ошибок {failed}" if failed else "")
+        pending: set = set()
+        while True:
+            # Checked before taking scenes: prompts saved right before the prompts job ended are not missed.
+            final = not follow or job_status(int(follow)) not in ("queued", "running")
+            stopping = ctx.should_stop()
+            if not stopping:
+                pending |= {pool.submit(work, *item) for item in take(final)}
+            waiting_prompts = not final and not stopping
+            # Only waiting for prompts: another project's images may use the lane meanwhile.
+            ctx.set_idle(waiting_prompts and not pending)
+            if not pending and not waiting_prompts:
+                break
+            if pending:
+                # Wake up regularly so the status line stays fresh while workers wait for budget.
+                _, pending = wait(pending, timeout=3, return_when=FIRST_COMPLETED)
+            else:
+                time.sleep(3)
+            msg = f"Готово {done}/{len(wanted)}" + (f", ошибок {failed}" if failed else "")
+            if waiting_prompts and len(submitted) < len(wanted):
+                msg += f" · промптов пока {len(submitted)}, жду остальные"
             if wait_msg["text"] and limiter.waiting:
                 msg += f" · {wait_msg['text']}"
-            ctx.progress((done + failed) / len(jobs), msg)
+            ctx.progress((done + failed) / len(wanted), msg)
+    ctx.set_idle(False)
     if ctx.should_stop():
         return {"message": f"Остановлено: готово {done}"}
     track_changed(track_id, "images")
+    no_prompt = len(wanted) - len(submitted)
+    if follow and no_prompt and (status := job_status(int(follow))) in ("failed", "cancelled"):
+        # The chain must not go on to the render; retrying the prompts resumes this step too.
+        if status == "cancelled":
+            raise JobCancelled()
+        raise JobError(f"Промпты созданы не для всех сцен: картинок {done}, без промпта {no_prompt}. "
+                       "Перезапустите промпты — картинки продолжатся.")
+    if not submitted:
+        with session_scope() as db:
+            idx = sorted(s.idx + 1 for s in db.get(Track, track_id).scenes if s.id in wanted)
+        raise JobError(f"У сцен нет промптов (№ {', '.join(map(str, idx[:15]))}"
+                       f"{'…' if len(idx) > 15 else ''}). Сначала создайте промпты.")
     if failed and not done:
         raise JobError(f"Не удалось создать ни одного изображения ({failed} ошибок). Подробности — в карточках сцен.")
     return {"message": f"Изображений: {done}" + (f", ошибок: {failed} (можно перезапустить)" if failed else "")
-            + (f", пропущено без промпта: {len(no_prompt)}" if no_prompt else "")
+            + (f", пропущено без промпта: {no_prompt}" if no_prompt else "")
             + (" (" + ", ".join(f"{IMAGE_OPS_BY_ID.get(op, {}).get('name', op)}: {n}" for op, n in by_op.items()) + ")"
                if len(by_op) > 1 else "")}
 
 
+def job_status(job_id: int) -> str | None:
+    with session_scope() as db:
+        job = db.get(Job, job_id)
+        return job.status if job else None
+
+
 # ------------------------------------------------------------------------ thumbnails
-@register("thumbnails", "images", "Превью (обложки)")
+@register("thumbnails", "images_few", "Превью (обложки)")
 def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
     """Draw the thumbnails of the saved ideas; ``index`` redraws one idea (same idea, new render)."""
     only = ctx.params.get("indices")

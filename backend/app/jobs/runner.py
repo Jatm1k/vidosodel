@@ -7,7 +7,13 @@
 * Each job kind belongs to a *lane* with its own concurrency limit, so a long
   render does not block LLM work and image jobs share the FastGen budget.
 * ``depends_on`` chains steps of the full pipeline; a failed step cancels the
-  rest of the chain.
+  rest of the chain. Extra dependencies live in ``params``:
+  ``_after`` – like ``depends_on``; ``_started`` – the job may start once these
+  have started (images follow the prompts while they are being written);
+  ``_wait`` – wait for these to end, whatever their outcome.
+* Bulk prompts and bulk image jobs run one at a time across all projects, so
+  the LLM and image budgets each finish one project before the next. A
+  ``_low`` job (pipeline metadata) waits until no LLM pipeline work is left.
 """
 from __future__ import annotations
 
@@ -38,6 +44,10 @@ class JobError(Exception):
     """A user-facing failure (message is shown as-is in the UI)."""
 
 
+#: A job idle this long (e.g. images waiting while the LLM is over its hourly limit) frees its lane.
+IDLE_YIELD = 60.0
+
+
 @dataclass
 class JobContext:
     job_id: int
@@ -45,10 +55,23 @@ class JobContext:
     params: dict[str, Any]
     project_id: int | None
     track_id: int | None
+    #: Set by a handler while it has nothing to do (images waiting for new prompts, 0 – busy).
+    #: After ``IDLE_YIELD`` seconds the job stops holding its lane, so another one may run meanwhile.
+    idle_since: float = 0.0
     _cancel: threading.Event = field(default_factory=threading.Event)
     _last_flush: float = 0.0
     _progress: float = 0.0
     _message: str = ""
+
+    def set_idle(self, idle: bool) -> None:
+        if not idle:
+            self.idle_since = 0.0
+        elif not self.idle_since:
+            self.idle_since = time.time()
+
+    @property
+    def yields_lane(self) -> bool:
+        return bool(self.idle_since) and time.time() - self.idle_since > IDLE_YIELD
 
     def should_stop(self) -> bool:
         return self._cancel.is_set()
@@ -95,8 +118,20 @@ def kind_title(kind: str) -> str:
 
 def _lane_limits() -> dict[str, int]:
     cfg = load_config()
-    return {"llm": 3, "voice": max(1, cfg.lumean_parallel_orders), "images": 3,
-            "render": max(1, cfg.parallel_renders), "preview": 1, "misc": 4}
+    return {"llm": 3, "prompts": 1, "voice": max(1, cfg.lumean_parallel_orders), "images": 1,
+            "images_few": 3, "characters": 1, "render": max(1, cfg.parallel_renders), "preview": 1, "misc": 4}
+
+
+def _job_lane(kind: str, params: dict[str, Any] | None) -> str:
+    """Lane of a job: a few scenes picked by hand do not wait behind another project's bulk run."""
+    lane = _REGISTRY[kind][0]
+    if (params or {}).get("scene_ids"):
+        return {"prompts": "llm", "images": "images_few"}.get(lane, lane)
+    return lane
+
+
+#: LLM work of the pipeline that ``_low`` jobs (metadata) let go first.
+_LLM_PIPELINE_KINDS = ("translate", "scenes", "bible", "characters", "prompts")
 
 
 def job_to_dict(job: Job) -> dict[str, Any]:
@@ -186,28 +221,41 @@ class JobRunner:
         limits = _lane_limits()
         with self._lock:
             busy: dict[str, int] = {}
-            for lane, _ in self._running.values():
-                busy[lane] = busy.get(lane, 0) + 1
+            for lane, c in self._running.values():
+                if not c.yields_lane:
+                    busy[lane] = busy.get(lane, 0) + 1
         to_start: list[tuple[int, str]] = []
         with session_scope() as db:
             queued = list(db.scalars(select(Job).where(Job.status == "queued").order_by(Job.id)))
+            llm_pending = any(
+                j.kind in _LLM_PIPELINE_KINDS and not (j.params or {}).get("scene_ids")
+                for j in queued
+            ) or any(j.kind in _LLM_PIPELINE_KINDS for j in db.scalars(select(Job).where(Job.status == "running")))
             for job in queued:
                 if job.kind not in _REGISTRY:
                     job.status, job.error = "failed", "неизвестный тип задачи"
                     continue
+                params = job.params or {}
                 # ``depends_on_id`` plus optional extra dependencies in params["_after"].
                 dep_ids = [job.depends_on_id] if job.depends_on_id else []
-                dep_ids += [int(x) for x in (job.params or {}).get("_after", [])]
+                dep_ids += [int(x) for x in params.get("_after", [])]
                 deps = [d for d in (db.get(Job, i) for i in dep_ids) if d is not None]
-                if any(d.status in ("queued", "running") for d in deps):
+                started = [d for d in (db.get(Job, int(i)) for i in params.get("_started", [])) if d is not None]
+                waits = [d for d in (db.get(Job, int(i)) for i in params.get("_wait", [])) if d is not None]
+                if any(d.status in ("queued", "running") for d in deps + waits) or                         any(d.status == "queued" for d in started):
                     continue
-                if any(d.status in ("failed", "cancelled") for d in deps):
+                if any(d.status in ("failed", "cancelled") for d in deps + started):
                     job.status, job.finished_at = "cancelled", utcnow()
                     job.message = "Пропущено: предыдущий шаг не выполнен"
                     bus.publish({"type": "job", "job": job_to_dict(job)})
                     continue
-                lane = _REGISTRY[job.kind][0]
+                if params.get("_low") and llm_pending:
+                    self._hold(job, "Ждёт конца промптов и других LLM-шагов, чтобы не занимать лимит токенов")
+                    continue
+                lane = _job_lane(job.kind, params)
                 if busy.get(lane, 0) >= limits.get(lane, 1):
+                    if lane in ("prompts", "images"):
+                        self._hold(job, "В очереди: выполняется другой проект")
                     continue
                 # Never run two jobs of the same kind on the same track at once.
                 with self._lock:
@@ -224,6 +272,13 @@ class JobRunner:
                 bus.publish({"type": "job", "job": job_to_dict(job)})
         for job_id, lane in to_start:
             self._start(job_id, lane)
+
+    @staticmethod
+    def _hold(job: Job, message: str) -> None:
+        """Explain in the UI why a ready job still waits."""
+        if job.message != message:
+            job.message = message
+            bus.publish({"type": "job", "job": job_to_dict(job)})
 
     def _start(self, job_id: int, lane: str) -> None:
         with session_scope() as db:

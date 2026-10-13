@@ -127,7 +127,7 @@ def ensure_portraits(project_id: int, ctx: JobContext, *, only: set[int] | None 
     return result["done"], result["failed"]
 
 
-@register("characters", "images", "Персонажи")
+@register("characters", "characters", "Персонажи")
 def characters_job(ctx: JobContext) -> dict[str, Any]:
     """Params: ``rescan`` – search the script again; ``character_ids`` + ``force`` – redraw these portraits."""
     project_id = ctx.project_id

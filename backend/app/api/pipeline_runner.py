@@ -7,6 +7,11 @@ Steps run in this order per track, each depending on the previous one::
 ``characters`` (reference portraits) runs only when it is enabled in the image
 settings, once per project – on the master track.
 
+``images`` does not wait for all prompts: it starts together with ``prompts``
+and draws every scene as soon as its prompt is written. ``metadata`` (heavy on
+LLM tokens) needs only the voice-over, but runs as low priority – after the
+prompts of every queued project, so it never holds back the images.
+
 Already finished steps are skipped unless ``force`` is set, so the same button
 means "continue from where it stopped". With shared images, other languages
 wait for the master track (scenes are aligned to the master's scenes, renders
@@ -68,6 +73,7 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
         is_master = track.id == master_id
         shares = project.image_mode == "shared" and not is_master
         prev: int | None = None
+        before_prompts: int | None = None
         step_jobs: dict[str, int] = {}
         for step in selected:
             if step == "translate" and (is_master or master is None):
@@ -98,6 +104,16 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
                 params["ideas"] = True  # redo = new thumbnail ideas too
             if step == "prompts" and force:
                 params["overwrite"] = True
+            if step == "images" and "prompts" in step_jobs:
+                # Draw scenes while the prompts are being written (see the module docstring).
+                params["follow"] = step_jobs["prompts"]
+                params["_started"] = [step_jobs["prompts"]]
+                if force:
+                    params["follow_overwrite"] = True
+            if step == "render" and "prompts" in step_jobs:
+                after.append(step_jobs["prompts"])  # images no longer depend on the prompts directly
+            if step == "metadata":
+                params["_low"] = True
             if step == "render" and options.get("allow_missing"):
                 params["allow_missing"] = True
             if step == "characters" and force:
@@ -115,8 +131,12 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
                 depends = step_jobs.get("voice")
             elif step == "thumbnails":
                 depends = step_jobs.get("metadata")
+            elif step == "images" and "prompts" in step_jobs:
+                depends = before_prompts
             else:
                 depends = prev
+            if step == "prompts":
+                before_prompts = prev
             job = runner.enqueue(step, project_id=project.id, track_id=track.id, params=params, depends_on=depends)
             step_jobs[step] = job.id
             if step not in ("metadata", "thumbnails"):

@@ -110,7 +110,7 @@ def bible_job(ctx: JobContext) -> dict[str, Any]:
 
 
 # -------------------------------------------------------------------------- prompts
-@register("prompts", "llm", "Промпты для изображений")
+@register("prompts", "prompts", "Промпты для изображений")
 def prompts_job(ctx: JobContext) -> dict[str, Any]:
     only_ids = set(ctx.params.get("scene_ids") or [])
     overwrite = bool(ctx.params.get("overwrite"))
