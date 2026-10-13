@@ -290,10 +290,11 @@ def _render_segment(plan_dict: dict, first: int, last: int, out_path: str, threa
 
 # ===================================================================== audio
 def prepare_audio(src: Path, dest: Path, *, loudness: float, eq_seed: int | None, start: float = 0.0,
-                  duration: float | None = None) -> Path:
+                  duration: float | None = None, stop: threading.Event | None = None) -> Path:
     """Two-pass EBU R128 loudness normalisation → AAC 48 kHz stereo.
 
     ``eq_seed`` adds an inaudible random EQ tilt (±0.6 dB) for uniqueness.
+    ``stop`` kills the running ffmpeg (``InterruptedError``).
     """
     trim = []
     if start > 0:
@@ -307,7 +308,7 @@ def prepare_audio(src: Path, dest: Path, *, loudness: float, eq_seed: int | None
               f"equalizer=f={r.randint(2500, 6000)}:t=q:w=1.2:g={r.uniform(-0.6, 0.6):.2f},")
     target = f"I={loudness}:TP=-1.5:LRA=11"
     measure = run([ffmpeg_bin(), "-hide_banner", "-nostats", *trim, "-i", str(src),
-                   "-af", f"{eq}loudnorm={target}:print_format=json", "-f", "null", "-"])
+                   "-af", f"{eq}loudnorm={target}:print_format=json", "-f", "null", "-"], stop=stop)
     text = measure.stderr.decode("utf-8", "replace")
     m = json.loads(text[text.rfind("{"):text.rfind("}") + 1])
     second = (f"{eq}loudnorm={target}:measured_I={m['input_i']}:measured_TP={m['input_tp']}:"
@@ -315,7 +316,7 @@ def prepare_audio(src: Path, dest: Path, *, loudness: float, eq_seed: int | None
               "linear=true,aresample=48000")
     dest.parent.mkdir(parents=True, exist_ok=True)
     run([ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", *trim, "-i", str(src), "-af", second,
-         "-ac", "2", "-c:a", "aac", "-b:a", "256k", "-ar", "48000", str(dest)])
+         "-ac", "2", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "256k", "-ar", "48000", str(dest)], stop=stop)
     return dest
 
 
@@ -347,11 +348,20 @@ def render_video(
         if progress:
             progress(value, msg)
 
-    # --- audio first (fast; fails early on a broken file) ------------------------
-    report(0.01, "Обработка звука (нормализация громкости)")
+    # --- audio in the background: one ffmpeg on one core while the workers draw frames ---
     audio_out = work_dir / "audio.m4a"
-    prepare_audio(audio, audio_out, loudness=loudness, eq_seed=audio_eq_seed,
-                  start=plan.time_offset, duration=plan.duration if plan.preview else None)
+    audio_stop = threading.Event()
+    audio_error: list[BaseException] = []
+
+    def audio_task() -> None:
+        try:
+            prepare_audio(audio, audio_out, loudness=loudness, eq_seed=audio_eq_seed, start=plan.time_offset,
+                          duration=plan.duration if plan.preview else None, stop=audio_stop)
+        except BaseException as exc:  # noqa: BLE001 – re-raised in the main thread
+            audio_error.append(exc)
+
+    audio_thread = threading.Thread(target=audio_task, name="render-audio", daemon=True)
+    audio_thread.start()
 
     # --- video segments ----------------------------------------------------------
     total = plan.total_frames
@@ -361,6 +371,7 @@ def render_video(
     threads = max(1, (os.cpu_count() or 4) // n_workers)
     plan_dict = plan.to_dict()
 
+    report(0.01, "Запуск рендера")
     manager = mp.Manager()
     progress_q = manager.Queue()
     cancel_ev = manager.Event()
@@ -373,6 +384,11 @@ def render_video(
                        for k, (a, b) in enumerate(ranges)]
             pending = set(futures)
             while pending:
+                if audio_error:  # a broken audio file: no point drawing the rest
+                    cancel_ev.set()
+                    for f in pending:
+                        f.cancel()
+                    raise audio_error[0]
                 while not progress_q.empty():
                     done_frames += progress_q.get_nowait()
                 if should_stop and should_stop():
@@ -395,8 +411,21 @@ def render_video(
                 time.sleep(0.5)
             for f in as_completed(futures):
                 f.result()
+    except BaseException:
+        audio_stop.set()
+        raise
     finally:
         manager.shutdown()
+    if audio_thread.is_alive():
+        report(0.95, "Обработка звука (нормализация громкости)")
+    while audio_thread.is_alive():
+        if should_stop and should_stop():
+            audio_stop.set()
+            audio_thread.join()
+            raise InterruptedError("Рендер отменён")
+        audio_thread.join(0.5)
+    if audio_error:
+        raise audio_error[0]
 
     # --- concat + mux --------------------------------------------------------------
     report(0.96, "Сборка финального файла")

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 from functools import lru_cache
 from pathlib import Path
 
@@ -19,11 +20,36 @@ log = logging.getLogger(__name__)
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
-def run(cmd: list[str], *, cwd: Path | None = None, timeout: float | None = None) -> subprocess.CompletedProcess:
-    """Run a command, raising ``RuntimeError`` with the stderr tail on failure."""
-    proc = subprocess.run(
-        cmd, cwd=cwd, capture_output=True, timeout=timeout, creationflags=CREATE_NO_WINDOW,
-    )
+def run(cmd: list[str], *, cwd: Path | None = None, timeout: float | None = None,
+        stop: threading.Event | None = None) -> subprocess.CompletedProcess:
+    """Run a command, raising ``RuntimeError`` with the stderr tail on failure.
+
+    With ``stop`` the process is killed as soon as the event is set (``InterruptedError``).
+    """
+    if stop is None:
+        proc = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, timeout=timeout, creationflags=CREATE_NO_WINDOW,
+        )
+    else:
+        popen = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 creationflags=CREATE_NO_WINDOW)
+        out: dict[str, bytes] = {}
+
+        def drain(name: str, stream) -> None:
+            out[name] = stream.read()
+
+        readers = [threading.Thread(target=drain, args=(n, s), daemon=True)
+                   for n, s in (("stdout", popen.stdout), ("stderr", popen.stderr))]
+        for r in readers:
+            r.start()
+        while popen.poll() is None:
+            if stop.wait(0.5):
+                popen.kill()
+                popen.wait()
+                raise InterruptedError("остановлено")
+        for r in readers:
+            r.join()
+        proc = subprocess.CompletedProcess(cmd, popen.returncode, out.get("stdout", b""), out.get("stderr", b""))
     if proc.returncode != 0:
         tail = proc.stderr.decode("utf-8", "replace")[-2000:]
         raise RuntimeError(f"{Path(cmd[0]).name} завершился с ошибкой:\n{tail}")
