@@ -503,15 +503,16 @@ def thumbnail_image_prompt(concept: dict[str, Any], publish: PublishSettings, *,
             f"YouTube thumbnail composition: the one dominant subject fills the {side} half of the frame, large "
             f"and clear, very few elements; the {free} 45% of the frame is a calm, simple, empty background with "
             "no objects, reserved for a caption added later. Instantly readable meaning, clear silhouette that "
-            "stays readable at a tiny phone size; if a face is shown, its emotion is large and readable. "
+            "stays readable at a tiny phone size; close framing, the subject is big; a face shows an intense, "
+            "exaggerated emotion readable from far away. "
             "No text, letters, numbers, captions, signs or logos anywhere in the image"
         )
     else:
         parts.append(
             "YouTube thumbnail composition: one dominant focal subject filling about half of the frame, placed "
             "on one side, very few elements, simple uncluttered background, instantly readable meaning, clear "
-            "silhouette that stays readable at a tiny phone size; if a face is shown, its emotion is large and "
-            "readable"
+            "silhouette that stays readable at a tiny phone size; close framing, the subject is big; a face "
+            "shows an intense, exaggerated emotion readable from far away"
         )
         if publish.thumbnail_text and headline:
             parts.append(
