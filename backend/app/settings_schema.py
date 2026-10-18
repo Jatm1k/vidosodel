@@ -198,6 +198,21 @@ class SubtitleSettings(_Base):
     accent_color: str = "#FFD84D"
 
 
+class ChapterSettings(_Base):
+    """Chapter cards: an animated title over the picture when a chapter starts (see render.chapter_cards)."""
+
+    enabled: bool = False
+    #: ``auto`` – one of the designs per video, picked by the render seed.
+    style: Literal["auto", "cinema", "editorial", "brush", "minimal"] = "auto"
+    #: «ГЛАВА 2» / «ГЛАВА II» / no kicker.
+    kicker: Literal["word", "roman", "none"] = "word"
+    #: Font family of the title; empty – the design's own.
+    font: str = ""
+    #: Accent colour; empty – the design's own.
+    color: str = ""
+    duration: float = 3.6
+
+
 class UniqueSettings(_Base):
     """Per-render variations that make every upload technically unique."""
 
@@ -244,6 +259,7 @@ class PipelineSettings(_Base):
     render: RenderSettings = Field(default_factory=RenderSettings)
     atmosphere: AtmosphereSettings = Field(default_factory=AtmosphereSettings)
     subtitles: SubtitleSettings = Field(default_factory=SubtitleSettings)
+    chapters: ChapterSettings = Field(default_factory=ChapterSettings)
     unique: UniqueSettings = Field(default_factory=UniqueSettings)
     publish: PublishSettings = Field(default_factory=PublishSettings)
 

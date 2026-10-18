@@ -10,7 +10,7 @@ import Dialog from 'primevue/dialog'
 import { api } from '@/api/client'
 
 export interface FxPreviewTarget {
-  kind: 'motion' | 'transition' | 'atmosphere'
+  kind: 'motion' | 'transition' | 'atmosphere' | 'chapter'
   effect: string
   title: string
 }

@@ -21,7 +21,7 @@ POOL = 40
 
 
 class PreviewRequest(BaseModel):
-    kind: Literal["motion", "transition", "atmosphere"]
+    kind: Literal["motion", "transition", "atmosphere", "chapter"]
     effect: str
     channel_id: int | None = None
     project_id: int | None = None

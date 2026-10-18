@@ -22,6 +22,8 @@ from ..config import ffmpeg_bin
 from ..settings_schema import AtmosphereSettings
 from . import depth as depth_mod
 from .atmosphere import make_params
+from .chapter_cards import STYLES as CARD_STYLES
+from .chapter_cards import Card, kicker_text, to_plan
 from .engine import FrameRenderer, PlanScene, RenderPlan
 from .media import CREATE_NO_WINDOW, imwrite
 from .motion import EFFECTS
@@ -32,11 +34,11 @@ log = logging.getLogger(__name__)
 
 WIDTH, HEIGHT, FPS = 960, 540, 25
 #: Bump when preview rendering changes, so cached clips are re-rendered.
-VERSION = 1
+VERSION = 2
 #: Cached clips kept on disk.
 KEEP = 80
 ATMOSPHERE_EFFECTS = ("line_boil", "grain_boil", "breathing", "light_pulse", "vignette_breathing", "dust")
-KINDS = ("motion", "transition", "atmosphere")
+KINDS = ("motion", "transition", "atmosphere", "chapter")
 
 _lock = threading.Lock()
 
@@ -137,6 +139,23 @@ def _plan(kind: str, effect: str, images: list[str], settings: dict) -> RenderPl
         duration = 4.4
         scenes = [PlanScene(images[0], 0, 2.2, "zoom_in", seed=3),
                   PlanScene(images[1], 2.2, duration, "zoom_out", seed=4, transition=effect)]
+    elif kind == "chapter":
+        duration = 5.0
+        cfg = dict(settings.get("chapters") or {})
+        title = str(settings.get("chapter_title") or "").strip() or "Почему спина болит по утрам"
+        number = 2
+        card = Card(start=0.7, duration=min(4.2, float(cfg.get("duration") or 3.6)), number=number, title=title,
+                    kicker=kicker_text(str(cfg.get("kicker") or "word"), number, str(settings.get("language") or "ru")),
+                    side="left", seed=11)
+        subject = _subject(images[0])
+        if subject and subject.get("cx", 0.5) < 0.45:
+            card.side = "right"
+        scenes = [PlanScene(images[0], 0, duration, "zoom_in", seed=3)]
+        plan = RenderPlan(WIDTH, HEIGHT, FPS, duration, scenes, look=look, intensity=intensity,
+                          fade_in=0, fade_out=0, encoder="libx264", quality="fast", preview=True)
+        plan.chapter_cards = {"style": effect, "color": str(cfg.get("color") or ""),
+                              "font": str(cfg.get("font") or ""), "cards": to_plan([card])}
+        return plan
     else:
         cfg = dict(settings.get("atmosphere") or {})
         if effect == "all":
@@ -160,7 +179,7 @@ def _plan(kind: str, effect: str, images: list[str], settings: dict) -> RenderPl
 
 def _cache_key(kind: str, effect: str, images: list[str], settings: dict) -> str:
     relevant = {"motion": ("motion_intensity", "depth_of_field"), "transition": ("transition_duration",),
-                "atmosphere": ("atmosphere",)}[kind]
+                "atmosphere": ("atmosphere",), "chapter": ("chapters", "chapter_title", "language")}[kind]
     stamp = [(p, Path(p).stat().st_mtime) for p in images]
     raw = json.dumps([VERSION, kind, effect, stamp, {k: settings.get(k) for k in relevant}], sort_keys=True)
     return hashlib.sha1(raw.encode()).hexdigest()[:20]
@@ -171,7 +190,8 @@ def render(kind: str, effect: str, images: list[str], settings: dict, out_dir: P
     """Render (or reuse) the preview clip; returns its path inside ``out_dir``."""
     if kind not in KINDS:
         raise PreviewError(f"Неизвестный тип превью: {kind}")
-    valid = {"motion": EFFECTS, "transition": TRANSITIONS, "atmosphere": (*ATMOSPHERE_EFFECTS, "all")}[kind]
+    valid = {"motion": EFFECTS, "transition": TRANSITIONS, "atmosphere": (*ATMOSPHERE_EFFECTS, "all"),
+             "chapter": CARD_STYLES}[kind]
     if effect not in valid:
         raise PreviewError(f"Неизвестный эффект: {effect}")
     need = 2 if kind == "transition" else 1

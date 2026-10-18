@@ -9,12 +9,14 @@ from typing import Any
 from ..config import get_settings
 from ..db import session_scope
 from ..models import Track
+from ..pipeline import chapters as chapters_mod
 from ..pipeline import llm_tasks, packaging
 from ..render.engine import RESOLUTIONS, PlanScene, RenderPlan, render_video
 from ..render.atmosphere import make_params as atmosphere_params
 from ..render.look import random_look
 from ..render.media import pick_encoder
 from ..render import parallax
+from ..render import chapter_cards
 from ..render.accents import avoid_subject, place as place_accents
 from ..render.motion import EFFECTS
 from ..render.subtitles import build_cues, write_ass, write_srt
@@ -112,7 +114,13 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         work = track_dir(project.id, track.id, "render", "preview" if preview else "work")
         timings = load_timings(track)
         subs = s.subtitles
-        accent_req = None
+        accent_req = chapter_req = None
+        cfg_ch = s.chapters
+        if cfg_ch.enabled and timings and track.script.strip():
+            cands = chapters_mod.candidates(timings)
+            chapter_req = {"key": chapters_mod.cache_key(track.script, cands), "cands": cands,
+                           "language": track.language, "llm": s.llm, "cached": track.chapters or {},
+                           "meta": (track.publish_meta or {}).get("chapters") or []}
         if subs.accents and timings and track.script.strip():
             count = max(1, round((track.audio_duration or timings.duration) / 60 * subs.accents_per_minute))
             accent_req = {"key": f"{text_hash(track.script)}:{count}", "count": count, "script": track.script,
@@ -139,6 +147,17 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         )
         if warning:
             ctx.progress(base, warning, force=True)
+    if chapter_req:
+        items = _chapter_items(ctx, track_id, chapter_req)
+        cards = chapter_cards.build_cards(
+            items, timings.words, plan, duration=cfg_ch.duration, kicker=cfg_ch.kicker,
+            language=chapter_req["language"], seed=seed)
+        if cards:
+            plan.chapter_cards = {"style": chapter_cards.pick_style(cfg_ch.style, seed), "color": cfg_ch.color,
+                                  "font": cfg_ch.font, "cards": chapter_cards.to_plan(cards)}
+            # No key phrase over a chapter title.
+            accents = [a for a in accents if not any(c.start - 1.0 < a.end and a.start < c.start + c.duration
+                                                     for c in cards)]
     if accents:
         avoid_subject(accents, plan)  # after the depth pass: its subjects are cached by then
     if timings and (subs.enabled or accents):
@@ -168,7 +187,8 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
                 "seed": seed, "duration": plan.duration, "resolution": f"{plan.width}x{plan.height}",
                 "fps": plan.fps, "encoder": plan.encoder, "size": out_path.stat().st_size,
                 "render_seconds": round(elapsed, 1), "rendered_at": time.time(),
-                "subtitles": bool(subs.enabled and timings), "accents": len(accents), "srt": to_rel(out_path.with_suffix(".srt")) if timings else None,
+                "subtitles": bool(subs.enabled and timings), "accents": len(accents),
+                "chapter_cards": len((plan.chapter_cards or {}).get("cards") or []), "srt": to_rel(out_path.with_suffix(".srt")) if timings else None,
             }
     if not preview:
         shutil.rmtree(work, ignore_errors=True)
@@ -194,6 +214,29 @@ def _accent_items(ctx: JobContext, track_id: int, req: dict[str, Any]) -> list[d
     return items
 
 
+def _chapter_items(ctx: JobContext, track_id: int, req: dict[str, Any]) -> list[dict[str, Any]]:
+    """Chapters with short titles for the cards: cached on the track, else asked from the LLM.
+
+    Chapters the metadata step already put into the description are kept, only their cards are written.
+    """
+    items = chapters_mod.cached(req["cached"], req["key"])
+    if items and all(c.get("card") for c in items):
+        return items
+    valid = {int(t) for t, _ in req["cands"]} | {0}
+    existing = items or ([{"t": int(c["t"]), "title": c.get("title", "")} for c in req["meta"]]
+                         if req["meta"] and all(int(c.get("t", -1)) in valid for c in req["meta"]) else None)
+    ctx.progress(0.0, "Названия глав для заставок", force=True)
+    try:
+        with FastgenClient() as fg:
+            items = chapters_mod.make_chapters(fg, req["cands"], req["language"], req["llm"], existing=existing)
+    except Exception as e:  # the cards are a nicety: the video renders without them
+        ctx.progress(0.0, f"Главы не подобраны: {e}", force=True)
+        return items or []
+    with session_scope() as db:
+        db.get(Track, track_id).chapters = {"key": req["key"], "items": items}
+    return items
+
+
 @register("render", "render", "Рендер видео")
 def render_job(ctx: JobContext) -> dict[str, Any]:
     return _render(ctx, preview=False)
@@ -213,20 +256,9 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
         if not track.script.strip():
             raise JobError("Нет сценария")
         timings = load_timings(track)
-        chapters: list[tuple[float, str]] = []
-        if timings and timings.words:
-            seen: set[int] = set()
-            for i, w in enumerate(timings.words):
-                if w.p not in seen and w.p >= 0:
-                    seen.add(w.p)
-                    chapters.append((0.0 if not chapters else w.s,
-                                     " ".join(x.w for x in timings.words[i:i + 25])))
-            if len(chapters) < 4:  # no paragraphs – candidates every ~45 s
-                chapters, last = [], -999.0
-                for i, w in enumerate(timings.words):
-                    if w.s - last >= 45:
-                        chapters.append((0.0 if not chapters else w.s, " ".join(x.w for x in timings.words[i:i + 25])))
-                        last = w.s
+        chapters = chapters_mod.candidates(timings)
+        chapters_key = chapters_mod.cache_key(track.script, chapters)
+        fixed = chapters_mod.cached(track.chapters, chapters_key)  # the video's chapter cards show these
         script, lang, llm, pub, track_id = track.script, track.language, tc.settings.llm, tc.settings.publish, track.id
         old_meta = dict(track.publish_meta or {})
         old_files = list(track.thumbnails or [])
@@ -244,7 +276,8 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
         titles = [r["text"] for r in ranked]
         title = _idea_title(project_name, titles)
         ctx.progress(0.7, "Описание и теги", force=True)
-        meta = packaging.make_description(fg, brief, title, lang, chapters, llm, pub, script_head=script[:3000])
+        meta = packaging.make_description(fg, brief, title, lang, chapters, llm, pub, script_head=script[:3000],
+                                          fixed_chapters=fixed)
         meta.update({"titles": titles, "title_info": ranked, "brief": brief})
         if new_ideas and pub.thumbnail_count > 0:
             ctx.progress(0.85, "Идеи для обложек: текст и картинка к названию", force=True)
@@ -256,6 +289,8 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
     with session_scope() as db:
         t = db.get(Track, track_id)
         t.publish_meta = meta
+        if fixed is None and meta.get("chapters"):  # a later render makes its cards of the same chapters
+            t.chapters = {"key": chapters_key, "items": [{**c, "card": None} for c in meta["chapters"]]}
         if new_ideas:  # images of the replaced ideas
             for rel in old_files:
                 p = to_abs(rel)

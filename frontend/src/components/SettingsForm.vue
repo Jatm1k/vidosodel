@@ -41,6 +41,7 @@ const sections = [
   { id: 'render', label: 'Анимация и видео', icon: 'pi-video' },
   { id: 'atmosphere', label: 'Атмосфера', icon: 'pi-sun' },
   { id: 'subtitles', label: 'Субтитры', icon: 'pi-align-center' },
+  { id: 'chapters', label: 'Заставки глав', icon: 'pi-bookmark' },
   { id: 'unique', label: 'Уникализация', icon: 'pi-shield' },
   { id: 'publish', label: 'Публикация', icon: 'pi-youtube' },
 ] as const
@@ -54,8 +55,16 @@ function openPreview(kind: FxPreviewTarget['kind'], effect: string, title: strin
   previewOpen.value = true
 }
 function previewSettings() {
-  return JSON.parse(JSON.stringify({ ...s.value.render, atmosphere: s.value.atmosphere }))
+  return JSON.parse(JSON.stringify({ ...s.value.render, atmosphere: s.value.atmosphere, chapters: s.value.chapters }))
 }
+
+// ----------------------------------------------------------------- chapter cards
+const cardStyles = [
+  ['cinema', 'Кино', 'Сверху и снизу выезжают чёрные полосы, картинка темнеет и смягчается. Над названием с засечками разреженная надпись «Глава», буквы поднимаются по одной'],
+  ['editorial', 'Журнал', 'Огромная контурная цифра главы уходит за край кадра, строки жирного названия выезжают из-под маски, сторона кадра без героя затемняется'],
+  ['brush', 'Кисть', 'Поперёк кадра прорисовывается мазок туши с рваными краями и сухим хвостом, название лежит на нём с лёгким наклоном'],
+  ['minimal', 'Минимализм', 'Вырастает тонкая линия, из-за неё выезжают номер и название. Спокойно и аккуратно'],
+] as const
 
 // ----------------------------------------------------------------- atmosphere
 const atmosphereEffects = [
@@ -795,6 +804,84 @@ onMounted(async () => {
               <Select v-model="s.subtitles.accent_font" :options="fonts" editable class="w-56" />
               <ColorPicker :model-value="s.subtitles.accent_color.slice(1)" @update:model-value="(v: any) => (s.subtitles.accent_color = hex(v))" />
             </div>
+          </FormField>
+        </template>
+      </template>
+
+      <!-- ============================== CHAPTER CARDS -->
+      <template v-else-if="active === 'chapters'">
+        <p class="text-ink-3">
+          Когда в ролике начинается новая глава, поверх кадра на несколько секунд появляется её название. Озвучка при этом не
+          прерывается. Главы и короткие названия для экрана подбирает нейросеть. Таймкоды в описании YouTube совпадают с заставками.
+        </p>
+        <FormField label="Заставки глав">
+          <ToggleSwitch v-model="s.chapters.enabled" class="mt-1.5" />
+        </FormField>
+        <template v-if="s.chapters.enabled">
+          <FormField label="Дизайн" hint="«Разные» — для каждого ролика свой дизайн из четырёх. Сторона кадра выбирается так, чтобы не закрывать героя">
+            <Select
+              v-model="s.chapters.style"
+              :options="[{ id: 'auto', name: 'Разные для каждого ролика' }, ...cardStyles.map((c) => ({ id: c[0], name: c[1] }))]"
+              option-value="id"
+              option-label="name"
+              class="w-72"
+            />
+          </FormField>
+          <div class="grid grid-cols-2 gap-3">
+            <div
+              v-for="c in cardStyles"
+              :key="c[0]"
+              class="flex flex-col gap-2 rounded-md border p-3"
+              :class="s.chapters.style === c[0] ? 'border-tally/60 bg-tally/[0.04]' : 'border-line-soft'"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-medium">{{ c[1] }}</span>
+                <Button
+                  label="Превью"
+                  icon="pi pi-play"
+                  severity="secondary"
+                  size="small"
+                  text
+                  @click="openPreview('chapter', c[0], `Заставка главы: ${c[1]}`)"
+                />
+              </div>
+              <span class="text-[13px] text-ink-3">{{ c[2] }}</span>
+            </div>
+          </div>
+          <FormField label="Надпись над названием">
+            <Select
+              v-model="s.chapters.kicker"
+              :options="[{ id: 'word', name: 'ГЛАВА 2' }, { id: 'roman', name: 'ГЛАВА II' }, { id: 'none', name: 'Без надписи' }]"
+              option-value="id"
+              option-label="name"
+              class="w-56"
+            />
+          </FormField>
+          <FormField label="Шрифт названия" hint="Пусто — шрифт дизайна (с засечками в «Кино», жирный в «Журнале» и «Кисти»). Свои шрифты — в папку data/fonts">
+            <Select
+              v-model="s.chapters.font"
+              :options="[{ id: '', name: 'Шрифт дизайна' }, ...fonts.map((f) => ({ id: f, name: f }))]"
+              option-value="id"
+              option-label="name"
+              class="w-56"
+            />
+          </FormField>
+          <FormField label="Цвет акцента" hint="Надпись, линии, цифра, мазок кисти. По умолчанию у каждого дизайна свой">
+            <div class="flex items-center gap-3">
+              <ToggleSwitch
+                :model-value="!!s.chapters.color"
+                @update:model-value="(on: boolean) => (s.chapters.color = on ? '#E3C58B' : '')"
+              />
+              <ColorPicker
+                v-if="s.chapters.color"
+                :model-value="s.chapters.color.slice(1)"
+                @update:model-value="(v: any) => (s.chapters.color = hex(v))"
+              />
+              <span v-else class="text-[13px] text-ink-3">цвет дизайна</span>
+            </div>
+          </FormField>
+          <FormField label="Длительность" :value="`${s.chapters.duration.toFixed(1)} с`">
+            <Slider v-model="s.chapters.duration" :min="2.5" :max="5" :step="0.1" class="mt-3" />
           </FormField>
         </template>
       </template>

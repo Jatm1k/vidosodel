@@ -33,6 +33,7 @@ import numpy as np
 
 from ..config import ffmpeg_bin
 from .atmosphere import Atmosphere, AtmosphereParams, breath
+from .chapter_cards import CardRenderer
 from .look import LookParams, LookProcessor
 from .media import CAP_BY_REENCODE, CREATE_NO_WINDOW, cover_fit, encoder_args, imread, run
 from . import depth as depth_mod
@@ -88,6 +89,8 @@ class RenderPlan:
     max_mbps: int = 0
     preview: bool = False
     subtitles_ass: str | None = None
+    #: Chapter cards ``{"style", "color", "font", "cards": [Card as dict]}``; empty → none.
+    chapter_cards: dict = field(default_factory=dict)
     fonts_dir: str | None = None
     extra: dict = field(default_factory=dict)
 
@@ -121,6 +124,9 @@ class FrameRenderer:
         self._layers_cache: OrderedDict[str, tuple | None] = OrderedDict()
         self._parallax: ParallaxRenderer | None = None
         self._motions = [make_motion(s.effect, plan.intensity, s.seed) for s in plan.scenes]
+        cc = plan.chapter_cards
+        self.cards = (CardRenderer(cc["cards"], cc["style"], plan.width, plan.height, cc.get("color", ""),
+                                   cc.get("font", "")) if cc.get("cards") else None)
         self._starts = [s.start for s in plan.scenes]
         # Half of a transition happens before the boundary, half after.
         self._td = [0.0 if (i == 0 or s.transition == "cut") else plan.transition_duration
@@ -223,6 +229,8 @@ class FrameRenderer:
             fade = min(fade, max(0.0, (end_t - t) / p.fade_out))
         if self.fx.active:
             frame = self.fx.apply(frame, t)
+        if self.cards is not None:  # before the look: grain and grading lay over the title too
+            frame = self.cards.apply(frame, t)
         return self.look.apply(frame, fade, t)
 
 

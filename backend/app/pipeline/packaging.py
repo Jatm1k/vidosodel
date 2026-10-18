@@ -440,8 +440,13 @@ def localize_headings(text: str, language: str) -> str:
 def make_description(
     fg: FastgenClient, brief: dict[str, Any], title: str, language: str, chapters: list[tuple[float, str]],
     llm: LlmSettings, publish: PublishSettings, script_head: str = "",
+    fixed_chapters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Description parts, tags, hashtags and chapters (the layout is assembled by ``build_description``)."""
+    """Description parts, tags, hashtags and chapters (the layout is assembled by ``build_description``).
+
+    ``fixed_chapters`` – chapters already chosen for this voice-over (the chapter cards of the video
+    show them): used as they are instead of the LLM's picks.
+    """
     name = language_name(language)
     system = _DESCRIPTION_SYSTEM.format(language=name, tags=publish.tags_count)
     chapter_lines = "\n".join(f"{int(t)}s: {text[:160]}" for t, text in chapters)
@@ -488,6 +493,8 @@ def make_description(
             continue
         if t in valid_t or t == 0:
             chapters_out.append({"t": t, "title": _clean_line(ch.get("title"))})
+    if fixed_chapters:
+        chapters_out = [{"t": int(c["t"]), "title": _clean_line(c.get("title"))} for c in fixed_chapters]
     chapters_out.sort(key=lambda c: c["t"])
     if chapters_out and chapters_out[0]["t"] != 0:
         chapters_out[0]["t"] = 0

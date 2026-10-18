@@ -82,6 +82,10 @@ export interface PipelineSettings {
     breathing: boolean; breathing_strength: number; light_pulse: boolean; light_pulse_strength: number
     vignette_breathing: boolean; vignette_breathing_strength: number; dust: boolean; dust_strength: number
   }
+  chapters: {
+    enabled: boolean; style: 'auto' | 'cinema' | 'editorial' | 'brush' | 'minimal'
+    kicker: 'word' | 'roman' | 'none'; font: string; color: string; duration: number
+  }
   subtitles: {
     enabled: boolean; style: 'plain' | 'karaoke' | 'box'; font: string; size: number; bold: boolean
     uppercase: boolean; primary_color: string; highlight_color: string; outline_color: string

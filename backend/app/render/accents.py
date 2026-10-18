@@ -76,24 +76,29 @@ def place(items: Sequence[dict], words: Sequence[Word], duration: float) -> list
     return out
 
 
-def avoid_subject(accents: list[Accent], plan: RenderPlan) -> None:
-    """Put every accent on the side of the frame away from the hero of its scene (in place)."""
+def subject_at(plan: RenderPlan, t: float, cache: dict[str, dict | None]) -> dict | None:
+    """Where the hero of the scene shown at ``t`` is (``{"cx", "cy", ...}``), None when unknown."""
     from . import depth as depth_mod
 
+    scene = next((s for s in reversed(plan.scenes) if s.start <= t), None)
+    if scene is None:
+        return None
+    if scene.image not in cache:
+        _, meta = depth_mod.cache_paths(Path(scene.image))
+        try:
+            cache[scene.image] = (json.loads(meta.read_text(encoding="utf-8")) if meta.exists()
+                                  else depth_mod.face_subject(Path(scene.image)))
+        except Exception as e:  # noqa: BLE001 – placement is cosmetic
+            log.warning("subject of %s: %s", scene.image, e)
+            cache[scene.image] = None
+    return cache[scene.image]
+
+
+def avoid_subject(accents: list[Accent], plan: RenderPlan) -> None:
+    """Put every accent on the side of the frame away from the hero of its scene (in place)."""
     subjects: dict[str, dict | None] = {}
     for k, a in enumerate(accents):
-        scene = next((s for s in reversed(plan.scenes) if s.start <= a.start), None)
-        if scene is None:
-            continue
-        if scene.image not in subjects:
-            _, meta = depth_mod.cache_paths(Path(scene.image))
-            try:
-                subjects[scene.image] = (json.loads(meta.read_text(encoding="utf-8")) if meta.exists()
-                                         else depth_mod.face_subject(Path(scene.image)))
-            except Exception as e:  # noqa: BLE001 – placement is cosmetic
-                log.warning("subject of %s: %s", scene.image, e)
-                subjects[scene.image] = None
-        subj = subjects[scene.image]
+        subj = subject_at(plan, a.start, subjects)
         cx = subj["cx"] if subj else 0.5
         # A hero in the middle leaves both sides free: alternate them for rhythm.
         left = cx > 0.55 or (cx >= 0.45 and k % 2 == 0)

@@ -140,6 +140,9 @@ class Track(TimestampMixin, Base):
     preview_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
     #: Key phrases on screen picked by the LLM: ``{"key": script hash + count, "items": [{"quote", "text"}]}``.
     text_accents: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: Chapters shared by the chapter cards and the description:
+    #: ``{"key": script + paragraph timing hash, "items": [{"t", "title", "card"}]}`` (see pipeline.chapters).
+    chapters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     #: Generated YouTube metadata: titles, description, tags, chapters.
     publish_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     #: Relative paths of generated thumbnails.
