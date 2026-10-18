@@ -560,6 +560,8 @@ class ScenePatch(BaseModel):
     overrides: dict[str, Any] | None = None
     #: Characters visible in the scene (ids of project characters).
     characters: list[int] | None = None
+    #: ``{"change": "..."}`` – the scene continues the previous frame; ``null`` – a new frame.
+    continuity: dict[str, Any] | None = None
 
 
 @router.patch("/scenes/{scene_id}")
@@ -573,6 +575,9 @@ def update_scene(scene_id: int, body: ScenePatch, db: Session = Depends(get_db))
         s.overrides = {k: v for k, v in body.overrides.items() if v}
     if body.characters is not None:
         s.characters = list(dict.fromkeys(body.characters))
+    if "continuity" in body.model_fields_set:
+        s.continuity = ({"change": str(body.continuity.get("change") or "").strip()[:500]}
+                        if body.continuity is not None and s.idx > 0 else None)
     db.commit()
     return scene_to_dict(s)
 

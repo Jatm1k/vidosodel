@@ -14,7 +14,8 @@ A model chosen by hand for a scene (``scene.overrides["operation"]``) always
 wins and its cost is taken out of the budget first. With character references
 on, scenes that show a character need a model that accepts reference images:
 when the strategy could give them one that does not (e.g. a cheap model), they
-are pinned to the model that does – also paid from the budget first.
+are pinned to the model that does – also paid from the budget first. The same
+goes for scenes that continue the previous frame (scene continuity).
 
 The plan is deterministic – the same scene gets the same model on every run –
 so regenerating a few images never shuffles models around.
@@ -65,7 +66,7 @@ def plan_project(project: Project, images: ImageSettings, hourly_budget: int) ->
     cast = list(project.characters) if images.character_refs else []
     refs_op = next((op for op in (premium, economy) if accepts_refs(op)), None)
     strategy_ops = {premium} if strategy == "single" else {premium, economy}
-    must_pin_cast = bool(cast) and refs_op is not None and not all(accepts_refs(op) for op in strategy_ops)
+    must_pin = refs_op is not None and not all(accepts_refs(op) for op in strategy_ops)
     if cast and refs_op is None:
         plan.warning = "Выбранные модели не принимают референсы — портреты персонажей не будут учитываться."
 
@@ -73,7 +74,8 @@ def plan_project(project: Project, images: ImageSettings, hourly_budget: int) ->
         """Model fixed for the scene regardless of the strategy."""
         if op := scene_override(sc):
             return op
-        if must_pin_cast and scene_character_ids(sc, cast):
+        if must_pin and ((cast and scene_character_ids(sc, cast))
+                         or (images.scene_continuity and sc.continuity is not None and sc.idx > 0)):
             return refs_op
         return None
 

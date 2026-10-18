@@ -82,6 +82,10 @@ class ImageSettings(_Base):
     character_refs: bool = False
     #: Model that draws the reference portraits.
     character_operation: str = "nano_banana_pro_image_generate"
+    #: Scene continuity: when the story stays in one picture and only a detail changes, the LLM
+    #: marks the scene and its image is drawn from the previous scene's image (needs a model
+    #: that accepts references).
+    scene_continuity: bool = True
     #: Style reference images (relative media paths), sent with every request.
     reference_images: list[str] = Field(default_factory=list)
     use_references: bool = False

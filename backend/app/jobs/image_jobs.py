@@ -172,6 +172,11 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
     scene_cast: dict[int, list[int]] = {}
     # character id → (name, file name of the input, description, image data URI)
     portraits: dict[int, tuple[str, str, str, str]] = {}
+    # scene id → (id of the scene whose image it continues, what changes)
+    follows: dict[int, tuple[int, str]] = {}
+    # scenes of this job that are finished (drawn, failed or stopped): their followers may start
+    finished: set[int] = set()
+    held: list[tuple[int, str, str]] = []
     refs: list[str] = []
     by_op: dict[str, int] = {}
 
@@ -188,9 +193,13 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
                 return []
             plan = plan_project(track.project, images, limiter.hourly_budget())
             cast = list(track.project.characters) if images.character_refs else []
+            ordered = list(track.scenes)
             for s in ready:
                 if cast:
                     scene_cast[s.id] = chars.scene_character_ids(s, cast)
+                op = plan.ops.get(s.id, images.operation)
+                if images.scene_continuity and chars.accepts_refs(op) and (prev := chars.continued_from(s, ordered)):
+                    follows[s.id] = (prev.id, str((s.continuity or {}).get("change") or ""))
                 s.image_status, s.image_error = "queued", None
             batch = [(s.id, s.prompt, plan.ops.get(s.id, images.operation)) for s in ready]
         submitted.update(sid for sid, _, _ in batch)
@@ -210,23 +219,47 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
         track_changed(track_id, "images")
         return batch
 
-    def scene_inputs(scene_id: int, operation: str) -> tuple[list[Any], str]:
-        """Reference inputs and the note for one scene: its characters first, then the style refs.
+    def releasable(scene_id: int, final: bool) -> bool:
+        """A continuing scene waits until the scene it continues is drawn in this job."""
+        prev = follows.get(scene_id, (None, ""))[0]
+        if prev is None or prev not in wanted or prev in finished:
+            return True
+        return final and prev not in submitted  # its prompt never came: draw from its old image, if any
 
-        Portraits are named inputs (``{"name": "Alex.jpg", "input": ...}``) so the note can
-        say which file shows whom instead of relying on the order of the images.
+    def previous_frame(scene_id: int) -> tuple[str | None, int | None]:
+        """Data URI of the image the scene continues (None when there is none to continue)."""
+        prev = follows.get(scene_id, (None, ""))[0]
+        if prev is None:
+            return None, None
+        with session_scope() as db:
+            p = db.get(Scene, prev)
+            rel = p.image_file if p is not None and p.image_status == "done" else None
+        uri = image_data_uri(rel)
+        return (uri, prev) if uri else (None, None)
+
+    def scene_inputs(scene_id: int, operation: str) -> tuple[list[Any], str, int | None]:
+        """Reference inputs and the note for one scene, and the scene whose image it continues.
+
+        Order: the previous frame (continuity), the scene's characters, then the style refs
+        (dropped when continuing: the previous frame already carries the style). Inputs are
+        named (``{"name": "Alex.jpg", "input": ...}``) so the note can say which file shows
+        whom instead of relying on the order of the images.
         """
         if not chars.accepts_refs(operation):
-            return refs, ""
+            return refs, "", None
+        base, prev = previous_frame(scene_id)
         cast_here = [portraits[c] for c in scene_cast.get(scene_id, []) if c in portraits]
-        if not cast_here:
-            return refs, ""
-        inputs: list[Any] = [{"name": file, "input": uri} for _, file, _, uri in cast_here]
-        inputs += [{"name": f"style_reference_{i + 1}.jpg", "input": uri} for i, uri in enumerate(refs)]
-        note = chars.reference_note([(name, file, desc) for name, file, desc, _ in cast_here])
-        if refs:
-            note += "The style_reference images show only the art style, not these characters. "
-        return inputs[:chars.MAX_INPUTS], note
+        if not cast_here and not base:
+            return refs, "", None
+        inputs: list[Any] = [{"name": chars.PREVIOUS_FRAME, "input": base}] if base else []
+        inputs += [{"name": file, "input": uri} for _, file, _, uri in cast_here]
+        note = chars.continuity_note(follows[scene_id][1]) if base else ""
+        note += chars.reference_note([(name, file, desc) for name, file, desc, _ in cast_here])
+        if not base:
+            inputs += [{"name": f"style_reference_{i + 1}.jpg", "input": uri} for i, uri in enumerate(refs)]
+            if refs:
+                note += "The style_reference images show only the art style, not these characters. "
+        return inputs[:chars.MAX_INPUTS], note, prev
 
     done = failed = 0
     lock = threading.Lock()
@@ -235,7 +268,7 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
     def on_wait(msg: str) -> None:
         wait_msg["text"] = msg
 
-    def work(scene_id: int, prompt: str, operation: str) -> None:
+    def draw(scene_id: int, prompt: str, operation: str) -> None:
         nonlocal done, failed
         with session_scope() as db:
             sc = db.get(Scene, scene_id)
@@ -252,13 +285,14 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
                     sc.prompt = new_prompt
 
         try:
-            inputs, note = scene_inputs(scene_id, operation)
+            inputs, note, prev = scene_inputs(scene_id, operation)
             with FastgenClient() as fg:
                 path, meta = generate_one(fg, prompt, out_dir, f"scene_{scene_id}", images, llm, inputs, ctx,
                                           on_wait=on_wait, operation=operation, on_prompt_fixed=prompt_fixed,
                                           note=note)
             if note:
                 meta["characters"] = scene_cast.get(scene_id, [])
+            meta["continued_from"] = prev
             with session_scope() as db:
                 sc = db.get(Scene, scene_id)
                 if sc is None:
@@ -288,6 +322,13 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             with lock:
                 failed += 1
 
+    def work(scene_id: int, prompt: str, operation: str) -> None:
+        try:
+            draw(scene_id, prompt, operation)
+        finally:
+            with lock:
+                finished.add(scene_id)
+
     workers = max(1, limiter.status()["threads"])
     with ThreadPoolExecutor(max_workers=workers) as pool:
         pending: set = set()
@@ -296,11 +337,18 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             final = not follow or job_status(int(follow)) not in ("queued", "running")
             stopping = ctx.should_stop()
             if not stopping:
-                pending |= {pool.submit(work, *item) for item in take(final)}
+                held += take(final)
+                with lock:
+                    go = [item for item in held if releasable(item[0], final)]
+                held = [item for item in held if item not in go]
+                pending |= {pool.submit(work, *item) for item in go}
+            elif held:
+                reset_scenes([sid for sid, _, _ in held])
+                held = []
             waiting_prompts = not final and not stopping
             # Only waiting for prompts: another project's images may use the lane meanwhile.
             ctx.set_idle(waiting_prompts and not pending)
-            if not pending and not waiting_prompts:
+            if not pending and not waiting_prompts and not held:
                 break
             if pending:
                 # Wake up regularly so the status line stays fresh while workers wait for budget.
@@ -335,6 +383,16 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             + (f", пропущено без промпта: {no_prompt}" if no_prompt else "")
             + (" (" + ", ".join(f"{IMAGE_OPS_BY_ID.get(op, {}).get('name', op)}: {n}" for op, n in by_op.items()) + ")"
                if len(by_op) > 1 else "")}
+
+
+def reset_scenes(scene_ids: list[int]) -> None:
+    """Scenes queued but never started (the job stopped): back to their previous state."""
+    with session_scope() as db:
+        for sid in scene_ids:
+            sc = db.get(Scene, sid)
+            if sc and sc.image_status in ("queued", "generating"):
+                sc.image_status = "done" if sc.image_file else "none"
+                scene_changed(sc.track_id, scene_to_dict(sc))
 
 
 def job_status(job_id: int) -> str | None:

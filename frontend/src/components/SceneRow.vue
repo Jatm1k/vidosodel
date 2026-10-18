@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import Menu from 'primevue/menu'
 import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
+import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import { api } from '@/api/client'
 import type { Character, Scene } from '@/api/types'
@@ -18,6 +19,8 @@ const props = defineProps<{
   plannedOp?: string | null
   /** Project characters when character references are on (empty otherwise). */
   cast?: Character[]
+  /** Scene continuity is on in the channel settings. */
+  continuity?: boolean
 }>()
 const emit = defineEmits<{
   updated: [scene: Scene]
@@ -35,6 +38,22 @@ const fileInput = ref<HTMLInputElement>()
 const uploading = ref(false)
 
 watch(() => props.scene.prompt, (v) => (prompt.value = v))
+
+const change = ref(props.scene.continuity?.change ?? '')
+watch(() => props.scene.continuity?.change, (v) => (change.value = v ?? ''))
+/** The image was really drawn from the previous one (not just marked). */
+const continued = computed(() => props.scene.image_meta?.continued_from != null)
+async function setContinuity(on: boolean) {
+  try {
+    const continuity = on ? { change: change.value } : null
+    emit('updated', await api.patch<Scene>(`/api/scenes/${props.scene.id}`, { continuity }))
+  } catch (e) {
+    notify.error(e)
+  }
+}
+function saveChange() {
+  if (props.scene.continuity && change.value.trim() !== props.scene.continuity.change) void setContinuity(true)
+}
 
 const busy = computed(() => props.scene.image_status === 'generating' || props.scene.image_status === 'queued')
 const effectOptions = computed(() => [{ id: null, name: 'Случайное' }, ...(store.meta?.effects ?? [])])
@@ -178,6 +197,17 @@ async function restructure(action: 'split' | 'merge-next') {
       />
       <p v-else-if="scene.prompt" class="text-[13px] leading-relaxed text-ink-3">{{ scene.prompt }}</p>
 
+      <label v-if="continuity && scene.continuity && !scene.shared" class="flex items-center gap-2 text-[13px]">
+        <span class="shrink-0 text-ink-3">Что меняется:</span>
+        <InputText
+          v-model="change"
+          size="small"
+          class="flex-1 !text-[13px]"
+          placeholder="Например: the cup is now empty, the woman looks up (пусто — по промпту)"
+          @blur="saveChange"
+        />
+      </label>
+
       <div v-if="scene.image_error && scene.image_status === 'failed'" class="text-[13px] text-bad">{{ scene.image_error }}</div>
 
       <div class="flex flex-wrap items-center gap-2 text-[13px] text-ink-3">
@@ -185,7 +215,28 @@ async function restructure(action: 'split' | 'merge-next') {
         <span v-if="scene.image_meta?.original_prompt" class="flex items-center gap-1" :title="scene.image_meta.original_prompt">
           <i class="pi pi-shield text-[11px]" />промпт смягчён после отказа модели
         </span>
+        <span
+          v-if="continued && scene.image_url && !busy"
+          class="flex items-center gap-1"
+          v-tooltip.top="'Картинка нарисована из предыдущего кадра'"
+        >
+          <i class="pi pi-images text-[11px]" />из предыдущего кадра
+        </span>
         <div class="ml-auto flex items-center gap-2">
+          <Button
+            v-if="continuity && scene.idx > 0 && !scene.shared && !readonlyPrompt"
+            icon="pi pi-images"
+            size="small"
+            :text="!scene.continuity"
+            :outlined="!!scene.continuity"
+            :severity="scene.continuity ? 'contrast' : 'secondary'"
+            :aria-pressed="!!scene.continuity"
+            aria-label="Продолжает предыдущий кадр"
+            v-tooltip.top="scene.continuity
+              ? 'Продолжает предыдущий кадр: картинка рисуется из него. Нажмите, чтобы рисовать с нуля'
+              : 'Рисовать из предыдущего кадра (то же место, меняется деталь)'"
+            @click="setContinuity(!scene.continuity)"
+          />
           <MultiSelect
             v-if="cast?.length && !scene.shared"
             :model-value="castIds"

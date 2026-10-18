@@ -186,6 +186,9 @@ class Scene(Base):
     #: Ids of the project characters visible in this scene; ``None`` – not assigned
     #: yet (then names mentioned in the prompt are used).
     characters: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    #: The scene continues the previous frame: ``{"change": "<what differs, English>"}``.
+    #: Its image is drawn from the previous scene's image; ``None`` – a new frame.
+    continuity: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     track: Mapped[Track] = relationship(back_populates="scenes", foreign_keys=[track_id])
     source_scene: Mapped[Scene | None] = relationship(remote_side=[id], foreign_keys=[source_scene_id])

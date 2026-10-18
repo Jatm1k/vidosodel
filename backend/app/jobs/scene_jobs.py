@@ -124,6 +124,11 @@ def prompts_job(ctx: JobContext) -> dict[str, Any]:
         ]
         llm, project_id, track_id = tc.settings.llm, tc.project.id, tc.track.id
         use_characters = tc.settings.images.character_refs
+        continuity = tc.settings.images.scene_continuity
+        # The frame right before every target: a batch may start by continuing it.
+        order = list(tc.track.scenes)
+        before = {s.id: (p.id, p.prompt.strip()) for p, s in zip(order, order[1:])}
+        first_id = order[0].id if order else None
     if not targets:
         return {"message": "Все сцены уже имеют промпты"}
     with FastgenClient() as fg:
@@ -149,6 +154,9 @@ def prompts_job(ctx: JobContext) -> dict[str, Any]:
                     sc.prompt = item["prompt"]
                     if cast:
                         sc.characters = ids_from_names(item.get("characters"), cast)
+                    if continuity:
+                        change = item.get("change")
+                        sc.continuity = {"change": change} if change is not None and sid != first_id else None
                     if sid in only_ids:
                         sc.prompt_locked = False
                     scene_changed(track_id, scene_to_dict(sc))
@@ -158,6 +166,7 @@ def prompts_job(ctx: JobContext) -> dict[str, Any]:
             progress=lambda v: ctx.progress(0.05 + 0.95 * v, f"Промпты: {int(v * len(targets))}/{len(targets)}"),
             should_stop=ctx.should_stop, on_batch=save,
             characters=[(c.name, c.description) for c in cast],
+            continuity=continuity, before=before,
         )
     missing = len(targets) - len(got)
     if missing and not got:

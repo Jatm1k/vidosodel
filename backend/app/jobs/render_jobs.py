@@ -72,6 +72,8 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
             trans = "cut"
         elif ov.get("transition"):
             trans = ov["transition"]
+        elif ((sc.source_scene if sc.source_scene_id and sc.source_scene else sc).image_meta or {}).get("continued_from"):
+            trans = "crossfade"  # the same frame with a change: let the change appear smoothly
         else:
             trans = "cut" if rnd.random() < s.render.cut_ratio else rnd.choice(transitions)
         end = scenes[i + 1].start if i + 1 < len(scenes) else duration

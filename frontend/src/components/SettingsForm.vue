@@ -499,6 +499,12 @@ onMounted(async () => {
             </p>
           </div>
         </FormField>
+        <FormField
+          label="Продолжение кадра"
+          hint="Когда рассказ остаётся в той же ситуации и меняется только деталь, следующая картинка рисуется из предыдущей: место, люди и ракурс сохраняются, меняется только нужное. LLM отмечает такие сцены при создании промптов, отметку можно поменять у сцены"
+        >
+          <ToggleSwitch v-model="s.images.scene_continuity" class="mt-1.5" />
+        </FormField>
         <FormField label="Водяные знаки" hint="Модели на основе Gemini (Flower, Nano Banana через Gemini) ставят звёздочку в углу части картинок. Каждая картинка проверяется">
           <Select
             v-model="s.images.watermark_fix"

@@ -302,6 +302,7 @@ onUnmounted(() => {
           :readonly-prompt="shares"
           :planned-op="plan?.scene_ops[s.id] ?? null"
           :cast="cast"
+          :continuity="project.effective_settings.images.scene_continuity"
           :is-last="i === filtered.length - 1"
           @updated="(sc) => { patch(sc); void loadPlan() }"
           @replaced="(list) => (scenes = list)"

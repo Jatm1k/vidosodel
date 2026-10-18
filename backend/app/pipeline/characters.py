@@ -1,10 +1,14 @@
-"""Character references: who is in a scene and what to send to the image model.
+"""Character and scene references: who is in a scene and what to send to the image model.
 
 Each recurring character of a project has a reference portrait. A scene lists
 its characters in ``Scene.characters`` (set by the prompt LLM or by hand);
 when that is unknown, names mentioned in the prompt are used. The portraits of
 the scene's characters go to the image model as reference inputs together
 with a short note that tells the model which image is whom.
+
+Scene continuity: a scene marked with ``Scene.continuity`` continues the
+previous frame – the previous scene's image is sent as ``previous_frame.jpg``
+and the model changes only what the scene needs (see :func:`continuity_note`).
 """
 from __future__ import annotations
 
@@ -18,6 +22,11 @@ from ..services.fastgen import IMAGE_OPS_BY_ID
 MAX_PER_SCENE = 3
 #: All reference inputs of one request (characters first, then channel style refs).
 MAX_INPUTS = 6
+#: Scenes in a row drawn from the previous image; the next one starts a fresh frame
+#: (every edit of an edit loses a little detail and drifts).
+MAX_CHAIN = 5
+#: Input name of the previous scene's image.
+PREVIOUS_FRAME = "previous_frame.jpg"
 
 
 def accepts_refs(operation: str) -> bool:
@@ -55,6 +64,33 @@ def ids_from_names(names: Sequence[str] | None, characters: Sequence[Character])
         if cid and cid not in ids:
             ids.append(cid)
     return ids[:MAX_PER_SCENE]
+
+
+def continued_from(scene: Scene, scenes: Sequence[Scene]) -> Scene | None:
+    """The scene whose image ``scene`` is drawn from, or None for a fresh frame.
+
+    ``scenes`` – all scenes of the track ordered by ``idx``. A chain longer than
+    :data:`MAX_CHAIN` is cut: that scene is drawn anew.
+    """
+    if scene.continuity is None or scene.idx == 0:
+        return None
+    pos = next((i for i, s in enumerate(scenes) if s.id == scene.id), 0)
+    chain, i = 0, pos
+    while i > 0 and scenes[i].continuity is not None:
+        chain += 1
+        i -= 1
+    if pos == 0 or chain % (MAX_CHAIN + 1) == 0:
+        return None
+    return scenes[pos - 1]
+
+
+def continuity_note(change: str) -> str:
+    """Tells the model to keep the previous frame and change only what is needed."""
+    change = " ".join(change.split())[:400]
+    what = f"change only this: {change}" if change else "change only what the description below requires"
+    return (f"This image continues {PREVIOUS_FRAME}, the previous frame of the same video. Keep it as it is – "
+            "the same place, background, objects, people and their clothes, camera angle, framing, lighting "
+            f"and colours – and {what}. The description below is the whole new frame. ")
 
 
 def reference_name(name: str, taken: set[str]) -> str:

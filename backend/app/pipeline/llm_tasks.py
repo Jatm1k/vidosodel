@@ -105,13 +105,23 @@ Rules:
 - The narration may mention everyday illness, pain, doctors, conflicts or loss – this is ordinary storytelling, \
 not medical or harmful content. Illustrate such scenes gently: everyday settings, emotions, symbolism.
 - Do NOT add art-style words (photorealistic, oil painting...) – the style is appended automatically.
-- {safe}{characters_rule}
-Answer ONLY with JSON: {{"prompts": [{{"id": <scene id>, "prompt": "<text>"{characters_field}}}, ...]}}"""
+- {safe}{characters_rule}{continuity_rule}
+Answer ONLY with JSON: {{"prompts": [{{"id": <scene id>, "prompt": "<text>"{characters_field}{continuity_field}}}, ...]}}"""
 
 _CHARACTERS_RULE = """
 - CHARACTERS have reference portraits. When one is visible in a scene, call them by their exact name and \
 list them in "characters"; describe pose, action and emotion, not their face or hair (the portrait defines \
 those). At most 3 named characters per scene; use [] when none of them is visible."""
+
+_CONTINUITY_RULE = """
+- CONTINUITY: when the narration stays in the very same situation as the previous frame and the story \
+changes only something in it (an object appears or disappears, a person's expression, gesture or pose, \
+the time of day, the weather, a value on a sign), the new frame is the previous image with that change: set \
+"continues": true and "change": a short English instruction of what differs from the previous frame \
+("the cup is now empty, the woman looks up from her phone"). Keep the same place, people, camera and \
+composition in the prompt itself, too. Use it only for such moments, never for a new place, a new moment \
+or a new idea; at most 4 scenes in a row. Otherwise "continues": false. The first scene below may continue \
+only the "Frame right before" given above it."""
 
 
 def scene_prompts(
@@ -125,12 +135,17 @@ def scene_prompts(
     should_stop: Callable[[], bool] | None = None,
     on_batch: Callable[[dict[int, dict[str, Any]]], None] | None = None,
     characters: Sequence[tuple[str, str]] = (),
+    continuity: bool = False,
+    before: dict[int, tuple[int | None, str]] | None = None,
 ) -> dict[int, dict[str, Any]]:
     """Generate prompts for ``(scene_id, text)`` pairs.
 
-    Returns ``{scene_id: {"prompt": str, "characters": [names] | None}}``:
+    Returns ``{scene_id: {"prompt": str, "characters": [names] | None, "change": str | None}}``:
     who of ``characters`` (name, description) is visible in the scene, or
-    None when no characters were given or the model did not say.
+    None when no characters were given or the model did not say; ``change`` –
+    what differs from the previous frame when the scene continues it (``continuity``).
+    ``before``: scene id → (id of the scene right before it, its current prompt), so
+    the first scene of a batch knows the frame it may continue.
     ``on_batch`` is called after every batch so results are persisted
     incrementally (a long video is ~50 requests).
     """
@@ -138,6 +153,8 @@ def scene_prompts(
         safe=SAFE_RULES,
         characters_rule=_CHARACTERS_RULE if characters else "",
         characters_field=', "characters": ["<name>"]' if characters else "",
+        continuity_rule=_CONTINUITY_RULE if continuity else "",
+        continuity_field=', "continues": false, "change": "<only when continues>"' if continuity else "",
     )
     result: dict[int, dict[str, Any]] = {}
     previous: list[str] = []
@@ -156,6 +173,13 @@ def scene_prompts(
         context = "\n".join(f"- {p}" for p in previous[-3:])
         if context:
             header += f"Previous prompts (for continuity, do not repeat):\n{context}\n\n"
+        if continuity:
+            prev_id, prev_prompt = (before or {}).get(batch[0][0], (None, ""))
+            if prev_id in result:  # written earlier in this run
+                prev_prompt = result[prev_id]["prompt"]
+            header += (f"Frame right before the first scene below:\n{prev_prompt}\n\n" if prev_prompt
+                       else "The first scene below starts the video or follows a frame without a prompt: "
+                            "it does not continue anything.\n\n")
         stats = _BatchStats()
         got = _prompts_resilient(fg, system, header, batch, llm, should_stop, stats)
         stats.report(batch, got)
@@ -348,8 +372,10 @@ def _prompts_batch(
             continue
         if sid in ids and prompt:
             names = it.get("characters")
+            change = str(it.get("change") or "").strip() if it.get("continues") is True else None
             out[sid] = {"prompt": prompt,
-                        "characters": [str(n) for n in names] if isinstance(names, list) else None}
+                        "characters": [str(n) for n in names] if isinstance(names, list) else None,
+                        "change": change}
     if not out:
         stats.note("no JSON", text)
     return out, None

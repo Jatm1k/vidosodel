@@ -67,7 +67,7 @@ export interface PipelineSettings {
     premium_minutes: number; budget_credits: number
     upscale_2x: boolean; style_prompt: string; avoid: string
     reference_images: string[]; use_references: boolean
-    character_refs: boolean; character_operation: string
+    character_refs: boolean; character_operation: string; scene_continuity: boolean
     watermark_fix: 'auto' | 'inpaint' | 'crop' | 'none'; auto_fix_rejected: boolean; max_attempts: number
   }
   llm: { model: string; niche: string; prompt_instructions: string; temperature: number }
@@ -232,6 +232,8 @@ export interface Scene {
   overrides: { effect?: string; transition?: string; operation?: string }
   /** Ids of project characters in the scene; null – not assigned (names in the prompt are used). */
   characters: number[] | null
+  /** The scene continues the previous frame (its image is drawn from it); null – a new frame. */
+  continuity: { change: string } | null
   shared: boolean
 }
 
