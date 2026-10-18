@@ -24,6 +24,8 @@ from . import depth as depth_mod
 from .atmosphere import make_params
 from .chapter_cards import STYLES as CARD_STYLES
 from .chapter_cards import Card, kicker_text, to_plan
+from . import accent_fx
+from .accents import Accent
 from .engine import FrameRenderer, PlanScene, RenderPlan
 from .media import CREATE_NO_WINDOW, imwrite
 from .motion import EFFECTS
@@ -34,11 +36,24 @@ log = logging.getLogger(__name__)
 
 WIDTH, HEIGHT, FPS = 960, 540, 25
 #: Bump when preview rendering changes, so cached clips are re-rendered.
-VERSION = 3
+VERSION = 4
 #: Cached clips kept on disk.
 KEEP = 80
 ATMOSPHERE_EFFECTS = ("line_boil", "grain_boil", "breathing", "light_pulse", "vignette_breathing", "dust")
-KINDS = ("motion", "transition", "atmosphere", "chapter")
+KINDS = ("motion", "transition", "atmosphere", "chapter", "accent")
+
+#: A sample phrase for every accent style: (kind, text, explanation).
+ACCENT_SAMPLES = {
+    "pop": ("statement", "Это меняет всё", ""),
+    "marker": ("term", "мышечный корсет", ""),
+    "stack": ("statement", "спина болит не от нагрузки", ""),
+    "slam": ("statement", "это не лечится", ""),
+    "underline": ("term", "синдром утренней скованности", ""),
+    "type": ("term", "хроническое воспаление", ""),
+    "counter": ("number", "73%", "людей просыпаются с болью"),
+    "nameplate": ("name", "Иван Петров", "врач-невролог"),
+    "quote": ("quote", "Движение заменяет любое лекарство, но лекарства не заменят движения", "Жозеф Тиссо"),
+}
 
 _lock = threading.Lock()
 
@@ -158,6 +173,21 @@ def _plan(kind: str, effect: str, images: list[str], settings: dict) -> RenderPl
         plan.chapter_cards = {"style": effect, "variant": variant, "color": str(cfg.get("color") or ""),
                               "font": str(cfg.get("font") or ""), "cards": to_plan([card])}
         return plan
+    elif kind == "accent":
+        sub_cfg = dict(settings.get("subtitles") or {})
+        a_kind, text, sub = ACCENT_SAMPLES[effect]
+        words = text.split()
+        times = [0.6 + 0.32 * i for i in range(len(words))]
+        a = Accent(text, 0.5, times[-1] + 2.2, kind=a_kind, sub=sub, times=times, style=effect)
+        subject = _subject(images[0])
+        a.x = 0.73 if subject and subject.get("cx", 0.5) < 0.45 else 0.27
+        duration = a.end + 0.6
+        plan = RenderPlan(WIDTH, HEIGHT, FPS, duration, [PlanScene(images[0], 0, duration, "zoom_in", seed=3)],
+                          look=look, intensity=intensity, fade_in=0, fade_out=0, encoder="libx264", quality="fast",
+                          preview=True)
+        plan.accents_fx = {"variant": int(settings.get("variant") or 0), "color": str(sub_cfg.get("accent_color") or ""),
+                           "font": str(sub_cfg.get("accent_font") or ""), "items": accent_fx.to_plan([a])}
+        return plan
     else:
         cfg = dict(settings.get("atmosphere") or {})
         if effect == "all":
@@ -181,7 +211,7 @@ def _plan(kind: str, effect: str, images: list[str], settings: dict) -> RenderPl
 
 def _cache_key(kind: str, effect: str, images: list[str], settings: dict) -> str:
     relevant = {"motion": ("motion_intensity", "depth_of_field"), "transition": ("transition_duration",),
-                "atmosphere": ("atmosphere",), "chapter": ("chapters", "chapter_title", "language", "variant")}[kind]
+                "atmosphere": ("atmosphere",), "chapter": ("chapters", "chapter_title", "language", "variant"), "accent": ("subtitles", "variant")}[kind]
     stamp = [(p, Path(p).stat().st_mtime) for p in images]
     raw = json.dumps([VERSION, kind, effect, stamp, {k: settings.get(k) for k in relevant}], sort_keys=True)
     return hashlib.sha1(raw.encode()).hexdigest()[:20]
@@ -193,7 +223,7 @@ def render(kind: str, effect: str, images: list[str], settings: dict, out_dir: P
     if kind not in KINDS:
         raise PreviewError(f"Неизвестный тип превью: {kind}")
     valid = {"motion": EFFECTS, "transition": TRANSITIONS, "atmosphere": (*ATMOSPHERE_EFFECTS, "all"),
-             "chapter": CARD_STYLES}[kind]
+             "chapter": CARD_STYLES, "accent": accent_fx.STYLES}[kind]
     if effect not in valid:
         raise PreviewError(f"Неизвестный эффект: {effect}")
     need = 2 if kind == "transition" else 1

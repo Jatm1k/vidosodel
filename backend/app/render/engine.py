@@ -33,6 +33,7 @@ import numpy as np
 
 from ..config import ffmpeg_bin
 from .atmosphere import Atmosphere, AtmosphereParams, breath
+from .accent_fx import AccentRenderer
 from .chapter_cards import CardRenderer
 from .look import LookParams, LookProcessor
 from .media import CAP_BY_REENCODE, CREATE_NO_WINDOW, cover_fit, encoder_args, imread, run
@@ -91,6 +92,8 @@ class RenderPlan:
     subtitles_ass: str | None = None
     #: Chapter cards ``{"style", "variant", "color", "font", "cards": [Card as dict]}``; empty → none.
     chapter_cards: dict = field(default_factory=dict)
+    #: Key phrases ``{"variant", "color", "font", "center_y", "safe_bottom", "items": [Accent as dict]}``.
+    accents_fx: dict = field(default_factory=dict)
     fonts_dir: str | None = None
     extra: dict = field(default_factory=dict)
 
@@ -127,6 +130,10 @@ class FrameRenderer:
         cc = plan.chapter_cards
         self.cards = (CardRenderer(cc["cards"], cc["style"], plan.width, plan.height, cc.get("color", ""),
                                    cc.get("font", ""), int(cc.get("variant", 0))) if cc.get("cards") else None)
+        ax = plan.accents_fx
+        self.accents = (AccentRenderer(ax["items"], plan.width, plan.height, ax.get("color", ""), ax.get("font", ""),
+                                       int(ax.get("variant", 0)), float(ax.get("center_y", 0.42)),
+                                       float(ax.get("safe_bottom", 0.86))) if ax.get("items") else None)
         self._starts = [s.start for s in plan.scenes]
         # Half of a transition happens before the boundary, half after.
         self._td = [0.0 if (i == 0 or s.transition == "cut") else plan.transition_duration
@@ -231,6 +238,8 @@ class FrameRenderer:
             frame = self.fx.apply(frame, t)
         if self.cards is not None:  # before the look: grain and grading lay over the title too
             frame = self.cards.apply(frame, t)
+        if self.accents is not None:
+            frame = self.accents.apply(frame, t)
         return self.look.apply(frame, fade, t)
 
 

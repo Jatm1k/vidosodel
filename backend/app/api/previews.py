@@ -21,7 +21,7 @@ POOL = 40
 
 
 class PreviewRequest(BaseModel):
-    kind: Literal["motion", "transition", "atmosphere", "chapter"]
+    kind: Literal["motion", "transition", "atmosphere", "chapter", "accent"]
     effect: str
     channel_id: int | None = None
     project_id: int | None = None
@@ -57,7 +57,7 @@ async def fx_preview_clip(body: PreviewRequest, db: Session = Depends(get_db)) -
         project = db.get(Project, body.project_id)
         pool = _images(db, project.channel_id, None) if project else []
     images = [pool[(body.pick + i) % len(pool)] for i in range(min(2, len(pool)))] if pool else []
-    if body.kind == "chapter":  # «another picture» also shows another variant of the design
+    if body.kind in ("chapter", "accent"):  # «another variant» also shows another look of the design
         body.settings["variant"] = body.pick
     out_dir = media_root() / "fx_previews"
     out_dir.mkdir(parents=True, exist_ok=True)

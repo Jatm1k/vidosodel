@@ -56,8 +56,23 @@ function openPreview(kind: FxPreviewTarget['kind'], effect: string, title: strin
   previewOpen.value = true
 }
 function previewSettings() {
-  return JSON.parse(JSON.stringify({ ...s.value.render, atmosphere: s.value.atmosphere, chapters: s.value.chapters }))
+  return JSON.parse(JSON.stringify({
+    ...s.value.render, atmosphere: s.value.atmosphere, chapters: s.value.chapters, subtitles: s.value.subtitles,
+  }))
 }
+
+// ----------------------------------------------------------------- key phrases
+const accentStyles = [
+  ['pop', 'Слова с отскоком', 'Слова выпрыгивают по одному в такт голосу, главное слово цветом'],
+  ['marker', 'Маркер', 'За словами проходит штрих текстовыделителя, пока диктор их произносит'],
+  ['stack', 'Лесенка слов', 'Каждое слово на своей строке, главное крупно, выезжают с разных сторон'],
+  ['slam', 'Удар', 'Фраза врезается в кадр, картинка коротко вздрагивает'],
+  ['underline', 'Подчёркивание', 'Слова проявляются, потом от руки подчёркивается или обводится главное'],
+  ['type', 'Печать', 'Буквы печатаются в такт голосу, с курсором'],
+  ['counter', 'Счётчик чисел', 'Только для чисел: цифра отсчитывается до значения, у процентов есть шкала'],
+  ['nameplate', 'Плашка с именем', 'Только для имён: имя и кто это, выезжают из-за цветной полосы внизу кадра'],
+  ['quote', 'Цитата', 'Только для цитат: большие кавычки, текст курсивом по словам, автор ниже'],
+] as const
 
 // ----------------------------------------------------------------- chapter cards
 const cardStyles = [
@@ -798,16 +813,56 @@ onMounted(async () => {
           </FormField>
         </template>
 
-        <FormField label="Ключевые фразы на экране" hint="Нейросеть выбирает в сценарии цифры и главные мысли, и в нужный момент они крупно появляются в кадре. Работает и без субтитров">
+        <FormField label="Ключевые фразы на экране" hint="Нейросеть находит то, что стоит выделить: цифры, имена, цитаты, термины, сильные утверждения. На экране появляются слова самого диктора, каждое ровно тогда, когда он его произносит. Работает и без субтитров">
           <ToggleSwitch v-model="s.subtitles.accents" class="mt-1.5" />
         </FormField>
         <template v-if="s.subtitles.accents">
-          <FormField label="Частота" :value="`${s.subtitles.accents_per_minute.toFixed(1)} в минуту`" hint="Примерно столько фраз на минуту видео; ближе 6 секунд друг к другу они не появляются">
+          <FormField label="Частота" :value="`${s.subtitles.accents_per_minute.toFixed(1)} в минуту`" hint="Примерно столько фраз на минуту видео; между фразами всегда есть пауза">
             <Slider v-model="s.subtitles.accents_per_minute" :min="0.3" :max="4" :step="0.1" class="mt-3" />
           </FormField>
-          <FormField label="Шрифт и цвет фраз">
+          <FormField label="Стили" hint="Пусто — все. Каждой фразе подбирается стиль под её тип (число, имя, цитата, термин, утверждение), подряд один стиль не повторяется. Оформление (регистр, наклон, цвета) меняется от ролика к ролику">
+            <MultiSelect
+              v-model="s.subtitles.accent_styles"
+              :options="accentStyles.map((c) => ({ id: c[0], name: c[1] }))"
+              option-value="id"
+              option-label="name"
+              placeholder="Все стили"
+              :max-selected-labels="3"
+              selected-items-label="{0} стилей"
+              class="w-72"
+            />
+          </FormField>
+          <div class="grid grid-cols-3 gap-2">
+            <div
+              v-for="c in accentStyles"
+              :key="c[0]"
+              class="flex flex-col gap-1 rounded-md border p-2.5"
+              :class="!s.subtitles.accent_styles.length || s.subtitles.accent_styles.includes(c[0]) ? 'border-line-soft' : 'border-line-soft opacity-50'"
+            >
+              <div class="flex items-center justify-between gap-1">
+                <span class="text-[13px] font-medium">{{ c[1] }}</span>
+                <Button
+                  icon="pi pi-play"
+                  severity="secondary"
+                  size="small"
+                  text
+                  rounded
+                  :aria-label="`Превью: ${c[1]}`"
+                  @click="openPreview('accent', c[0], `Ключевая фраза: ${c[1]}`)"
+                />
+              </div>
+              <span class="text-[12px] leading-snug text-ink-3">{{ c[2] }}</span>
+            </div>
+          </div>
+          <FormField label="Шрифт и цвет фраз" hint="«Шрифт стиля» — у каждого стиля свой: жирный рубленый, курсив для цитат, машинописный для печати">
             <div class="flex flex-wrap items-center gap-3">
-              <Select v-model="s.subtitles.accent_font" :options="fonts" editable class="w-56" />
+              <Select
+                v-model="s.subtitles.accent_font"
+                :options="[{ id: '', name: 'Шрифт стиля' }, ...fonts.map((f) => ({ id: f, name: f }))]"
+                option-value="id"
+                option-label="name"
+                class="w-56"
+              />
               <ColorPicker :model-value="s.subtitles.accent_color.slice(1)" @update:model-value="(v: any) => (s.subtitles.accent_color = hex(v))" />
             </div>
           </FormField>

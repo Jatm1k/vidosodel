@@ -10,7 +10,7 @@ import Dialog from 'primevue/dialog'
 import { api } from '@/api/client'
 
 export interface FxPreviewTarget {
-  kind: 'motion' | 'transition' | 'atmosphere' | 'chapter'
+  kind: 'motion' | 'transition' | 'atmosphere' | 'chapter' | 'accent'
   effect: string
   title: string
 }
@@ -86,8 +86,8 @@ watch(
       </p>
       <div class="flex shrink-0 gap-2">
         <Button
-          v-if="target?.kind === 'chapter' || (ownImages && imageCount > 1)"
-          :label="target?.kind === 'chapter' ? 'Другой вариант' : 'Другая картинка'"
+          v-if="target?.kind === 'chapter' || target?.kind === 'accent' || (ownImages && imageCount > 1)"
+          :label="target?.kind === 'chapter' || target?.kind === 'accent' ? 'Другой вариант' : 'Другая картинка'"
           icon="pi pi-images"
           severity="secondary"
           size="small"

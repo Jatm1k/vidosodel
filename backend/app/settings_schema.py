@@ -194,7 +194,10 @@ class SubtitleSettings(_Base):
     #: Key numbers and phrases picked by the LLM pop up big on screen (works without subtitles too).
     accents: bool = False
     accents_per_minute: float = 1.0
-    accent_font: str = "Arial"
+    #: Animation styles of the phrases (see render.accent_fx); empty – all, each fitted to the kind of phrase.
+    accent_styles: list[str] = Field(default_factory=list)
+    #: Font family of the phrases; empty – the style's own.
+    accent_font: str = ""
     accent_color: str = "#FFD84D"
 
 

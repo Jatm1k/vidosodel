@@ -119,7 +119,8 @@ def resolve_font(candidates: list[tuple[str, str]], text: str = "") -> str | Non
         want = _WEIGHTS.index(style) if style in _WEIGHTS else 2
         ranked = sorted(styles.items(), key=lambda kv: abs((_WEIGHTS.index(kv[0].title())
                                                              if kv[0].title() in _WEIGHTS else 2) - want))
-        for _, path in ranked:
+        exact = styles.get(style.lower())  # e.g. «Italic», which is not a weight
+        for _, path in ([("", exact)] if exact else []) + ranked:
             if _covers(path, text):
                 return path
     from .thumb_text import find_font  # noqa: PLC0415 – any heavy system font as the last resort
@@ -140,6 +141,7 @@ SANS_SEMI = [("Segoe UI", "Semibold"), ("Arial", "Bold")]
 SANS_LIGHT = [("Segoe UI", "Light"), ("Segoe UI", "Semilight"), ("Arial", "Regular")]
 CONDENSED = [("Bahnschrift", "Bold"), ("Impact", "Regular"), ("Arial Black", "Regular")]
 MONO = [("Courier New", "Bold"), ("Consolas", "Bold"), ("Lucida Console", "Regular")]
+SERIF_ITALIC = [("Georgia", "Italic"), ("Constantia", "Italic"), ("Cambria", "Italic"), ("Times New Roman", "Italic")]
 
 
 # ================================================================ maths

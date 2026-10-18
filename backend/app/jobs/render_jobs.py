@@ -17,6 +17,7 @@ from ..render.look import random_look
 from ..render.media import pick_encoder
 from ..render import parallax
 from ..render import chapter_cards
+from ..render import accent_fx
 from ..render.accents import avoid_subject, place as place_accents
 from ..render.motion import EFFECTS
 from ..render.subtitles import build_cues, write_ass, write_srt
@@ -123,7 +124,7 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
                            "meta": (track.publish_meta or {}).get("chapters") or []}
         if subs.accents and timings and track.script.strip():
             count = max(1, round((track.audio_duration or timings.duration) / 60 * subs.accents_per_minute))
-            accent_req = {"key": f"{text_hash(track.script)}:{count}", "count": count, "script": track.script,
+            accent_req = {"key": f"v2:{text_hash(track.script)}:{count}", "count": count, "script": track.script,
                           "language": track.language, "llm": s.llm, "cached": track.text_accents or {}}
         audio = to_abs(track.audio_file)
         title = ((track.publish_meta or {}).get("titles") or [project.name])[0]
@@ -161,8 +162,13 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
                                                      for c in cards)]
     if accents:
         avoid_subject(accents, plan)  # after the depth pass: its subjects are cached by then
-    if timings and (subs.enabled or accents):
-        plan.subtitles_ass = str(write_ass(timings.words, subs, plan.width, plan.height, work / "subs.ass", accents))
+        accent_fx.assign_styles(accents, subs.accent_styles, seed)
+        center_y = 0.3 if subs.enabled and subs.position == "middle" else 0.42
+        safe_bottom = 0.74 if subs.enabled and subs.position == "bottom" else 0.86
+        plan.accents_fx = {"variant": seed, "color": subs.accent_color, "font": subs.accent_font,
+                           "center_y": center_y, "safe_bottom": safe_bottom, "items": accent_fx.to_plan(accents)}
+    if timings and subs.enabled:
+        plan.subtitles_ass = str(write_ass(timings.words, subs, plan.width, plan.height, work / "subs.ass"))
     render_video(
         plan, audio, out_path, work, workers=1 if preview else workers,
         metadata={"title": title} if not preview else None, loudness=loudness,
