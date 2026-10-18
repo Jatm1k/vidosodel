@@ -30,7 +30,7 @@ from .engine import FrameRenderer, PlanScene, RenderPlan
 from .media import CREATE_NO_WINDOW, imwrite
 from .motion import EFFECTS
 from .parallax import make_shots
-from .transitions import TRANSITIONS
+from .transitions import DYNAMIC, TRANSITIONS
 
 log = logging.getLogger(__name__)
 
@@ -222,7 +222,7 @@ def render(kind: str, effect: str, images: list[str], settings: dict, out_dir: P
     """Render (or reuse) the preview clip; returns its path inside ``out_dir``."""
     if kind not in KINDS:
         raise PreviewError(f"Неизвестный тип превью: {kind}")
-    valid = {"motion": EFFECTS, "transition": TRANSITIONS, "atmosphere": (*ATMOSPHERE_EFFECTS, "all"),
+    valid = {"motion": EFFECTS, "transition": (*TRANSITIONS, *DYNAMIC), "atmosphere": (*ATMOSPHERE_EFFECTS, "all"),
              "chapter": CARD_STYLES, "accent": accent_fx.STYLES}[kind]
     if effect not in valid:
         raise PreviewError(f"Неизвестный эффект: {effect}")

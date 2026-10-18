@@ -73,8 +73,8 @@ def make_motion(effect: str, intensity: float, seed: int):
     def zoom_out(u: float) -> View:
         return View(1 + a * (1 - ease(u)), 0.5 + jx * (1 - ease(u)), 0.5 + jy * (1 - ease(u)))
 
-    def pan(dx: float, dy: float):
-        z = 1 + a * 0.9
+    def pan(dx: float, dy: float, size: float = 0.9):
+        z = 1 + a * size
         travel = (1 - 1 / z) / 2 * 0.92  # max travel that keeps the view inside the image
 
         def f(u: float) -> View:
@@ -82,11 +82,11 @@ def make_motion(effect: str, intensity: float, seed: int):
             return View(z, 0.5 + dx * travel * e, 0.5 + dy * travel * e + (jy * 0.5 if dx else 0))
         return f
 
-    def zoom_shift(direction: float):
+    def zoom_shift(direction: float, size: float = 1.0):
         def f(u: float) -> View:
             e = ease(u)
-            z = 1 + a * e
-            travel = (1 - 1 / (1 + a)) / 2 * 0.85
+            z = 1 + a * size * e
+            travel = (1 - 1 / (1 + a * size)) / 2 * 0.85
             return View(z, 0.5 + direction * travel * e, 0.5 + jy * e)
         return f
 
@@ -108,10 +108,23 @@ def make_motion(effect: str, intensity: float, seed: int):
         "zoom_in_left": zoom_shift(-1), "zoom_in_right": zoom_shift(1), "drift": drift, "static": static,
         # Real parallax is drawn by .parallax from a depth map; this is its 2D stand-in.
         "parallax": drift,
+        # Gentle moves of single shots of a split scene (see SHOT_MOVES): a shot lasts a couple
+        # of seconds and is already framed, so they travel about half as far.
+        "truck_left": pan(1, 0, 0.45), "truck_right": pan(-1, 0, 0.45),
+        "push_in": lambda u: View(1 + a * 0.45 * ease(u), 0.5, 0.5),
+        "pull_out": lambda u: View(1 + a * 0.45 * (1 - ease(u)), 0.5, 0.5),
+        "push_in_left": zoom_shift(-1, 0.5), "push_in_right": zoom_shift(1, 0.5),
     }
     fn = table.get(effect, zoom_in)
     return lambda u: _clamp_center(fn(u))
 
+
+#: Camera moves of single shots by shot size, when every shot moves on its own.
+SHOT_MOVES = {
+    "wide": ("truck_left", "truck_right", "pull_out"),
+    "medium": ("push_in_left", "push_in_right", "drift"),
+    "close": ("push_in",),
+}
 
 #: Height stretch of the whole frame at the peak of a breath (idle breathing at full strength).
 BREATH_STRETCH = 0.006

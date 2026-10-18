@@ -613,8 +613,11 @@ onMounted(async () => {
         <FormField label="Интенсивность движения" :value="`${Math.round(s.render.motion_intensity * 100)}%`">
           <Slider v-model="s.render.motion_intensity" :min="0" :max="1" :step="0.05" class="mt-3" />
         </FormField>
-        <FormField label="Крупные планы по фразам" hint="Внутри сцены монтаж чередует общий план и более крупный план героя, склейки — на паузах в речи. Новые картинки не нужны">
+        <FormField label="Крупные планы по фразам" hint="Внутри сцены монтаж переключается между общим, средним и крупным планами: героя, второго человека в кадре, заметной детали. Склейки — на паузах в речи. Новые картинки не нужны">
           <ToggleSwitch v-model="s.render.phrase_cuts" class="mt-1.5" />
+        </FormField>
+        <FormField v-if="s.render.phrase_cuts" label="Своё движение у каждого плана" hint="Камера двигается заново после каждой склейки, по размеру плана: общий — панорама вбок или отъезд, средний — наезд со сдвигом, крупный — медленный наезд. Без этого одно движение сцены идёт сквозь склейки">
+          <ToggleSwitch v-model="s.render.shot_moves" class="mt-1.5" />
         </FormField>
         <template v-if="s.render.motion_effects.includes('parallax')">
           <FormField label="Размытие фона" hint="3D-параллакс: фон за героем мягко размыт, как при съёмке на длиннофокусный объектив">
@@ -643,6 +646,27 @@ onMounted(async () => {
         </FormField>
         <FormField label="Доля простых склеек" :value="`${Math.round(s.render.cut_ratio * 100)}%`" hint="Без эффекта перехода — так монтаж выглядит естественнее">
           <Slider v-model="s.render.cut_ratio" :min="0" :max="1" :step="0.05" class="mt-3" />
+        </FormField>
+        <FormField label="Динамичные переходы" hint="Изредка вместо обычного перехода — быстрый: смазанная панорама или наезд с размытием. Они короче обычных. ▶ — превью">
+          <div class="flex flex-wrap items-center gap-2">
+            <ToggleSwitch v-model="s.render.dynamic_transitions" class="mr-2" />
+            <span
+              v-for="t in store.meta?.dynamic_transitions"
+              :key="t.id"
+              class="inline-flex overflow-hidden rounded-md border text-[13px] transition-colors"
+              :class="s.render.dynamic_transitions ? 'border-tally bg-tally/10 text-ink' : 'border-line text-ink-3'"
+            >
+              <span class="py-1.5 pl-3 pr-2">{{ t.name }}</span>
+              <button
+                class="border-l border-line px-2 text-ink-3 hover:text-tally"
+                title="Превью"
+                @click="openPreview('transition', t.id, `Переход: ${t.name}`)"
+              ><i class="pi pi-play text-[9px]" /></button>
+            </span>
+          </div>
+        </FormField>
+        <FormField v-if="s.render.dynamic_transitions" label="Доля динамичных переходов" :value="`${Math.round(s.render.dynamic_ratio * 100)}%`" hint="Из переходов, которые не простые склейки. Чем реже, тем сильнее каждый">
+          <Slider v-model="s.render.dynamic_ratio" :min="0.05" :max="1" :step="0.05" class="mt-3" />
         </FormField>
         <FormField label="Появление и затухание">
           <div class="flex items-center gap-3">

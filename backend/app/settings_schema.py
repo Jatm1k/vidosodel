@@ -120,8 +120,11 @@ class RenderSettings(_Base):
     )
     #: 0 – barely moving, 1 – dynamic.
     motion_intensity: float = 0.5
-    #: Scenes cut between a wide shot and a closer one at phrase boundaries of the voice-over.
+    #: Scenes cut into wide, medium and close shots at phrase boundaries of the voice-over.
     phrase_cuts: bool = True
+    #: Every shot of a split scene gets its own camera move by its size (wide – pan, close – push in)
+    #: instead of one move running through the cuts.
+    shot_moves: bool = False
     #: Background behind the subject goes soft in parallax shots (stronger on close-ups).
     depth_of_field: bool = True
     #: Transitions picked between scenes (see render.transitions.TRANSITIONS).
@@ -131,6 +134,10 @@ class RenderSettings(_Base):
     transition_duration: float = 0.6
     #: Share of hard cuts among scene changes (0..1).
     cut_ratio: float = 0.3
+    #: Now and then a fast transition (whip pan, zoom punch) instead of a regular one.
+    dynamic_transitions: bool = False
+    #: Share of the non-cut scene changes that get a fast transition (0..1).
+    dynamic_ratio: float = 0.25
     fade_in: float = 0.6
     fade_out: float = 1.2
     #: ``auto`` picks a hardware encoder when available, otherwise libx264.

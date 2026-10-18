@@ -11,7 +11,7 @@ from ..config import get_settings
 from ..pipeline.languages import language_list
 from ..render.media import available_encoders, ffmpeg_version
 from ..render.motion import EFFECT_LABELS, EFFECTS
-from ..render.transitions import TRANSITION_LABELS, TRANSITIONS
+from ..render.transitions import DYNAMIC, TRANSITION_LABELS, TRANSITIONS
 from ..services.fastgen import IMAGE_OPERATIONS, FastgenClient
 from ..services.http import ApiError
 from ..services.limiter import limiter, token_limiter
@@ -35,6 +35,7 @@ def meta() -> dict[str, Any]:
         "languages": language_list(),
         "effects": [{"id": e, "name": EFFECT_LABELS[e]} for e in EFFECTS],
         "transitions": [{"id": t, "name": TRANSITION_LABELS[t]} for t in TRANSITIONS],
+        "dynamic_transitions": [{"id": t, "name": TRANSITION_LABELS[t]} for t in DYNAMIC],
         "image_operations": IMAGE_OPERATIONS,
         "defaults": default_settings(),
         "encoders": available_encoders(),

@@ -11,12 +11,23 @@ import cv2
 import numpy as np
 
 TRANSITIONS = ["crossfade", "dip_black", "slide_left", "slide_right", "slide_up", "zoom_blend", "wipe", "blur", "flash"]
+#: Fast, energetic transitions mixed in now and then (``RenderSettings.dynamic_transitions``).
+DYNAMIC = ["whip_left", "whip_right", "zoom_punch"]
 
 TRANSITION_LABELS = {
     "cut": "Склейка", "crossfade": "Растворение", "dip_black": "Через чёрный", "slide_left": "Сдвиг влево",
     "slide_right": "Сдвиг вправо", "slide_up": "Сдвиг вверх", "zoom_blend": "Зум-растворение",
     "wipe": "Шторка", "blur": "Через размытие", "flash": "Вспышка",
+    "whip_left": "Смазанная панорама влево", "whip_right": "Смазанная панорама вправо",
+    "zoom_punch": "Наезд с размытием",
 }
+
+#: Length of a transition relative to the configured one: a whip is a flick, not a glide.
+DURATION_SCALE = {"whip_left": 0.6, "whip_right": 0.6, "zoom_punch": 0.7}
+
+
+def duration(name: str, base: float) -> float:
+    return base * DURATION_SCALE.get(name, 1.0)
 
 
 def _smooth(p: float) -> float:
@@ -114,9 +125,68 @@ def flash(a, b, p):
     return cv2.addWeighted(base, 1 - glow, np.full_like(base, 255), glow, 0)
 
 
+def _motion_blur(img: np.ndarray, amount: float) -> np.ndarray:
+    """Horizontal smear of up to a quarter of the frame width (``amount`` 0..1)."""
+    h, w = img.shape[:2]
+    k = int(w / 4 * 0.25 * amount)
+    if k < 2:
+        return img
+    small = cv2.resize(img, (w // 4, h // 4), interpolation=cv2.INTER_AREA)
+    small = cv2.blur(small, (k, 1))
+    return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+def _whip(a: np.ndarray, b: np.ndarray, p: float, sign: int) -> np.ndarray:
+    """Whip pan: the camera flicks sideways, the picture smears and the next scene lands."""
+    # accelerate hard and brake hard: most of the travel happens in the blurred middle
+    e = 0.5 - 0.5 * math.cos(math.pi * min(max(p, 0.0), 1.0))
+    e = e * e * (3 - 2 * e)
+    out = _slide(a, b, e, 1, sign) if 0 < e < 1 else (a if e <= 0 else b)
+    return _motion_blur(out, math.sin(math.pi * min(max(p, 0.0), 1.0)) ** 1.5)
+
+
+def whip_left(a, b, p):
+    return _whip(a, b, p, 1)
+
+
+def whip_right(a, b, p):
+    return _whip(a, b, p, -1)
+
+
+def _zoom_blur(img: np.ndarray, z: float, amount: float) -> np.ndarray:
+    """``img`` scaled by ``z`` around the centre, with a radial streak (``amount`` 0..1)."""
+    if amount < 0.03:
+        return _scale_center(img, z)
+    h, w = img.shape[:2]
+    small = cv2.resize(img, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+    acc = np.zeros(small.shape, np.float32)
+    n = 6
+    for i in range(n):
+        acc += _scale_center(small, z * (1 + 0.12 * amount * i / (n - 1)))
+    return cv2.resize((acc / n).astype(np.uint8), (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+def zoom_punch(a, b, p):
+    """The camera punches into the old scene and comes out of the new one, streaking at the cut."""
+    p = min(max(p, 0.0), 1.0)
+    bell = math.sin(math.pi * p)
+    if p < 0.5:
+        e = (p * 2) ** 2
+        frame = _zoom_blur(a, 1 + 0.5 * e, bell)
+    else:
+        e = (1 - (p - 0.5) * 2) ** 2
+        frame = _zoom_blur(b, 1 + 0.35 * e, bell)
+    if 0.42 < p < 0.58:  # a few frames of mix hide the switch inside the streak
+        m = (p - 0.42) / 0.16
+        other = _zoom_blur(b, 1.35, bell) if p < 0.5 else _zoom_blur(a, 1.5, bell)
+        frame = cv2.addWeighted(frame, 0.5 + abs(0.5 - m), other, 0.5 - abs(0.5 - m), 0)
+    return frame
+
+
 _FUNCS = {
     "crossfade": crossfade, "dip_black": dip_black, "slide_left": slide_left, "slide_right": slide_right,
     "slide_up": slide_up, "zoom_blend": zoom_blend, "wipe": wipe, "blur": blur, "flash": flash,
+    "whip_left": whip_left, "whip_right": whip_right, "zoom_punch": zoom_punch,
 }
 
 

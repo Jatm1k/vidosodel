@@ -40,7 +40,7 @@ from .media import CAP_BY_REENCODE, CREATE_NO_WINDOW, cover_fit, encoder_args, i
 from . import depth as depth_mod
 from .motion import View, make_motion, max_zoom, render_view
 from .parallax import ParallaxRenderer, prepare_layers
-from .transitions import blend
+from .transitions import blend, duration as transition_length
 
 log = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ class FrameRenderer:
                                        float(ax.get("safe_bottom", 0.86))) if ax.get("items") else None)
         self._starts = [s.start for s in plan.scenes]
         # Half of a transition happens before the boundary, half after.
-        self._td = [0.0 if (i == 0 or s.transition == "cut") else plan.transition_duration
+        self._td = [0.0 if (i == 0 or s.transition == "cut") else transition_length(s.transition, plan.transition_duration)
                     for i, s in enumerate(plan.scenes)]
         # Motion window of every scene: the scene plus the transition halves around it;
         # shots of one split scene share the window of the whole scene.

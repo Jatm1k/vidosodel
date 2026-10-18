@@ -21,7 +21,7 @@ from ..render import accent_fx
 from ..render.accents import avoid_subject, place as place_accents
 from ..render.motion import EFFECTS
 from ..render.subtitles import build_cues, write_ass, write_srt
-from ..render.transitions import TRANSITIONS
+from ..render.transitions import DYNAMIC, TRANSITIONS
 from ..services.fastgen import FastgenClient
 from ..storage import safe_filename, to_abs, to_rel, track_dir
 from .common import TrackCtx, load_timings, load_track, scene_image, text_hash
@@ -79,6 +79,8 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
             trans = "crossfade"  # the same frame with a change: let the change appear smoothly
         else:
             trans = "cut" if rnd.random() < s.render.cut_ratio else rnd.choice(transitions)
+            if trans != "cut" and s.render.dynamic_transitions and rnd.random() < s.render.dynamic_ratio:
+                trans = rnd.choice(DYNAMIC)
         end = scenes[i + 1].start if i + 1 < len(scenes) else duration
         plan_scenes.append(PlanScene(img, 0.0 if i == 0 else sc.start, max(end, sc.start + 0.1), effect,
                                      rnd.randrange(1, 10**9), trans))
@@ -132,7 +134,7 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         out_path = track_dir(project.id, track.id, "render") / out_name
         track_id, unique = track.id, s.unique
         loudness, workers = s.render.loudness, s.render.workers
-        phrase_cuts, depth_of_field = s.render.phrase_cuts, s.render.depth_of_field
+        phrase_cuts, depth_of_field, shot_moves = s.render.phrase_cuts, s.render.depth_of_field, s.render.shot_moves
     t0 = time.time()
     accents = []
     if accent_req:
@@ -144,6 +146,7 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         base = 0.08
         warning = parallax.prepare(
             plan, timings.words if timings else None, phrase_cuts=phrase_cuts, depth_of_field=depth_of_field,
+            shot_moves=shot_moves,
             progress=lambda v, m: ctx.progress(v * base, m), check=ctx.check,
         )
         if warning:

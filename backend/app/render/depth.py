@@ -7,7 +7,8 @@ model (~100 MB) is downloaded on first use into ``data/models``.
 Results are cached next to each image::
 
     images/.depth/<stem>.png    16-bit inverse depth (65535 = nearest), at model resolution
-    images/.depth/<stem>.json   {"cx", "cy", "depth", "face"} – where the camera should look
+    images/.depth/<stem>.json   {"cx", "cy", "depth", "face", "points"} – the hero and other
+                                things worth a closer shot (see :func:`find_points`)
 
 Everything here runs in the main render process before frames are drawn;
 workers only read the cached files.
@@ -134,10 +135,126 @@ def find_subject(bgr: np.ndarray, depth: np.ndarray) -> dict:
             "depth": float(np.median(d[d >= thr])), "face": False}
 
 
+_cascades: dict[str, cv2.CascadeClassifier] = {}
+
+
+def _cascade(name: str) -> cv2.CascadeClassifier:
+    if name not in _cascades:
+        _cascades[name] = cv2.CascadeClassifier(cv2.data.haarcascades + name)
+    return _cascades[name]
+
+
+def _faces(gray: np.ndarray, depth: np.ndarray) -> list[dict]:
+    """Frontal faces and profiles (both directions), biggest first, without duplicates."""
+    h, w = gray.shape
+    flat = float(depth.max() - depth.min()) < 1e-3
+    found = []
+    for name, flip, neighbours, size in (("haarcascade_frontalface_default.xml", False, 6, w // 30),
+                                         ("haarcascade_profileface.xml", False, 12, w // 18),
+                                         ("haarcascade_profileface.xml", True, 12, w // 18)):
+        g = cv2.flip(gray, 1) if flip else gray
+        for x, y, fw, fh in _cascade(name).detectMultiScale(g, 1.1, neighbours, minSize=(size, size)):
+            if flip:
+                x = w - x - fw
+            found.append(((x + fw / 2) / w, (y + fh * 0.55) / h, fw / w, fh / h, not name.endswith("profileface.xml")))
+    near = float(np.percentile(depth, 70))
+    out: list[dict] = []
+    for cx, cy, fw, fh, frontal in sorted(found, key=lambda f: (not f[4], -f[2])):
+        if cy > 0.88 or any(abs(cx - o["cx"]) < max(fw, o["w"]) * 0.7 and abs(cy - o["cy"]) < max(fh, o["h"]) * 0.7
+                            for o in out):
+            continue
+        px, py = min(w - 1, int(cx * w)), min(h - 1, int(cy * h))
+        d = float(depth[py, px])
+        if not flat:
+            if not frontal and d < near:
+                continue  # a profile on a far layer is a pattern in the background
+            # A real head stands out from what is behind it; a "face" in a wall pattern does not.
+            r = int(fw * w * 1.5)
+            ring = depth[max(0, py - r):py + r, max(0, px - r):px + r]
+            if out and d - float(np.percentile(ring, 20)) < 0.06:
+                continue
+        if out and fw < out[0]["w"] * 0.5:
+            continue  # much smaller than the hero: a passer-by or a false hit
+        out.append({"kind": "face", "cx": cx, "cy": cy, "w": fw, "h": fh, "depth": d})
+    return out
+
+
+def _figures(depth: np.ndarray) -> list[dict]:
+    """Separate near masses (a person without a visible face, a prop), biggest and nearest first."""
+    h, w = depth.shape
+    sm = cv2.resize(depth, (192, max(1, round(192 * h / w))), interpolation=cv2.INTER_AREA)
+    H, W = sm.shape
+    u8 = (sm * 255).astype(np.uint8)
+    t, _ = cv2.threshold(u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = (u8 >= max(t, np.percentile(u8, 55))).astype(np.uint8)
+    mask[int(H * 0.97):] = 0
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask)
+    out = []
+    for i in range(1, n):
+        x, y, bw, bh, area = stats[i]
+        # too small to frame, or so big it is the floor / the whole foreground
+        if not H * W * 0.03 <= area <= H * W * 0.3 or bw > W * 0.6:
+            continue
+        out.append({"kind": "figure", "cx": float((x + bw / 2) / W), "cy": float((y + bh * 0.3) / H),
+                    "w": bw / W, "h": bh / H, "top": y / H, "depth": float(np.median(sm[lab == i])),
+                    "area": area / (H * W)})
+    out.sort(key=lambda o: -o["area"] * o["depth"])
+    return out[:3]
+
+
+def _detail(gray: np.ndarray, depth: np.ndarray, away: float) -> dict | None:
+    """The busiest near spot at least a third of the frame away from ``away`` (x of the hero)."""
+    h, w = gray.shape
+    W, H = 160, max(1, round(160 * h / w))
+    edges = cv2.Canny(cv2.resize(gray, (W, H), interpolation=cv2.INTER_AREA), 60, 160).astype(np.float32) / 255
+    near = cv2.resize(depth, (W, H), interpolation=cv2.INTER_AREA)
+    # what a medium shot (≈¾ of the frame) would hold around each point
+    score = cv2.blur(edges * (0.3 + near), (int(W * 0.35) | 1, int(H * 0.35) | 1))
+    xs = np.arange(W) / W
+    hero = float(score[:, int(min(max(away, 0), 0.999) * W)].max())
+    score[:, np.abs(xs - away) < 0.33] = 0
+    score[:int(H * 0.15)] = score[int(H * 0.85):] = 0  # the window must fit
+    y, x = np.unravel_index(int(np.argmax(score)), score.shape)
+    if score[y, x] < hero * 0.6 or score[y, x] <= 0:
+        return None  # nothing there but background
+    return {"kind": "detail", "cx": round((x + 0.5) / W, 4), "cy": round((y + 0.5) / H, 4),
+            "depth": round(float(near[y, x]), 4)}
+
+
+def find_points(bgr: np.ndarray, depth: np.ndarray, hero: dict | None = None) -> list[dict]:
+    """Things worth a closer shot: every face, near masses that hold no face, and a detail.
+
+    Each point is ``{"kind": "face"|"figure"|"detail", "cx", "cy", "depth", ...}`` in
+    normalised image coordinates; ``cy`` of a figure sits in its upper part (where a head
+    would be) and ``top`` is its upper edge. A detail (the busiest spot away from ``hero``) is
+    added only when the picture has fewer than two faces or figures.
+    """
+    gray = cv2.equalizeHist(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
+    points = _faces(gray, depth)
+    if float(depth.max() - depth.min()) < 1e-3:
+        return points
+    for f in _figures(depth):
+        x0, x1 = f["cx"] - f["w"] / 2, f["cx"] + f["w"] / 2
+        if any(x0 <= p["cx"] <= x1 and f["top"] - 0.05 <= p["cy"] <= f["top"] + f["h"] for p in points):
+            continue  # its face is already a point
+        if any(abs(f["cx"] - p["cx"]) < 0.12 and abs(f["cy"] - p["cy"]) < 0.15 for p in points):
+            continue
+        points.append({k: round(v, 4) if isinstance(v, float) else v for k, v in f.items() if k != "area"})
+    if len(points) < 2:
+        hx = hero["cx"] if hero else points[0]["cx"] if points else 0.5
+        detail = _detail(gray, depth, hx)
+        if detail:
+            points.append(detail)
+    return points
+
+
 def face_subject(image: Path) -> dict:
     """Subject without a depth map (depth unavailable): the most prominent face, else the centre."""
     bgr = imread(image)
-    return find_subject(bgr, np.full(bgr.shape[:2], 0.5, dtype=np.float32))
+    flat = np.full(bgr.shape[:2], 0.5, dtype=np.float32)
+    subject = find_subject(bgr, flat)
+    return {**subject, "points": find_points(bgr, flat, subject)}
 
 
 def cache_paths(image: Path) -> tuple[Path, Path]:
@@ -150,13 +267,20 @@ def ensure(image: Path, progress: Callable[[str], None] | None = None) -> dict:
     png, meta = cache_paths(image)
     mtime = image.stat().st_mtime
     if png.exists() and meta.exists() and png.stat().st_mtime >= mtime:
-        return json.loads(meta.read_text(encoding="utf-8"))
+        subject = json.loads(meta.read_text(encoding="utf-8"))
+        if "points" in subject:
+            return subject
+        depth = load(image)  # cached before points existed: only the cheap part is redone
+    else:
+        depth = None
     bgr = imread(image)
-    depth = estimate(bgr, progress)
+    if depth is None:
+        depth = estimate(bgr, progress)
+        # Stored small (it is blurred before use anyway): ~0.5 MB instead of ~2 MB per image.
+        imwrite(png, (depth * 65535).astype(np.uint16))
     full = cv2.resize(depth, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_LINEAR)
     subject = find_subject(bgr, full)
-    # Stored small (it is blurred before use anyway): ~0.5 MB instead of ~2 MB per image.
-    imwrite(png, (depth * 65535).astype(np.uint16))
+    subject["points"] = find_points(bgr, full, subject)
     meta.write_text(json.dumps(subject), encoding="utf-8")
     return subject
 
