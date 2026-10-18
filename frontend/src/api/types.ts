@@ -175,7 +175,7 @@ export interface PublishMeta {
   description_full?: string
   tags?: string[]
   chapters?: { t: number; title: string }[]
-  thumbnails?: { prompt: string; headline?: string; accent?: string; side?: string; score?: number; subject?: string; angle?: string; title?: string; title_index?: number; image?: string | null }[]
+  thumbnails?: { prompt: string; headline?: string; accent?: string; side?: string; score?: number; subject?: string; angle?: string; question?: string; title?: string; title_fixed?: boolean; title_index?: number; image?: string | null }[]
 }
 
 export interface TrackSummary {

@@ -33,6 +33,16 @@ function ideaTitle(c: { title?: string; title_index?: number }): string {
   return c.title || meta.value.titles?.[c.title_index ?? 0] || ''
 }
 
+/** How the thumbnail raises its question (``angle`` of a package). */
+const SCHEMES: Record<string, string> = {
+  confession_result: 'Признание и результат',
+  hidden_warning: 'Скрытое предупреждение',
+  contrast: 'Контраст текста и картинки',
+  pain_question: 'Вопрос боли',
+  number_hook: 'Цифра с подвохом',
+  before_after: 'До и после',
+}
+
 /** Ideas and drawings share one image budget and one list: one job at a time keeps them consistent. */
 const thumbsBusy = computed(() =>
   props.track.active_jobs.some((j) => ['thumbnail_ideas', 'thumbnails', 'metadata'].includes(j.kind)),
@@ -67,7 +77,7 @@ async function copy(text: string, what: string) {
         size="small"
         :disabled="!hasMeta || thumbsBusy"
         :loading="starting === 'thumbnail_ideas'"
-        v-tooltip.top="!hasMeta ? 'Сначала создайте метаданные' : 'Заменит ВСЕ текущие идеи и обложки новыми к названию проекта. Чтобы добавить, не заменяя, — кнопка у нужного названия'"
+        v-tooltip.top="!hasMeta ? 'Сначала создайте метаданные' : 'Заменит ВСЕ текущие идеи и обложки новыми парами «обложка + название». Чтобы добавить обложки к готовому названию, не заменяя, — кнопка у нужного названия'"
         @click="run('thumbnail_ideas', { draw: true }, 'Идеи и обложки создаются')"
       />
       <Button
@@ -145,9 +155,9 @@ async function copy(text: string, what: string) {
       <section v-if="meta.thumbnails?.length" class="rounded-lg border border-line-soft bg-panel p-5 xl:col-span-2">
         <h3 class="font-medium">Обложки 1280×720</h3>
         <p class="mt-1 text-[13px] text-ink-3">
-          Каждая обложка рассчитана на своё название; по умолчанию идеи делаются к названию, которое вы ввели при создании
-          проекта. «Перерисовать» — та же идея, новая отрисовка (если на картинке артефакт);
-          «Другая идея» — заменит только эту идею и нарисует её заново.
+          Обложка и название работают в паре: обложка задаёт зрителю вопрос, название отвечает «что это и почему мне
+          надо». Выкладывайте обложку вместе с её названием. «Перерисовать» — та же идея, новая отрисовка (если на
+          картинке артефакт); «Другая идея» — заменит только эту пару и нарисует её заново.
         </p>
         <div class="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <article v-for="(c, i) in meta.thumbnails" :key="i" class="flex flex-col gap-2">
@@ -163,10 +173,23 @@ async function copy(text: string, what: string) {
             <div v-else class="flex aspect-video w-full items-center justify-center rounded-md border border-dashed border-line text-[13px] text-ink-3">
               Ещё не нарисована
             </div>
-            <div class="flex flex-col gap-0.5 text-[13px]">
+            <div class="flex flex-col gap-1 text-[13px]">
               <span v-if="c.headline" class="font-medium">«{{ c.headline }}»</span>
-              <span v-if="ideaTitle(c)" class="text-ink-2">к названию: {{ ideaTitle(c) }}</span>
-              <span v-if="c.angle" class="text-ink-3">{{ c.angle }}</span>
+              <span v-if="c.question" class="text-ink-3" v-tooltip.top="'Вопрос, который возникает у зрителя при виде обложки'">
+                <i class="pi pi-question-circle text-[11px]" /> {{ c.question }}
+              </span>
+              <div v-if="ideaTitle(c)" class="flex items-start gap-2">
+                <span class="flex-1 text-ink-2">
+                  <span class="block text-[11px] uppercase tracking-wide text-ink-3">Название к обложке</span>
+                  {{ ideaTitle(c) }}
+                </span>
+                <button class="mt-3 text-ink-3 hover:text-ink" aria-label="Копировать название" @click="copy(ideaTitle(c), 'Название')">
+                  <i class="pi pi-copy text-sm" />
+                </button>
+              </div>
+              <span v-if="c.angle" class="text-ink-3">
+                {{ SCHEMES[c.angle] ?? c.angle }}<template v-if="c.score != null"> · {{ c.score.toFixed(1) }}/10</template>
+              </span>
             </div>
             <div class="flex flex-wrap gap-1">
               <Button

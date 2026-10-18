@@ -8,7 +8,8 @@ A click is decided by the title and the thumbnail, and the viewer reads them as 
    critic again. Hard rules (length, caps, duplicates, figurative language) are enforced in code.
 3. :func:`make_description` – hook, what the viewer gets, tags, chapters; the layout is assembled by code so
    no stray English headings appear and the first lines carry the keyword.
-4. :func:`thumbnail_concepts` – many (headline, picture) pairs for the FIXED title → critic → best ones.
+4. :func:`thumbnail_concepts` – packages: the thumbnail (headline + picture) raises a question, its own title
+   answers «what is it, why me» → a critic plays the viewer in these two steps → best ones.
 """
 from __future__ import annotations
 
@@ -70,6 +71,13 @@ and why, one sentence",
 counter-intuitive or little-known; each one short sentence, about the main idea, not a side detail"],
 "hard_facts": ["5-8 concrete facts: numbers, names, named effects, specific actions – only SUPPORTING \
 details of single parts, not the subject of the video"],
+"format": "list|story|explanation|other – how the video is built: list = it goes through N separate items \
+(things, habits, mistakes, rules, signs...)",
+"item_count": "the number of items when format is list, else 0 – digits only",
+"after_state": "how the viewer lives and feels AFTER doing what the video says – the calm, light, free or \
+strong state they want; concrete, one sentence",
+"confession": "one first-person sentence a character of this video could say about the core change, plain \
+words – what they STOPPED or STARTED doing («Я перестал всё контролировать»)",
 "search_phrases": ["6-10 phrases a person would really type into YouTube search to find this video"],
 "main_keyword": "the single most important search phrase, 2-4 words"}}"""
 
@@ -91,8 +99,10 @@ def build_brief(fg: FastgenClient, script: str, language: str, llm: LlmSettings,
     scope = data.get("scope")
     brief["scope"] = [_clean_line(x) for x in scope if _clean_line(x)][:8] if isinstance(scope, list) else []
     for key in ("topic", "viewer", "pain", "promise", "main_claim", "misconception", "stakes", "hidden_cause",
-                "viewer_mistake", "emotion", "main_keyword"):
+                "viewer_mistake", "emotion", "main_keyword", "format", "after_state", "confession"):
         brief[key] = _clean_line(data.get(key))
+    count = re.search(r"\d+", str(data.get("item_count") or ""))
+    brief["item_count"] = int(count.group()) if count and brief["format"].lower() == "list" else 0
     for key in ("curiosity_hooks", "hard_facts", "search_phrases"):
         items = data.get(key)
         brief[key] = [_clean_line(x) for x in items if _clean_line(x)][:10] if isinstance(items, list) else []
@@ -124,6 +134,14 @@ def _brief_text(brief: dict[str, Any]) -> str:
         lines.append(f"Mistake the viewer makes without knowing: {brief['viewer_mistake']}")
     if brief.get("emotion"):
         lines.append(f"Viewer's emotion: {brief['emotion']}")
+    if brief.get("item_count"):
+        lines.append(f"Format: a list of {brief['item_count']} items (the scope above)")
+    elif brief.get("format"):
+        lines.append(f"Format: {brief['format']}")
+    if brief.get("after_state"):
+        lines.append(f"Viewer's state after the video: {brief['after_state']}")
+    if brief.get("confession"):
+        lines.append(f"First-person confession of the core change: {brief['confession']}")
     if brief.get("curiosity_hooks"):
         lines.append("What the viewer does not expect (curiosity hooks):\n" + "\n".join(f"- {f}" for f in brief["curiosity_hooks"]))
     if brief.get("hard_facts"):
@@ -137,19 +155,19 @@ def _brief_text(brief: dict[str, Any]) -> str:
 
 # ----------------------------------------------------------------------------- titles
 _TITLE_RULES = """HARD RULES
-0. A TOPIC IS NOT A TITLE. The AUTHOR'S TITLE / premise tells you WHAT the video is about; your job is to \
-give the viewer a reason to click NOW. Never just restate the author's title or name the topic plainly \
-(«8 техник ясного мышления», «Как изменить себя после неудач» are tables of contents – nobody clicks them). \
-Never repeat the author's title word for word.
-1. THE MAIN IDEA, NOT A DETAIL. The title is about the video's main idea, never about one side example, \
-quote or episode. It does NOT have to list the whole scope: lead with the single strongest angle of the main \
-idea – the hidden cause, the mistake the viewer makes, the surprising claim, the stake, the sign they recognise.
-2. OPEN A LOOP. Name the thing concretely but hold back the answer: the reason, the mistake, the sign, the \
-consequence, what really happens. The viewer understands the topic in one second, but cannot guess the \
-answer and feels they must find it out. A title that already gives the answer or a plain promise («how to \
-do X») loses to one that opens a question.
-3. HIT AN EMOTION. Touch the viewer's real feeling from the brief: fear of losing something, regret, shame, \
-hope, surprise, the «that's exactly me» recognition, the slight sting of being told they do it wrong. A \
+0. THE TITLE'S JOB. The viewer meets the title together with a thumbnail that already raised a question. \
+The title tells in one second what the video is AND makes the viewer think «это мне надо»: it names a \
+concrete gain or pain of THEIR life (peace, strength, money, health, sleep, relationships, years...) and \
+what the video gives about it. A slogan or an abstract topic name gives no reason to click («Философия \
+простоты», «Делать меньше, чтобы жить больше», «Путь к себе»). Never repeat the author's title word for word.
+1. THE WHOLE VIDEO, NOT A DETAIL. The title is about the whole video, never about one side example, quote \
+or episode of it. When the video is a list of N items, the honest count of the whole list is a strong frame: \
+«8 вещей, которые крадут ваш покой и силы» – the number, what the items do, what the viewer cares about.
+2. A REASON TO CLICK. Either a concrete value the viewer wants (the list, the way, the cause of THEIR \
+problem) or a sharp open question – one of them is enough. Hold back the details (which things, which \
+mistake): the title promises them, the video gives them.
+3. HIT AN EMOTION. Touch the viewer's real feeling from the brief: fear of losing something, tiredness, \
+regret, hope, the «that's exactly me» recognition, the slight sting of being told they do it wrong. A \
 neutral, informative title loses.
 4. Plain, concrete speech. NO poetic or philosophical wording, no metaphors. Abstract nouns (secret, mystery, \
 journey, path, power, magic, essence, world of...) must not do the work – name the real thing: the real \
@@ -175,14 +193,17 @@ Examples are Russian ONLY to show the pattern; write in {language}:
 - recognition: the viewer sees themselves – «Если вы всё время сомневаетесь — дело не в характере»
 - number_gap: a count plus an open question – «3 вещи, которые спокойные люди никогда не делают»
 - myth: the belief and its reversal – «Это не лень: что на самом деле мешает вам начать»
-BAD – the topic or a table of contents, no reason to click: «8 техник ясного мышления», «Как принимать \
+- list_value: the count of the whole list + what its items do to the viewer's gain or pain – «8 вещей, \
+которые крадут ваш покой и силы», «7 привычек, из-за которых вы устаёте к обеду»
+When the video is a list, at least 3 candidates use its exact count.
+BAD – an abstract topic or a slogan, no gain or pain of the viewer: «Философия простоты», «Как принимать \
 решения без сомнений», «Изменить себя после неудач: методы». BAD – poetic, tells nothing: «Тишина внутри: \
 когда душа молчит», «Путь к себе», «Магия перемен»."""
 
 _TITLES_SYSTEM = """You are the best YouTube packaging editor in the {language}-speaking segment, the one \
 channels hire when their click-through rate is low. Your titles get clicked because in ONE second the \
-viewer thinks «that's about me» AND feels an itch – a question they must close, something they suspect \
-they do wrong, a reason they never heard of.
+viewer understands what the video is and thinks «это мне надо» – it is about their own tiredness, fear, \
+loss or hope, and the video gives something concrete about it.
 You write for a viewer scrolling the home feed among 20 other videos – not for a search engine, not for a \
 table of contents.
 
@@ -191,15 +212,17 @@ table of contents.
 {formulas}
 
 Write {count} candidates. Answer ONLY with JSON:
-{{"candidates": [{{"title": "...", "formula": "hidden_cause|mistake|contrarian|signs|warning|question|consequence|recognition|number_gap|myth"}}]}}"""
+{{"candidates": [{{"title": "...", "formula": "hidden_cause|mistake|contrarian|signs|warning|question|consequence|recognition|number_gap|myth|list_value"}}]}}"""
 
 _JUDGE_SYSTEM = """You are a ruthless YouTube title critic who knows real click-through data. Score every \
 candidate title for the video described in the BRIEF. Be strict: an average decent title gets 5–6, 8+ is rare.
 Imagine the viewer from the brief scrolling the home feed: 20 videos, half a second for each.
 For each give integers 0–10:
 - click: how badly this viewer wants to click it right now (0 = scrolls past, 10 = cannot resist)
-- curiosity: it opens a specific question the viewer cannot answer themselves and wants closed (0 if vague, \
-or if the title already gives the answer, or if it is a plain «how to» promise)
+- for_me: the viewer thinks «это мне надо» – it names a concrete gain or pain of their own life and \
+promises something concrete about it (0 if it is an abstract topic, a slogan or about someone else)
+- curiosity: the viewer wants the details the title holds back – which things, which cause, what happens \
+(0 if vague or if the title already gives everything away)
 - pull: emotional hit for THIS viewer – fear, regret, hope, surprise, «that's me»
 - specificity: names a concrete thing, behaviour or situation (0 if it could fit 10 other videos)
 - clarity: the topic is understood in one second by a stranger
@@ -207,16 +230,18 @@ or if the title already gives the answer, or if it is a plain «how to» promise
 - coverage: 10 if the title is about the video's main idea; 0 if it is built on a side example or detail \
 that the video only touches
 and booleans/text:
-- boring: true if it reads like a topic name, a textbook chapter, an article heading or a plain restatement \
-of the author's title – informative but no reason to click
+- boring: true if it reads like an abstract topic name, a slogan, a textbook chapter or a plain restatement \
+of the author's title – no gain or pain of the viewer in it. A concrete list of N things with the viewer's \
+gain or pain is NOT boring
 - figurative: true if it uses a metaphor, poetry, a philosophical or abstract word instead of the real thing
 - weakness: the single most important thing that keeps a viewer from clicking, up to 12 words
-Answer ONLY with JSON: {"scores": [{"i": <index>, "click": 0, "curiosity": 0, "pull": 0, "specificity": 0, \
+Answer ONLY with JSON: {"scores": [{"i": <index>, "click": 0, "for_me": 0, "curiosity": 0, "pull": 0, "specificity": 0, \
 "clarity": 0, "honest": 0, "coverage": 0, "boring": false, "figurative": false, "weakness": "..."}]}"""
 
 _REFINE_SYSTEM = """You sharpen YouTube titles to raise their click-through rate. You get titles with the \
 weakness a critic found in each. For every title write 2 improved versions that remove the weakness and \
-make the viewer want to click more – a sharper open question, a stronger emotion, a more concrete hook – \
+make the viewer want to click more – a more concrete gain or pain of the viewer, a stronger emotion, a \
+sharper hook – \
 keeping the claim true and obeying the rules.
 
 {rules}
@@ -284,9 +309,9 @@ def _judge_titles(fg: FastgenClient, brief: dict[str, Any], titles: list[str], l
                 return max(0.0, min(10.0, float(it.get(key, 0))))
             except (TypeError, ValueError):
                 return 0.0
-        # The wish to click leads; clarity and facts only keep a title from being a riddle.
-        total = (0.30 * num("click") + 0.22 * num("curiosity") + 0.16 * num("pull")
-                 + 0.12 * num("specificity") + 0.10 * num("clarity") + 0.10 * num("honest"))
+        # The wish to click leads, then «это мне надо»; clarity and facts keep a title from being a riddle.
+        total = (0.25 * num("click") + 0.20 * num("for_me") + 0.14 * num("curiosity") + 0.12 * num("pull")
+                 + 0.10 * num("specificity") + 0.09 * num("clarity") + 0.10 * num("honest"))
         if num("coverage") < 5:  # built on a side detail – the viewer would expect something else
             total -= 0.4 * (5 - num("coverage"))
         figurative = _flag(it, "figurative")
@@ -368,11 +393,17 @@ def make_titles(
     pool = [s for s in scored if not s["figurative"] and s["honest"] >= 6] or scored
     pool.sort(key=lambda s: -s["total"])
     picked: list[dict[str, Any]] = []
-    for s in pool:  # strongest first, but no near-duplicates
-        if all(not _similar(s["title"], p["text"]) for p in picked):
-            picked.append({"text": s["title"], "score": s["total"], "formula": formulas.get(s["title"], "")})
-        if len(picked) >= count:
-            break
+    # Strongest first, but no near-duplicates; the first pass also wants a different formula each time.
+    for distinct_formula in (True, False):
+        for s in pool:
+            formula = formulas.get(s["title"], "")
+            if len(picked) >= count or any(p["text"] == s["title"] for p in picked):
+                continue
+            if any(_similar(s["title"], p["text"]) or (distinct_formula and formula and formula == p["formula"])
+                   for p in picked):
+                continue
+            picked.append({"text": s["title"], "score": s["total"], "formula": formula})
+    picked.sort(key=lambda p: -p["score"])
     return picked
 
 
@@ -519,87 +550,112 @@ def make_description(
 
 
 # ----------------------------------------------------------------------------- thumbnails
-_THUMB_SYSTEM = """You are a senior YouTube thumbnail art director, the one channels hire when their \
-click-through rate is low. The TITLE is fixed. A thumbnail is seen for half a second at 170 px width among \
-20 others, so it must STOP THE SCROLL and put a question into the viewer's head that only the video answers. \
-It has ONE short text and ONE picture; with the title they read as one thought.
-How the pair works: the thumbnail shows the emotional moment – the problem, the shock, the tension, the \
-mistake – and the title hints at the answer. Neither gives the answer away. A calm, pleasant, «nothing \
-happens» thumbnail is a failure even when it is beautiful and correct.
+#: Schemes of a package: how the thumbnail raises the question and the title answers «what is it, why me».
+PACKAGE_SCHEMES = ("confession_result", "hidden_warning", "contrast", "pain_question", "number_hook",
+                   "before_after")
+
+_PACKAGE_SYSTEM = """You are a senior YouTube packaging director, the one channels hire when their \
+click-through rate is low. You make PACKAGES: a thumbnail (ONE short text + ONE picture) and the title \
+that goes with it. The viewer sees them for half a second at 170 px among 20 other videos.
+
+HOW A PACKAGE WORKS – two roles, two steps
+1. The THUMBNAIL raises a question. The viewer sees the text and the picture and at once asks something \
+they cannot answer themselves: «а что он перестал делать?», «почему он такой спокойный?», «что со мной \
+не так?». The question comes from the text AND the picture together – often from the gap between them.
+2. The TITLE finishes the job. The viewer glances at it and thinks «о, это мне надо»: it says what the \
+video is and names a concrete gain or pain of the viewer's own life, promising the answer to the \
+thumbnail's question without giving it away.
+Reference package (a real one that worked): picture – a calm, content character sitting and drinking tea; \
+text «Я ПЕРЕСТАЛ ЭТО ДЕЛАТЬ»; title «8 вещей, которые крадут ваш покой и силы». The viewer asks «что он \
+перестал? почему он так спокоен?», reads the title and thinks «это мне надо». Learn the mechanism, \
+never copy its words.
+BAD thumbnail texts and why: «ЖИЗНЬ ПРОХОДИТ МИМО» – a sad truism, raises no question; «ЭТО НЕ ЛЕНЬ» – \
+answers a question nobody asked; «ФИЛОСОФИЯ ПРОСТОТЫ» – a topic name; «ШОК», «ВСЯ ПРАВДА» – empty.
+
+SCHEMES – each candidate uses one, at least 5 different schemes overall. Examples are Russian ONLY to show \
+the pattern; write in {language}:
+- confession_result: a first-person confession with the object held back + the character in the desired \
+state after the change (calm, light, happy, strong). «Я ПЕРЕСТАЛ ЭТО ДЕЛАТЬ», «Я БОЛЬШЕ ТАК НЕ ЖИВУ», \
+«ВОТ ПОЧЕМУ Я СПОКОЕН». The picture shows what the viewer wants to feel.
+- hidden_warning: a warning whose object is held back + a character with a telling gesture or face \
+(stopping hand, alarmed look). «НЕ ДЕЛАЙТЕ ЭТО ПОСЛЕ 60», «ЭТО ВАС ИСТОЩАЕТ», «ХВАТИТ ТАК ДЕЛАТЬ».
+- contrast: text and picture contradict each other, the brain stops at the mismatch: «Я НИЧЕГО НЕ ДЕЛАЮ» \
+on a radiant, energetic character; «У МЕНЯ ВСЁ ПОЛУЧИЛОСЬ» on an exhausted one.
+- pain_question: the question the viewer asks themselves, in first person, + the character living that \
+pain: «ПОЧЕМУ Я ВСЁ ВРЕМЯ УСТАЮ?», «КУДА УХОДЯТ СИЛЫ?».
+- number_hook: a number from the video with a sting, the content held back: «ВСЕГО 3 ДЕЛА В ДЕНЬ», \
+«3 ДНЯ БЕЗ НОВОСТЕЙ» + a character showing the effect.
+- before_after: two states of the same character side by side + a text about the switch: «Я ПРОСТО \
+ПЕРЕСТАЛ…», «ЧТО Я ИЗМЕНИЛ?».
 
 THE TEXT («headline», in {language})
-- It ADDS what the title does not say and never repeats or paraphrases the title.
-- It is an emotional punch or an open loop about the core of the video (the idea of the title, not a side \
-detail): a provocative verdict, a warning, the inner thought of the character in first person, a pointed \
-question to the viewer, the stake or cost, a number with a sting.
-- A reader understands what it is about together with the title: no cryptic fragment. A bare negation \
-without its subject («НЕ СТАРОСТЬ», «НЕ ОШИБКА») only works when the title makes the subject obvious; \
-prefer the full thought «ЭТО НЕ СТАРОСТЬ».
-- Provocative is good, false is not: it only claims what the BRIEF really says.
-- CONCRETE and specific to THIS video. Test: if the same text fits thumbnails of 10 other videos – throw it \
-away. Never a single abstract word («Shock», «Truth», «Secret», «Important», «Watch»), never a generic hook \
-(«This changes everything», «You won't believe it»).
-- 1–4 words, at most {max_chars} characters in total, native {language}, no emoji, no trailing period, \
-written in normal case (capitals are applied later). Strong shapes: «ЭТО НЕ ЛЕНЬ», «ПЕРЕСТАНЬ ТАК ДЕЛАТЬ», \
-«Я ОПЯТЬ СОРВАЛСЯ», «ВЫ ДУМАЕТЕ НЕ ТАК», «7 ПРИЗНАКОВ», «−10 ЛЕТ ЖИЗНИ», «ПОЧЕМУ Я ТАКОЙ?».
+- 2–5 words, at most {max_chars} characters, written in normal case (capitals are applied later), no \
+emoji, no trailing period. Native, spoken {language}.
+- It raises the question; it never answers it and never names the topic plainly. Holding the object back \
+with «это», «так», «вот почему», «одно» is a strong tool – the title and the picture make the area clear.
+- It is about the core change of the WHOLE video, not a side detail. Provocative is good, false is not: \
+everything it says or implies is really in the BRIEF.
 - «accent»: the ONE word of the headline that carries the hook (it is highlighted); a number if there is one.
 
 THE PICTURE («prompt», in English, 40–80 words)
-- It needs a VISUAL HOOK – choose one per candidate («visual_hook»), different between candidates:
-  * emotion: a face/character with an EXTREME, exaggerated emotion – shock, panic, despair, tears, fury, \
-disbelief, horror – big, close-up; never a mild, neutral, «slightly sad» or politely smiling face;
-  * conflict: two forces in tension – a character torn in two directions, fighting its own shadow, \
-pushed by something;
-  * before_after: two states of the same character side by side with an obvious difference;
-  * wrong_detail: an ordinary situation with ONE striking unexpected detail that makes you look twice;
-  * moment_before: a failure or danger a split second before it happens;
-  * metaphor: ONE simple object-metaphor read instantly by anyone (a head stuffed with trash, a person \
-chained to a phone, a battery at 1% on the chest, a weight tied to the feet) – bold and literal-looking. \
-No clichés: no gears or circuits in brains, no light bulbs, glowing orbs, hourglasses, surreal collages, \
-floating symbols.
-- It shows the core of the WHOLE video as in the title – not one chapter, example or anecdote. Use accurate \
-details from the brief only to make it concrete.
-- One focal point, at most 3 elements, close framing: the character or object is BIG. A simple background.
-- The subject sits on ONE side of the frame and fills about half of it; the other ~45% is calm empty \
-background, because the headline is placed there. «side» = the side where the SUBJECT is: "left" or "right".
-- The art style is FIXED, MANDATORY and added automatically: «{style}». It decides colour, background, \
-lighting and rendering. Never name colours, lighting, style, medium or camera words in the prompt and never \
-contradict the style: for a cartoon style describe cartoon characters, not real people. The prompt does NOT \
-contain the headline text and no letters or numbers on objects.
+- ONE character (or one object) with a clear, instantly readable state that serves the scheme: the \
+desired calm or joy for a result, real exhaustion or guilt for a pain, alarm for a warning. A calm picture \
+is GOOD when the text makes the calm intriguing; a mild, vague, «nothing to read» face is bad.
+- Concrete scene from the viewer's life (kitchen, armchair, garden, window...), at most 3 elements, the \
+character is BIG, close framing, simple background. No clichés: no gears or circuits in brains, light \
+bulbs, glowing orbs, hourglasses, surreal collages, floating symbols.
+- The subject sits on ONE side and fills about half of the frame; the other ~45% is calm empty background \
+for the headline. «side» = the side where the SUBJECT is: "left" or "right".
+- The art style is FIXED, MANDATORY and added to the prompt automatically: «{style}». The prompt describes \
+ONLY the scene – never copy the style into it, never name colours, lighting, style, medium or camera words \
+and never contradict the style: for a cartoon style describe cartoon characters, not real people. No \
+text, letters or numbers in the picture.
 
-FINAL CHECK for every concept: a stranger scrolling the feed sees picture + headline – do they stop, and \
-which question pops up in their head? Then they read the title – is it one idea about the video's core? \
-If they would scroll past, or there is no question, redo it.
-Candidates must differ from each other in headline hook AND in visual hook.
+THE TITLE («title», in {language})
+{title_task}
 
-Write {count} candidates. Answer ONLY with JSON, fields in this order (the chain of thought):
-{{"thumbnails": [{{"hook_type": "verdict|warning|inner_thought|question|stake|number|contrast", \
-"headline": "...", "accent": "...", "adds_to_title": "what the headline says that the title does not, one \
-English sentence", "visual_hook": "emotion|conflict|before_after|wrong_detail|moment_before|metaphor", \
-"subject": "what the picture shows, 2–8 English words", "question": "the question that pops into a \
-viewer's head at the sight of it, one English sentence", "side": "left|right", "prompt": "..."}}]}}"""
+FINAL CHECK for every package: a stranger sees ONLY the thumbnail – which question pops into their head, \
+and do they need the answer? Then they read the title – do they think «это мне надо»? If not, redo it.
+Packages must differ from each other in scheme, headline and picture.
 
-_THUMB_JUDGE_SYSTEM = """You are a ruthless YouTube thumbnail critic who knows real click-through data. \
-Score each candidate (headline text + picture idea) for the given TITLE and BRIEF. Imagine it in the home \
-feed at 170 px among 20 other thumbnails. Be strict: average = 5–6, 8+ is rare. Integers 0–10:
-- stop_scroll: would it stop the viewer's thumb – intense emotion, tension, an unexpected element (0 if calm, \
-pleasant, nothing happens)
-- curiosity: thumbnail + title open a question that only the video answers (0 if it explains everything or \
-raises nothing)
-- text_hook: the headline makes the viewer want to know more in half a second
-- text_specific: the headline is concrete and could ONLY belong to this video (0 if it fits any video)
-- picture_instant: understood at 170 px in one second, one focal point
-- coherence: picture + headline + title read as ONE thought about the video's core
-- adds: the headline complements the title instead of repeating it
-- grounded: every claim of the headline and every detail of the picture is really in the BRIEF (0 if the \
-headline states something the video does not say, or is only a detail of one part of the video)
-and booleans: "bland" (true if the picture is calm, the emotion mild or neutral, nothing is going on), \
-"abstract" (true if the picture relies on a cliché symbol or an abstraction that is not understood at once – \
-a simple instantly readable object-metaphor is NOT abstract), "generic" (true if the headline would fit \
-other videos).
-Answer ONLY with JSON: {"scores": [{"i": <index>, "stop_scroll": 0, "curiosity": 0, "text_hook": 0, \
-"text_specific": 0, "picture_instant": 0, "coherence": 0, "adds": 0, "grounded": 0, "bland": false, \
-"abstract": false, "generic": false}]}"""
+Write {count} packages. Answer ONLY with JSON, fields in this order (the chain of thought):
+{{"packages": [{{"scheme": "{schemes}", "headline": "...", "accent": "...", "subject": "what the picture \
+shows, 2–8 English words", "question": "the question the viewer asks at the sight of the thumbnail alone, \
+in {language}", "title": "...", "side": "left|right", "prompt": "..."}}]}}"""
+
+_PACKAGE_TITLE_FREE = """Write the title for THIS thumbnail. {title_rules}
+- The title does not repeat the words of the headline and does not reveal what the headline holds back \
+(it may name the category – «8 вещей», not the things).
+- It promises exactly what the video is: a list of N things is never «the main reason» or «one simple way».
+- Grammatically correct, every part of it agrees with the rest.{ideas}"""
+
+_PACKAGE_TITLE_FIXED = """The title is FIXED: «{title}». Copy it into «title» exactly; build the thumbnail \
+so that this title answers «what is it, why me» for the question the thumbnail raises."""
+
+_PACKAGE_JUDGE_SYSTEM = """You are a ruthless YouTube packaging critic who knows real click-through data. \
+For every package (thumbnail text + picture + title) of the video in the BRIEF, play the viewer from the \
+brief scrolling the home feed, in two steps. Be strict: average = 5–6, 8+ is rare.
+STEP 1 – the viewer sees ONLY the thumbnail at 170 px (text + picture, no title):
+- question: the question that really pops into their head, in {language}, max 12 words; an empty string \
+if none does (a truism, a topic name, a statement that explains itself)
+- gap: 0–10, how badly they need the answer to that question (0 if there is none)
+- stop: 0–10, does it stand out among 20 thumbnails – a clearly readable state of the character, a \
+striking mismatch of text and picture, one focal point (calm is not a minus by itself; a vague, \
+nothing-to-read picture is)
+- picture_instant: 0–10, the picture is understood in one second at 170 px
+STEP 2 – the viewer reads the title:
+- for_me: 0–10, they think «это мне надо» – a concrete gain or pain of their own life (0 for an abstract \
+topic or a slogan)
+- closes: 0–10, the title promises the answer to the thumbnail's question without giving it away and \
+without repeating the headline
+- clarity: 0–10, it is clear in one second what the video is
+- honest: 0–10, every claim of the headline, the picture and the title is really in the BRIEF and about \
+the whole video, not a side detail
+and booleans: "repeats" (the title repeats the headline's words or idea), "abstract" (the picture relies \
+on a cliché symbol or an abstraction that is not understood at once).
+Answer ONLY with JSON: {{"scores": [{{"i": <index>, "question": "...", "gap": 0, "stop": 0, \
+"picture_instant": 0, "for_me": 0, "closes": 0, "clarity": 0, "honest": 0, "repeats": false, \
+"abstract": false}}]}}"""
 
 
 def _thumb_headline_ok(headline: str) -> bool:
@@ -607,30 +663,40 @@ def _thumb_headline_ok(headline: str) -> bool:
 
 
 def thumbnail_concepts(
-    fg: FastgenClient, brief: dict[str, Any], script_head: str, language: str, title: str, llm: LlmSettings,
-    publish: PublishSettings, count: int, avoid: list[dict[str, Any]] | None = None,
+    fg: FastgenClient, brief: dict[str, Any], script_head: str, language: str, title: str | None,
+    llm: LlmSettings, publish: PublishSettings, count: int, avoid: list[dict[str, Any]] | None = None,
+    title_ideas: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """The best ``count`` thumbnail ideas for ``title``.
+    """The best ``count`` packages: a thumbnail (headline + picture) and the title that goes with it.
 
-    Each idea is ``{"prompt", "headline", "accent", "side", "subject", "angle", "title", "title_index", "score"}``.
-    ``avoid`` are ideas that were already shown (kept or rejected): new ones differ in headline and picture.
+    Each one is ``{"prompt", "headline", "accent", "side", "subject", "angle", "question", "title",
+    "title_fixed", "score"}``. ``title`` – make thumbnails for this fixed title; ``None`` – every package gets
+    its own title. ``avoid`` are ideas that were already shown: new ones differ in headline, picture and title.
+    ``title_ideas`` – the strongest titles of :func:`make_titles`, a package may take or adapt one of them.
     """
     name = language_name(language)
-    wanted = max(count * 3, 6)
-    system = _THUMB_SYSTEM.format(language=name, max_chars=HEADLINE_MAX_CHARS, count=wanted,
-                                  style=publish.thumbnail_style.strip())
-    user = f"{_niche(llm)}TITLE: {title}\n\nBRIEF:\n{_brief_text(brief)}\n"
+    wanted = max(count * 3, 8)
+    fixed = (title or "").strip()
+    ideas = ("\n- Strong titles already written for this video – take one that fits the thumbnail, adapt it or "
+             "write a better one:\n" + "\n".join(f"  «{t}»" for t in title_ideas[:8])) if title_ideas else ""
+    title_task = (_PACKAGE_TITLE_FIXED.format(title=fixed) if fixed
+                  else _PACKAGE_TITLE_FREE.format(title_rules=_TITLE_RULES.format(language=name), ideas=ideas))
+    system = _PACKAGE_SYSTEM.format(language=name, max_chars=HEADLINE_MAX_CHARS, count=wanted,
+                                    style=publish.thumbnail_style.strip(), title_task=title_task,
+                                    schemes="|".join(PACKAGE_SCHEMES))
+    user = f"{_niche(llm)}BRIEF:\n{_brief_text(brief)}\n"
     shown = [a for a in avoid or [] if a.get("headline") or a.get("prompt")]
     if shown:
-        user += ("\nALREADY MADE – a new idea must not repeat or paraphrase their headline or picture:\n"
+        user += ("\nALREADY MADE – a new package must not repeat or paraphrase their headline, picture or title:\n"
                  + "\n".join(f"- «{a.get('headline', '')}» / {a.get('subject') or str(a.get('prompt', ''))[:120]}"
-                             for a in shown[:12]) + "\n")
+                             f" / {a.get('title', '')}" for a in shown[:12]) + "\n")
     if script_head.strip():
         user += f"\nSCRIPT BEGINNING (only a source of accurate details, not a menu of scenes):\n{script_head[:4_000]}"
     data = _chat(fg, system, user, llm, 0.9)
-    items = data.get("thumbnails") if isinstance(data, dict) else data
+    items = data.get("packages") if isinstance(data, dict) else data
 
     avoid_heads = {_clean_line(a.get("headline")).lower() for a in shown}
+    style = publish.thumbnail_style.strip().rstrip(".")
     cands: list[dict[str, Any]] = []
     for it in items or []:
         if not isinstance(it, dict) or not str(it.get("prompt", "")).strip():
@@ -638,74 +704,150 @@ def thumbnail_concepts(
         headline = re.sub(r"[«»“”\"]", "", re.sub(r"\s+", " ", str(it.get("headline") or ""))).strip().rstrip(".")
         if not _thumb_headline_ok(headline) or headline.lower() in avoid_heads:
             continue
-        if _similar(headline, title, 0.8) and len(headline.split()) > 1:
-            continue  # repeats the title
+        own_title = fixed or _clean_title(it.get("title"))
+        if not own_title or (not fixed and title_problem(own_title)):
+            continue
+        if _similar(headline, own_title, 0.8) and len(headline.split()) > 1:
+            continue  # the thumbnail only repeats the title
         accent = _clean_line(it.get("accent")).strip('"«»“” .')
         side = "left" if str(it.get("side", "")).strip().lower().startswith("l") else "right"
+        prompt = str(it["prompt"]).strip()
+        if style:  # the model likes to echo the style, which the drawing adds once more
+            prompt = re.sub(re.escape(style) + r"\.?\s*", "", prompt, flags=re.I).strip() or prompt
         cands.append({
-            "prompt": str(it["prompt"]).strip(),
+            "prompt": prompt,
             "headline": headline,
             "accent": accent if accent and accent.lower() in headline.lower() else "",
             "side": side,
             "subject": _clean_line(it.get("subject"))[:80],
-            "angle": _clean_line(it.get("hook_type"))[:30],
-            "visual_hook": _clean_line(it.get("visual_hook"))[:30],
+            "angle": _clean_line(it.get("scheme"))[:30],
             "question": _clean_line(it.get("question"))[:200],
-            "title": title,
+            "title": own_title,
+            "title_fixed": bool(fixed),
             "title_index": 0,
         })
     if not cands:
         return []
 
+    scores = _judge_packages(fg, brief, cands, llm, name)
+    for i, c in enumerate(cands):
+        c["score"] = round(_package_score(scores.get(i), c) if i in scores else 5.0 - 0.01 * i, 2)
+        question = _clean_line((scores.get(i) or {}).get("question"))
+        if question:  # the critic's question is the viewer's, the generator's only its intent
+            c["question"] = question[:200]
+
+    picked: list[dict[str, Any]] = []
+    # Variants for YouTube's A/B test are worth something only when they differ, so the first pass also
+    # wants a different scheme; the second pass fills up if there are not enough of them.
+    for distinct_scheme in (True, False):
+        for c in sorted(cands, key=lambda c: -c["score"]):
+            if c in picked or len(picked) >= count:
+                continue
+            # a different text, picture and title from the already chosen ones
+            if any(_similar(c["headline"], p["headline"], 0.5)
+                   or (c["subject"] and p["subject"] and _similar(c["subject"], p["subject"], 0.7))
+                   or (not fixed and _similar(c["title"], p["title"], 0.7))
+                   or (distinct_scheme and c["angle"] and c["angle"] == p["angle"])
+                   for p in picked):
+                continue
+            picked.append(c)
+    if picked and not fixed:
+        try:
+            _sharpen_package_titles(fg, brief, picked, llm, name, ideas)
+        except (ApiError, ValueError) as exc:
+            log.warning("package title sharpening failed: %s", exc)
+        picked.sort(key=lambda c: -c["score"])
+    return picked
+
+
+def _judge_packages(fg: FastgenClient, brief: dict[str, Any], packs: list[dict[str, Any]], llm: LlmSettings,
+                    language_label: str) -> dict[int, dict[str, Any]]:
+    """The critic's scores by index of ``packs`` (empty when the critic failed)."""
     scores: dict[int, dict[str, Any]] = {}
     try:
-        listing = "\n".join(f"{i}: headline «{c['headline']}» / picture: {c['prompt']}" for i, c in enumerate(cands))
-        judged = _chat(fg, _THUMB_JUDGE_SYSTEM,
-                       f"TITLE: {title}\n\nBRIEF:\n{_brief_text(brief)}\n\nCANDIDATES:\n{listing}", llm, 0.2)
+        listing = "\n".join(f"{i}: thumbnail text «{c['headline']}» / picture: {c['prompt']} / title: {c['title']}"
+                            for i, c in enumerate(packs))
+        judged = _chat(fg, _PACKAGE_JUDGE_SYSTEM.format(language=language_label),
+                       f"BRIEF:\n{_brief_text(brief)}\n\nPACKAGES:\n{listing}", llm, 0.2)
         for s in (judged.get("scores") if isinstance(judged, dict) else judged) or []:
             try:
                 scores[int(s["i"])] = s
             except (KeyError, TypeError, ValueError):
                 continue
     except (ApiError, ValueError) as exc:
-        log.warning("thumbnail critic failed: %s", exc)
+        log.warning("package critic failed: %s", exc)
+    return scores
 
-    def total(i: int) -> float:
-        s = scores.get(i)
-        if not s:
-            return 5.0 - 0.01 * i  # unjudged: keep the generator's order
-        def num(k: str) -> float:
-            try:
-                return max(0.0, min(10.0, float(s.get(k, 0))))
-            except (TypeError, ValueError):
-                return 0.0
-        value = (0.20 * num("stop_scroll") + 0.18 * num("curiosity") + 0.12 * num("text_hook")
-                 + 0.10 * num("text_specific") + 0.10 * num("picture_instant") + 0.10 * num("coherence")
-                 + 0.06 * num("adds") + 0.14 * num("grounded"))
-        if num("grounded") < 5:  # invented claim – never wins over a grounded idea
-            value -= 4
-        for flag in ("bland", "abstract", "generic"):
-            if _flag(s, flag):
-                value -= 2.5
-        return value
 
-    order = sorted(range(len(cands)), key=lambda i: -total(i))
-    picked: list[dict[str, Any]] = []
-    # Variants for YouTube's A/B test are worth something only when they differ, so the first pass also
-    # wants a different kind of visual hook; the second pass fills up if there are not enough of them.
-    for distinct_hook in (True, False):
-        for i in order:
-            c = cands[i]
-            if c in picked:
-                continue
-            # a different text AND a different picture from the already chosen ones
-            if any(_similar(c["headline"], p["headline"], 0.5)
-                   or (c["subject"] and p["subject"] and _similar(c["subject"], p["subject"], 0.7))
-                   or (distinct_hook and c["visual_hook"] and c["visual_hook"] == p["visual_hook"])
-                   for p in picked):
-                continue
-            c["score"] = round(total(i), 2)
-            picked.append(c)
-            if len(picked) >= count:
-                return picked
-    return picked
+def _package_score(s: dict[str, Any], pack: dict[str, Any]) -> float:
+    def num(k: str) -> float:
+        try:
+            return max(0.0, min(10.0, float(s.get(k, 0))))
+        except (TypeError, ValueError):
+            return 0.0
+    # The question of the thumbnail leads, «это мне надо» of the title comes next.
+    value = (0.25 * num("gap") + 0.12 * num("stop") + 0.08 * num("picture_instant") + 0.20 * num("for_me")
+             + 0.15 * num("closes") + 0.08 * num("clarity") + 0.12 * num("honest"))
+    if num("honest") < 5:  # invented claim – never wins over a grounded idea
+        value -= 4
+    if not _clean_line(s.get("question")):
+        value -= 3  # the thumbnail raises no question at all
+    for flag in ("repeats", "abstract"):
+        if _flag(s, flag):
+            value -= 2
+    if not pack.get("title_fixed") and len(pack["title"]) > TITLE_SOFT_MAX:
+        value -= 1.5
+    return value
+
+
+_PACKAGE_TITLES_SYSTEM = """You write titles for YouTube thumbnails that are already made. For every \
+package you get the thumbnail text, the picture, the question the viewer asks at the sight of it and the \
+current title. Write 3 different, better titles for each. The viewer reads the title right after the \
+thumbnail and must think «это мне надо»: it says what the video is, names a concrete gain or pain of the \
+viewer's own life and promises the answer to the thumbnail's question without giving it away and without \
+repeating the headline. It promises exactly what the video is: a list of N things is never «the main \
+reason» or «one simple way», and one item of the list is never the title. When the video is a list, at \
+least one of the 3 uses its exact count.
+
+{rules}{ideas}
+
+Answer ONLY with JSON: {{"titles": [{{"i": <package index>, "title": "..."}}]}}"""
+
+
+def _sharpen_package_titles(fg: FastgenClient, brief: dict[str, Any], picked: list[dict[str, Any]],
+                            llm: LlmSettings, language_label: str, ideas: str) -> None:
+    """New titles for the chosen thumbnails; each package keeps the title the critic likes best with it."""
+    listing = "\n".join(f"{i}: thumbnail text «{p['headline']}» / picture: {p['subject']} / viewer's question: "
+                        f"{p['question']} / title now: {p['title']}" for i, p in enumerate(picked))
+    data = _chat(fg, _PACKAGE_TITLES_SYSTEM.format(rules=_TITLE_RULES.format(language=language_label),
+                                                   ideas=ideas),
+                 f"BRIEF:\n{_brief_text(brief)}\n\nPACKAGES:\n{listing}", llm, 0.7)
+    rows: list[tuple[int, dict[str, Any]]] = [(i, p) for i, p in enumerate(picked)]
+    for it in (data.get("titles") if isinstance(data, dict) else data) or []:
+        try:
+            i = int(it["i"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        t = _clean_title(it.get("title"))
+        if not 0 <= i < len(picked) or not t or title_problem(t) or any(t.lower() == r["title"].lower() for _, r in rows):
+            continue
+        if _similar(picked[i]["headline"], t, 0.8):
+            continue
+        rows.append((i, {**picked[i], "title": t}))
+    if len(rows) == len(picked):
+        return
+    # The originals are judged again in the same call: scores of one call are comparable, of two – not.
+    scores = _judge_packages(fg, brief, [r for _, r in rows], llm, language_label)
+    if not scores:
+        return
+    best: dict[int, tuple[float, str]] = {}
+    for k, (i, row) in enumerate(rows):
+        if k in scores:
+            value = _package_score(scores[k], row)
+            if i not in best or value > best[i][0]:
+                best[i] = (value, row["title"])
+    used: list[str] = []
+    for i, p in enumerate(picked):
+        if i in best and all(not _similar(best[i][1], u, 0.7) for u in used):
+            p["score"], p["title"] = round(best[i][0], 2), best[i][1]
+        used.append(p["title"])

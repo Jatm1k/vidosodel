@@ -287,9 +287,9 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
                                           fixed_chapters=fixed)
         meta.update({"titles": titles, "title_info": ranked, "brief": brief})
         if new_ideas and pub.thumbnail_count > 0:
-            ctx.progress(0.85, "Идеи для обложек: текст и картинка к названию", force=True)
+            ctx.progress(0.85, "Обложки: текст, картинка и своё название к каждой", force=True)
             meta["thumbnails"] = packaging.thumbnail_concepts(
-                fg, brief, script[:6000], lang, title, llm, pub, pub.thumbnail_count)
+                fg, brief, script[:6000], lang, None, llm, pub, pub.thumbnail_count, title_ideas=titles)
         else:
             meta["thumbnails"] = kept
     meta["description_full"] = llm_tasks.build_description(meta, pub, lang)
@@ -319,8 +319,8 @@ def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
     """Thumbnail ideas.
 
     * ``title`` + ``append`` – several new ideas for that title, added to the existing ones (nothing is replaced);
-    * ``index`` – replaces only that idea (same title);
-    * neither – all ideas are replaced by new ones for the project's own title.
+    * ``index`` – replaces only that idea (an idea made for a chosen title keeps it, others get a new title);
+    * neither – all ideas are replaced by new packages, each with its own title.
     """
     index, title = ctx.params.get("index"), str(ctx.params.get("title") or "").strip()
     append = bool(ctx.params.get("append")) and bool(title)
@@ -333,19 +333,17 @@ def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
         concepts = llm_tasks.thumbnail_files(meta, list(track.thumbnails or []))
         script, lang, llm, pub, track_id = track.script, track.language, tc.settings.llm, tc.settings.publish, track.id
         project_id, project_name = tc.project.id, tc.project.name
-    generated = meta.get("titles") or []
     if index is not None and not 0 <= int(index) < len(concepts):
         raise JobError("Такой идеи уже нет")
+    # ``None`` – a package: the thumbnail and its own title are made together.
+    target: str | None
     if append:
         target, count = title, max(1, pub.thumbnail_count)
     elif index is not None:
-        own = concepts[int(index)].get("title") or ""
-        if not own:  # an idea from before titles were remembered
-            i = concepts[int(index)].get("title_index", 0)
-            own = generated[i] if 0 <= i < len(generated) else ""
-        target, count = own or _idea_title(project_name, generated), 1
+        idea = concepts[int(index)]
+        target, count = (idea.get("title") or None) if idea.get("title_fixed") else None, 1
     else:
-        target, count = _idea_title(project_name, generated), max(1, pub.thumbnail_count)
+        target, count = None, max(1, pub.thumbnail_count)
     # Whatever was shown before (including the idea being replaced) must not come back.
     avoid = [c for c in concepts if c.get("prompt")]
     with FastgenClient() as fg:
@@ -354,7 +352,8 @@ def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
             ctx.progress(0.1, "Изучаю сценарий", force=True)
             brief = packaging.build_brief(fg, script, lang, llm, project_name)
         ctx.progress(0.4, "Придумываю текст и картинку обложки", force=True)
-        fresh = packaging.thumbnail_concepts(fg, brief, script[:6000], lang, target, llm, pub, count, avoid=avoid)
+        fresh = packaging.thumbnail_concepts(fg, brief, script[:6000], lang, target, llm, pub, count, avoid=avoid,
+                                             title_ideas=list(meta.get("titles") or []))
     if not fresh:
         raise JobError("Модель не предложила ни одной идеи — попробуйте ещё раз")
     removed: list[str | None] = []
