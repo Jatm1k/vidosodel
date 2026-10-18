@@ -89,7 +89,7 @@ class RenderPlan:
     max_mbps: int = 0
     preview: bool = False
     subtitles_ass: str | None = None
-    #: Chapter cards ``{"style", "color", "font", "cards": [Card as dict]}``; empty → none.
+    #: Chapter cards ``{"style", "variant", "color", "font", "cards": [Card as dict]}``; empty → none.
     chapter_cards: dict = field(default_factory=dict)
     fonts_dir: str | None = None
     extra: dict = field(default_factory=dict)
@@ -126,7 +126,7 @@ class FrameRenderer:
         self._motions = [make_motion(s.effect, plan.intensity, s.seed) for s in plan.scenes]
         cc = plan.chapter_cards
         self.cards = (CardRenderer(cc["cards"], cc["style"], plan.width, plan.height, cc.get("color", ""),
-                                   cc.get("font", "")) if cc.get("cards") else None)
+                                   cc.get("font", ""), int(cc.get("variant", 0))) if cc.get("cards") else None)
         self._starts = [s.start for s in plan.scenes]
         # Half of a transition happens before the boundary, half after.
         self._td = [0.0 if (i == 0 or s.transition == "cut") else plan.transition_duration

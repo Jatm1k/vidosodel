@@ -153,8 +153,9 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
             items, timings.words, plan, duration=cfg_ch.duration, kicker=cfg_ch.kicker,
             language=chapter_req["language"], seed=seed)
         if cards:
-            plan.chapter_cards = {"style": chapter_cards.pick_style(cfg_ch.style, seed), "color": cfg_ch.color,
-                                  "font": cfg_ch.font, "cards": chapter_cards.to_plan(cards)}
+            plan.chapter_cards = {"style": chapter_cards.pick_style(cfg_ch.style, seed, cfg_ch.pool),
+                                  "variant": seed, "color": cfg_ch.color, "font": cfg_ch.font,
+                                  "cards": chapter_cards.to_plan(cards)}
             # No key phrase over a chapter title.
             accents = [a for a in accents if not any(c.start - 1.0 < a.end and a.start < c.start + c.duration
                                                      for c in cards)]

@@ -86,8 +86,8 @@ watch(
       </p>
       <div class="flex shrink-0 gap-2">
         <Button
-          v-if="ownImages && imageCount > 1"
-          label="Другая картинка"
+          v-if="target?.kind === 'chapter' || (ownImages && imageCount > 1)"
+          :label="target?.kind === 'chapter' ? 'Другой вариант' : 'Другая картинка'"
           icon="pi pi-images"
           severity="secondary"
           size="small"

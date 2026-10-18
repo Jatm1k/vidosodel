@@ -6,6 +6,7 @@
 import { computed, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
 import ColorPicker from 'primevue/colorpicker'
+import MultiSelect from 'primevue/multiselect'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
@@ -64,6 +65,11 @@ const cardStyles = [
   ['editorial', 'Журнал', 'Огромная контурная цифра главы уходит за край кадра, строки жирного названия выезжают из-под маски, сторона кадра без героя затемняется'],
   ['brush', 'Кисть', 'Поперёк кадра прорисовывается мазок туши с рваными краями и сухим хвостом, название лежит на нём с лёгким наклоном'],
   ['minimal', 'Минимализм', 'Вырастает тонкая линия, из-за неё выезжают номер и название. Спокойно и аккуратно'],
+  ['clipping', 'Газетная вырезка', 'Клочок газеты с рваными краями: рубрика и заголовок. Влетает сбоку, падает сверху или подпрыгивает'],
+  ['tape', 'Наклейка', 'Цветная наклейка на полосках малярного скотча с пружинкой появляется поверх кадра'],
+  ['typewriter', 'Печатная машинка', 'Надпись и название печатаются по буквам с курсором и неровными оттисками, иногда на бумажных полосках'],
+  ['frame', 'Рамка', 'Вокруг названия прорисовывается тонкая рамка, уголки или двойная линия, внутри картинка притемняется'],
+  ['knockout', 'Буквы-окна', 'Кадр темнеет, а огромные буквы названия остаются окнами в картинку. Самый яркий вариант'],
 ] as const
 
 // ----------------------------------------------------------------- atmosphere
@@ -818,7 +824,7 @@ onMounted(async () => {
           <ToggleSwitch v-model="s.chapters.enabled" class="mt-1.5" />
         </FormField>
         <template v-if="s.chapters.enabled">
-          <FormField label="Дизайн" hint="«Разные» — для каждого ролика свой дизайн из четырёх. Сторона кадра выбирается так, чтобы не закрывать героя">
+          <FormField label="Дизайн" hint="«Разные» — для каждого ролика свой дизайн из выбранных. У каждого дизайна есть варианты (шрифт, раскладка, цвета, появление), они меняются от ролика к ролику. Сторона кадра выбирается так, чтобы не закрывать героя">
             <Select
               v-model="s.chapters.style"
               :options="[{ id: 'auto', name: 'Разные для каждого ролика' }, ...cardStyles.map((c) => ({ id: c[0], name: c[1] }))]"
@@ -827,6 +833,19 @@ onMounted(async () => {
               class="w-72"
             />
           </FormField>
+          <FormField v-if="s.chapters.style === 'auto'" label="Из каких выбирать" hint="Пусто — из всех">
+            <MultiSelect
+              v-model="s.chapters.pool"
+              :options="cardStyles.map((c) => ({ id: c[0], name: c[1] }))"
+              option-value="id"
+              option-label="name"
+              placeholder="Все дизайны"
+              :max-selected-labels="3"
+              selected-items-label="{0} дизайнов"
+              class="w-72"
+            />
+          </FormField>
+          <p class="text-[13px] text-ink-3">В превью кнопка «Другой вариант» показывает тот же дизайн в другом варианте и на другой картинке.</p>
           <div class="grid grid-cols-2 gap-3">
             <div
               v-for="c in cardStyles"

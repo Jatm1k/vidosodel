@@ -83,7 +83,9 @@ export interface PipelineSettings {
     vignette_breathing: boolean; vignette_breathing_strength: number; dust: boolean; dust_strength: number
   }
   chapters: {
-    enabled: boolean; style: 'auto' | 'cinema' | 'editorial' | 'brush' | 'minimal'
+    enabled: boolean
+    style: 'auto' | 'cinema' | 'editorial' | 'brush' | 'minimal' | 'clipping' | 'tape' | 'typewriter' | 'frame' | 'knockout'
+    pool: string[]
     kicker: 'word' | 'roman' | 'none'; font: string; color: string; duration: number
   }
   subtitles: {

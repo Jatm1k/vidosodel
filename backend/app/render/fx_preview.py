@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 WIDTH, HEIGHT, FPS = 960, 540, 25
 #: Bump when preview rendering changes, so cached clips are re-rendered.
-VERSION = 2
+VERSION = 3
 #: Cached clips kept on disk.
 KEEP = 80
 ATMOSPHERE_EFFECTS = ("line_boil", "grain_boil", "breathing", "light_pulse", "vignette_breathing", "dust")
@@ -153,7 +153,9 @@ def _plan(kind: str, effect: str, images: list[str], settings: dict) -> RenderPl
         scenes = [PlanScene(images[0], 0, duration, "zoom_in", seed=3)]
         plan = RenderPlan(WIDTH, HEIGHT, FPS, duration, scenes, look=look, intensity=intensity,
                           fade_in=0, fade_out=0, encoder="libx264", quality="fast", preview=True)
-        plan.chapter_cards = {"style": effect, "color": str(cfg.get("color") or ""),
+        variant = int(settings.get("variant") or 0)
+        card.seed += variant
+        plan.chapter_cards = {"style": effect, "variant": variant, "color": str(cfg.get("color") or ""),
                               "font": str(cfg.get("font") or ""), "cards": to_plan([card])}
         return plan
     else:
@@ -179,7 +181,7 @@ def _plan(kind: str, effect: str, images: list[str], settings: dict) -> RenderPl
 
 def _cache_key(kind: str, effect: str, images: list[str], settings: dict) -> str:
     relevant = {"motion": ("motion_intensity", "depth_of_field"), "transition": ("transition_duration",),
-                "atmosphere": ("atmosphere",), "chapter": ("chapters", "chapter_title", "language")}[kind]
+                "atmosphere": ("atmosphere",), "chapter": ("chapters", "chapter_title", "language", "variant")}[kind]
     stamp = [(p, Path(p).stat().st_mtime) for p in images]
     raw = json.dumps([VERSION, kind, effect, stamp, {k: settings.get(k) for k in relevant}], sort_keys=True)
     return hashlib.sha1(raw.encode()).hexdigest()[:20]

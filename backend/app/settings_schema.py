@@ -202,8 +202,10 @@ class ChapterSettings(_Base):
     """Chapter cards: an animated title over the picture when a chapter starts (see render.chapter_cards)."""
 
     enabled: bool = False
-    #: ``auto`` – one of the designs per video, picked by the render seed.
-    style: Literal["auto", "cinema", "editorial", "brush", "minimal"] = "auto"
+    #: ``auto`` – one of the designs of ``pool`` per video, picked by the render seed.
+    style: Literal["auto", "cinema", "editorial", "brush", "minimal", "clipping", "tape", "typewriter", "frame", "knockout"] = "auto"
+    #: Designs ``auto`` chooses from; empty – all of them.
+    pool: list[str] = Field(default_factory=list)
     #: «ГЛАВА 2» / «ГЛАВА II» / no kicker.
     kicker: Literal["word", "roman", "none"] = "word"
     #: Font family of the title; empty – the design's own.
