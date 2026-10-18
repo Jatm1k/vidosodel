@@ -56,6 +56,10 @@ class Cancelled(Exception):
     """Raised while waiting for budget when the caller asked to stop."""
 
 
+class LimitReached(Exception):
+    """The budget is used up and the caller asked not to wait (``slot(..., wait=False)``)."""
+
+
 # ------------------------------------------------------------------ job hooks
 _local = threading.local()
 
@@ -239,17 +243,18 @@ class BudgetLimiter:
     # -- acquire
     @contextmanager
     def slot(self, amount: int, should_stop: Callable[[], bool] | None = None,
-             on_wait: Callable[[str], None] | None = None) -> Iterator[Callable[..., None]]:
+             on_wait: Callable[[str], None] | None = None, *, wait: bool = True) -> Iterator[Callable[..., None]]:
         """Reserve ``amount`` until the request is done. Yields ``commit(actual, ref=None)``.
 
         If ``commit`` is not called (failed before billing, refunded) the
-        reservation is simply released.
+        reservation is simply released. With ``wait=False`` a used-up budget
+        raises :class:`LimitReached` instead of waiting for the next window.
         """
         hook_stop, hook_wait = _thread_hooks()
         should_stop = should_stop or hook_stop
         on_wait = on_wait or hook_wait
         amount = min(int(amount), self._budget())  # a single huge request must still be able to run
-        self._acquire(amount, should_stop, on_wait)
+        self._acquire(amount, should_stop, on_wait, wait)
         committed = False
 
         def commit(actual: int, ref: str | None = None) -> None:
@@ -267,7 +272,7 @@ class BudgetLimiter:
                 self._cond.notify_all()
 
     def _acquire(self, amount: int, should_stop: Callable[[], bool] | None,
-                 on_wait: Callable[[str], None] | None) -> None:
+                 on_wait: Callable[[str], None] | None, wait: bool = True) -> None:
         with self._cond:
             self.waiting += 1
         try:
@@ -287,6 +292,8 @@ class BudgetLimiter:
                         if self._waited_long_for_threads():
                             usage_sync.refresh(max_age=_SYNC_INTERVAL_BUSY)
                         continue
+                if not wait:
+                    raise LimitReached()
                 if on_wait:
                     until = (f"до {time.strftime('%H:%M', time.localtime(reset_at))}" if free_in >= reset_at - time.time() - 1
                              else f"~{int(free_in // 60) + 1} мин")

@@ -35,9 +35,15 @@ class AppConfig(BaseModel):
     parallel_renders: int = 1
     #: Remove final videos (and depth maps) of versions published this many days ago; 0 – never.
     cleanup_published_after_days: int = 0
+    #: Backup LLM (any OpenAI-compatible API) used when FastGen's LLM is over its limit or fails.
+    llm_fallback_enabled: bool = True
+    #: Base URL like ``https://openrouter.ai/api/v1`` (``/chat/completions`` is appended).
+    llm_fallback_url: str = ""
+    llm_fallback_api_key: str = ""
+    llm_fallback_model: str = ""
 
 
-_SECRET_KEYS = ("lumean_api_key", "fastgen_api_key")
+_SECRET_KEYS = ("lumean_api_key", "fastgen_api_key", "llm_fallback_api_key")
 
 
 def load_config() -> AppConfig:

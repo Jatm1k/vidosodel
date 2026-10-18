@@ -273,6 +273,8 @@ export interface SystemStatus {
   fastgen: LimiterStatus | null
   /** LLM tokens per hour (prompt + completion), shared by every app on the key. */
   llm: Omit<LimiterStatus, 'active' | 'threads'> | null
+  /** Backup LLM (null when not configured); counters since the server started. */
+  llm_fallback: { model: string; calls: number; last_at: number | null; last_reason: string | null } | null
   data_dir: string
 }
 
@@ -287,6 +289,10 @@ export interface AppConfig {
   lumean_parallel_orders: number
   parallel_renders: number
   cleanup_published_after_days: number
+  llm_fallback_enabled: boolean
+  llm_fallback_url: string
+  llm_fallback_api_key: string
+  llm_fallback_model: string
 }
 
 export type CleanupKind = 'published_videos' | 'depth' | 'previews' | 'work' | 'orphans'

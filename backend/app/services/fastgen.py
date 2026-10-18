@@ -182,17 +182,57 @@ class FastgenClient:
     # -------------------------------------------------------------------- chat
     def chat(self, messages: list[dict[str, str]], *, model: str, temperature: float = 0.7,
              max_tokens: int | None = None) -> str:
-        """One chat completion within the hourly token budget (waits when it is used up)."""
-        from .limiter import estimate_tokens, is_limit_error, token_limiter  # noqa: PLC0415 – import cycle
+        """One chat completion within the hourly token budget.
+
+        Without a backup LLM it waits when the budget is used up. With one (Settings →
+        Резервный LLM) the request goes to the backup instead of waiting, and also when
+        FastGen fails or sends a canned stub instead of an answer.
+        """
+        from .limiter import LimitReached  # noqa: PLC0415 – import cycle
+        from .llm_fallback import backup_llm, backup_usage, is_fastgen_stub  # noqa: PLC0415
+
+        backup = backup_llm()
+        if backup is None:
+            return self._chat(messages, model=model, temperature=temperature, max_tokens=max_tokens)
+        stub = None
+        try:
+            stub = self._chat(messages, model=model, temperature=temperature, max_tokens=max_tokens, wait=False)
+            if not is_fastgen_stub(stub):
+                return stub
+            reason, error = "FastGen ответил заглушкой", None
+        except LimitReached:
+            reason, error = "лимит токенов FastGen", None
+        except ApiError as exc:
+            reason, error = f"ошибка FastGen: {exc.message}", exc
+        with backup:
+            log.info("LLM → backup %s (%s)", backup.model, reason)
+            try:
+                text = backup.chat(messages, temperature=temperature, max_tokens=max_tokens)
+            except ApiError as exc:
+                log.warning("backup LLM %s failed: %s", backup.model, exc)
+                if error is not None:
+                    raise error from exc
+                if stub is not None:
+                    return stub  # the caller handles stubs (see pipeline.llm_tasks)
+                # Over the limit and the backup is down: wait for FastGen as without a backup.
+                return self._chat(messages, model=model, temperature=temperature, max_tokens=max_tokens)
+        backup_usage.note(reason)
+        return text
+
+    def _chat(self, messages: list[dict[str, str]], *, model: str, temperature: float,
+              max_tokens: int | None, wait: bool = True) -> str:
+        """FastGen chat completion; ``wait=False`` raises ``LimitReached`` instead of waiting for the budget."""
+        from .limiter import LimitReached, estimate_tokens, is_limit_error, token_limiter  # noqa: PLC0415
 
         body: dict[str, Any] = {"model": model, "messages": messages, "temperature": temperature}
         if max_tokens:
             body["max_tokens"] = max_tokens
         estimate = estimate_tokens(messages, max_tokens)
         for _ in range(_LIMIT_RETRIES):
-            with token_limiter.slot(estimate) as commit:
+            with token_limiter.slot(estimate, wait=wait) as commit:
                 try:
-                    data = self._req("POST", "/v1/chat/completions", json=body, attempts=4, retry_429=False)
+                    data = self._req("POST", "/v1/chat/completions", json=body,
+                                     attempts=4 if wait else 2, retry_429=False)  # a backup is waiting
                 except ApiError as exc:
                     if not is_limit_error(exc):
                         raise
@@ -201,6 +241,8 @@ class FastgenClient:
                     commit(int((data.get("usage") or {}).get("total_tokens") or estimate))
                     break
             token_limiter.block()  # over the limit on the server (e.g. another app): wait, then retry
+            if not wait:
+                raise LimitReached()
         else:
             raise ApiError("FastGen", 429, "лимит токенов LLM так и не освободился")
         try:

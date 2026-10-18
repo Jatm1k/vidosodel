@@ -15,6 +15,7 @@ from ..render.transitions import TRANSITION_LABELS, TRANSITIONS
 from ..services.fastgen import IMAGE_OPERATIONS, FastgenClient
 from ..services.http import ApiError
 from ..services.limiter import limiter, token_limiter
+from ..services.llm_fallback import BackupLlm, backup_usage
 from ..services.lumean import LumeanClient
 from ..services.updates import updates
 from ..settings_schema import default_settings
@@ -49,6 +50,7 @@ def status() -> dict[str, Any]:
         "keys": {"lumean": bool(cfg.lumean_api_key), "fastgen": bool(cfg.fastgen_api_key)},
         "fastgen": limiter.status() if cfg.fastgen_api_key else None,
         "llm": token_limiter.status() if cfg.fastgen_api_key else None,
+        "llm_fallback": backup_usage.status(),
         "data_dir": str(get_settings().data_dir),
     }
 
@@ -113,6 +115,15 @@ def check_key(body: KeyCheck) -> dict[str, Any]:
         if body.service == "lumean":
             with LumeanClient() as lm:
                 lm.user()
+        elif body.service == "llm_fallback":
+            cfg = load_config()
+            if not (cfg.llm_fallback_url.strip() and cfg.llm_fallback_model.strip()):
+                return {"ok": False, "error": "укажите адрес API и модель"}
+            with BackupLlm(cfg) as backup:
+                answer = backup.chat([{"role": "user", "content": "Reply with the single word OK."}],
+                                     temperature=0)
+            if not answer.strip():
+                return {"ok": False, "error": "модель вернула пустой ответ"}
         else:
             with FastgenClient() as fg:
                 usage = fg.usage()

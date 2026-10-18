@@ -23,6 +23,7 @@ const budget = computed(() => store.status?.fastgen)
 const budgetPct = computed(() => (budget.value ? Math.min(100, (budget.value.used / budget.value.budget) * 100) : 0))
 const tokens = computed(() => store.status?.llm)
 const tokensPct = computed(() => (tokens.value ? Math.min(100, (tokens.value.used / tokens.value.budget) * 100) : 0))
+const backup = computed(() => store.status?.llm_fallback)
 const thousands = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)} тыс.` : String(n))
 
 // FastGen zeroes its counters at the top of every hour; tick locally so the countdown stays live between polls.
@@ -152,6 +153,14 @@ async function createChannel() {
         <div v-if="tokens.used" class="mt-1.5 text-xs" :class="tokens.used >= tokens.budget ? 'text-bad' : 'text-ink-3'">
           {{ tokens.used >= tokens.budget ? 'Исчерпан до' : 'Сброс в' }} {{ resetLabel(tokens.reset_at) }}
           <template v-if="tokens.waiting"> · ждут: {{ tokens.waiting }}</template>
+        </div>
+        <div
+          v-if="backup?.calls && backup.last_at"
+          class="mt-0.5 truncate text-xs text-ink-3"
+          v-tooltip.right="`Последний раз: ${backup.last_reason}`"
+        >
+          Резервный LLM: {{ backup.calls }} отв., посл. в
+          {{ new Date(backup.last_at * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) }}
         </div>
       </div>
       <div class="flex items-center gap-2 text-xs" :class="store.connected ? 'text-ink-3' : 'text-bad'">

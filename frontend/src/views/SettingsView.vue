@@ -4,6 +4,7 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Slider from 'primevue/slider'
+import ToggleSwitch from 'primevue/toggleswitch'
 import { api } from '@/api/client'
 import type { AppConfig } from '@/api/types'
 import { useAppStore } from '@/stores/app'
@@ -34,7 +35,7 @@ async function save() {
   }
 }
 
-async function check(service: 'lumean' | 'fastgen') {
+async function check(service: 'lumean' | 'fastgen' | 'llm_fallback') {
   await save()
   checks.value[service] = 'pending'
   checks.value[service] = await api.post('/api/settings/check', { service })
@@ -115,6 +116,63 @@ async function check(service: 'lumean' | 'fastgen') {
             <span class="text-[13px] text-ink-3">
               Траты всех, кто пользуется этим ключом, учитываются автоматически: приложение сверяется со счётчиком FastGen
               и ждёт, когда лимит освободится. Доли нужны, только чтобы жёстко поделить тариф между людьми.
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="flex items-center justify-between gap-4">
+          <h2 class="text-base font-semibold">Резервный LLM</h2>
+          <ToggleSwitch v-model="cfg.llm_fallback_enabled" aria-label="Использовать резервный LLM" />
+        </div>
+        <p class="mt-1 text-[13px] text-ink-3">
+          Любой сервис с OpenAI-совместимым API: OpenRouter, OpenAI, DeepSeek, локальная Ollama. Тексты уходят туда,
+          когда у FastGen кончились токены за час, он вернул ошибку или отказ-заглушку. Без него приложение ждёт
+          следующего часа.
+        </p>
+        <div class="mt-4 grid grid-cols-2 gap-5" :class="{ 'opacity-60': !cfg.llm_fallback_enabled }">
+          <label class="col-span-2 flex flex-col gap-1.5">
+            <span class="text-ink-2">Адрес API</span>
+            <InputText
+              v-model="cfg.llm_fallback_url"
+              class="font-mono text-[13px]"
+              placeholder="https://openrouter.ai/api/v1"
+              autocomplete="off"
+            />
+          </label>
+          <label class="flex flex-col gap-1.5">
+            <span class="text-ink-2">Модель</span>
+            <InputText
+              v-model="cfg.llm_fallback_model"
+              class="font-mono text-[13px]"
+              placeholder="google/gemini-2.5-flash"
+              autocomplete="off"
+            />
+          </label>
+          <label class="flex flex-col gap-1.5">
+            <span class="text-ink-2">Ключ API</span>
+            <InputText
+              v-model="cfg.llm_fallback_api_key"
+              class="font-mono text-[13px]"
+              placeholder="Не нужен для локальной модели"
+              autocomplete="off"
+            />
+          </label>
+          <div class="col-span-2 flex items-center gap-3">
+            <Button
+              label="Проверить"
+              severity="secondary"
+              outlined
+              :loading="checks.llm_fallback === 'pending'"
+              @click="check('llm_fallback')"
+            />
+            <span
+              v-if="checks.llm_fallback && checks.llm_fallback !== 'pending'"
+              class="text-[13px]"
+              :class="(checks.llm_fallback as any).ok ? 'text-ok' : 'text-bad'"
+            >
+              {{ (checks.llm_fallback as any).ok ? 'Модель отвечает' : (checks.llm_fallback as any).error }}
             </span>
           </div>
         </div>

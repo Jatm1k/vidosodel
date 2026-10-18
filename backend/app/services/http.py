@@ -106,6 +106,8 @@ def _error_message(body: Any) -> str:
     if not isinstance(body, dict):
         return str(body)[:300]
     msg = body.get("message") or body.get("detail") or body.get("error") or ""
+    if isinstance(msg, dict):  # OpenAI-style {"error": {"message": ...}}
+        msg = msg.get("message") or msg
     if isinstance(msg, list):  # FastAPI validation detail
         msg = "; ".join(str(m.get("msg", m)) if isinstance(m, dict) else str(m) for m in msg)
     errors = body.get("errors")
