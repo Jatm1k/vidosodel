@@ -74,10 +74,13 @@ details of single parts, not the subject of the video"],
 "format": "list|story|explanation|other – how the video is built: list = it goes through N separate items \
 (things, habits, mistakes, rules, signs...)",
 "item_count": "the number of items when format is list, else 0 – digits only",
-"after_state": "how the viewer lives and feels AFTER doing what the video says – the calm, light, free or \
-strong state they want; concrete, one sentence",
-"confession": "one first-person sentence a character of this video could say about the core change, plain \
-words – what they STOPPED or STARTED doing («Я перестал всё контролировать»)",
+"after_state": "what concretely changes in the viewer's life or understanding AFTER the video, in the terms \
+of THIS video, one sentence",
+"confession": "one first-person sentence a character of this video could say about its core change or \
+discovery, in the video's own concrete terms",
+"visual_material": ["6-10 concrete VISUAL things that only THIS video has and a picture can show: real \
+people it is about (with their recognisable look), places, objects, scenes, situations, numbers made \
+visible – taken from the script, each a short English phrase. Not generic «a person feeling X»"],
 "search_phrases": ["6-10 phrases a person would really type into YouTube search to find this video"],
 "main_keyword": "the single most important search phrase, 2-4 words"}}"""
 
@@ -103,7 +106,7 @@ def build_brief(fg: FastgenClient, script: str, language: str, llm: LlmSettings,
         brief[key] = _clean_line(data.get(key))
     count = re.search(r"\d+", str(data.get("item_count") or ""))
     brief["item_count"] = int(count.group()) if count and brief["format"].lower() == "list" else 0
-    for key in ("curiosity_hooks", "hard_facts", "search_phrases"):
+    for key in ("curiosity_hooks", "hard_facts", "search_phrases", "visual_material"):
         items = data.get(key)
         brief[key] = [_clean_line(x) for x in items if _clean_line(x)][:10] if isinstance(items, list) else []
     return brief
@@ -146,6 +149,8 @@ def _brief_text(brief: dict[str, Any]) -> str:
         lines.append("What the viewer does not expect (curiosity hooks):\n" + "\n".join(f"- {f}" for f in brief["curiosity_hooks"]))
     if brief.get("hard_facts"):
         lines.append("Supporting facts of single parts (details, NOT the subject of a title):\n" + "\n".join(f"- {f}" for f in brief["hard_facts"]))
+    if brief.get("visual_material"):
+        lines.append("Visual material only this video has:\n" + "\n".join(f"- {f}" for f in brief["visual_material"]))
     if brief.get("search_phrases"):
         lines.append("Search phrases: " + "; ".join(brief["search_phrases"]))
     if brief.get("main_keyword"):
@@ -158,11 +163,11 @@ _TITLE_RULES = """HARD RULES
 0. THE TITLE'S JOB. The viewer meets the title together with a thumbnail that already raised a question. \
 The title tells in one second what the video is AND makes the viewer think «это мне надо»: it names a \
 concrete gain or pain of THEIR life (peace, strength, money, health, sleep, relationships, years...) and \
-what the video gives about it. A slogan or an abstract topic name gives no reason to click («Философия \
-простоты», «Делать меньше, чтобы жить больше», «Путь к себе»). Never repeat the author's title word for word.
+what the video gives about it. A slogan or an abstract topic name gives no reason to click. Never repeat \
+the author's title word for word.
 1. THE WHOLE VIDEO, NOT A DETAIL. The title is about the whole video, never about one side example, quote \
 or episode of it. When the video is a list of N items, the honest count of the whole list is a strong frame: \
-«8 вещей, которые крадут ваш покой и силы» – the number, what the items do, what the viewer cares about.
+the number, what the items do, what the viewer cares about.
 2. A REASON TO CLICK. Either a concrete value the viewer wants (the list, the way, the cause of THEIR \
 problem) or a sharp open question – one of them is enough. Hold back the details (which things, which \
 mistake): the title promises them, the video gives them.
@@ -182,23 +187,23 @@ colon or dash.
 9. Natural {language}, as a native top YouTuber says it – not a translation from English."""
 
 _TITLE_FORMULAS = """FORMULAS – every candidate uses a different one, at least 7 different formulas overall. \
-Examples are Russian ONLY to show the pattern; write in {language}:
-- hidden_cause: the real reason the viewer does not know – «Настоящая причина, почему вам ничего не хочется»
-- mistake: what the viewer does wrong – «Ошибка, из-за которой вы срываетесь снова и снова»
-- contrarian: the opposite of the common belief – «Чем больше вы стараетесь, тем хуже вы думаете»
-- signs: the viewer checks themselves – «5 признаков, что вы умнее, чем о себе думаете»
-- warning: stop doing – «Перестаньте так делать, если хотите ясную голову»
-- question: a sharp question about the viewer's real situation – «Почему вы бросаете всё на третий день?»
-- consequence: what really happens – «Что происходит с мозгом, когда вы годами живёте на автопилоте»
-- recognition: the viewer sees themselves – «Если вы всё время сомневаетесь — дело не в характере»
-- number_gap: a count plus an open question – «3 вещи, которые спокойные люди никогда не делают»
-- myth: the belief and its reversal – «Это не лень: что на самом деле мешает вам начать»
-- list_value: the count of the whole list + what its items do to the viewer's gain or pain – «8 вещей, \
-которые крадут ваш покой и силы», «7 привычек, из-за которых вы устаёте к обеду»
+The patterns only show the SHAPE: <…> is filled with the concrete words of THIS video, and the wording \
+around it is yours in {language} – never copy a pattern word for word:
+- hidden_cause: the real reason the viewer does not know – «<the real reason> behind <the viewer's problem>»
+- mistake: what the viewer does wrong – «the mistake that makes you <consequence>»
+- contrarian: the opposite of the common belief – «the more you <common action>, the <worse result>»
+- signs: the viewer checks themselves – «N signs that you <surprising state>»
+- warning: stop doing – «stop <concrete action> if you want <gain>»
+- question: a sharp question about the viewer's real situation – «why do you <concrete behaviour>?»
+- consequence: what really happens – «what happens to <you / your X> when <situation>»
+- recognition: the viewer sees themselves – «if you <symptom>, it is not <what they think>»
+- number_gap: a count plus an open question – «N things <a group> never does»
+- myth: the belief and its reversal – «it is not <the belief>: what really <stops / drives> you»
+- list_value: the count of the whole list + what its items do to the viewer's gain or pain – «N <items> \
+that <harm or give> your <gain>»
 When the video is a list, at least 3 candidates use its exact count.
-BAD – an abstract topic or a slogan, no gain or pain of the viewer: «Философия простоты», «Как принимать \
-решения без сомнений», «Изменить себя после неудач: методы». BAD – poetic, tells nothing: «Тишина внутри: \
-когда душа молчит», «Путь к себе», «Магия перемен»."""
+BAD – an abstract topic, a slogan or a table of contents without the viewer's gain or pain. BAD – poetic \
+or philosophical wording that tells nothing concrete."""
 
 _TITLES_SYSTEM = """You are the best YouTube packaging editor in the {language}-speaking segment, the one \
 channels hire when their click-through rate is low. Your titles get clicked because in ONE second the \
@@ -560,52 +565,53 @@ that goes with it. The viewer sees them for half a second at 170 px among 20 oth
 
 HOW A PACKAGE WORKS – two roles, two steps
 1. The THUMBNAIL raises a question. The viewer sees the text and the picture and at once asks something \
-they cannot answer themselves: «а что он перестал делать?», «почему он такой спокойный?», «что со мной \
-не так?». The question comes from the text AND the picture together – often from the gap between them.
+they cannot answer themselves – about THIS video's subject. The question comes from the text AND the \
+picture together, often from the gap between them.
 2. The TITLE finishes the job. The viewer glances at it and thinks «о, это мне надо»: it says what the \
 video is and names a concrete gain or pain of the viewer's own life, promising the answer to the \
 thumbnail's question without giving it away.
-Reference package (a real one that worked): picture – a calm, content character sitting and drinking tea; \
-text «Я ПЕРЕСТАЛ ЭТО ДЕЛАТЬ»; title «8 вещей, которые крадут ваш покой и силы». The viewer asks «что он \
-перестал? почему он так спокоен?», reads the title and thinks «это мне надо». Learn the mechanism, \
-never copy its words.
-BAD thumbnail texts and why: «ЖИЗНЬ ПРОХОДИТ МИМО» – a sad truism, raises no question; «ЭТО НЕ ЛЕНЬ» – \
-answers a question nobody asked; «ФИЛОСОФИЯ ПРОСТОТЫ» – a topic name; «ШОК», «ВСЯ ПРАВДА» – empty.
 
-SCHEMES – each candidate uses one, at least 5 different schemes overall. Examples are Russian ONLY to show \
-the pattern; write in {language}:
-- confession_result: a first-person confession with the object held back + the character in the desired \
-state after the change (calm, light, happy, strong). «Я ПЕРЕСТАЛ ЭТО ДЕЛАТЬ», «Я БОЛЬШЕ ТАК НЕ ЖИВУ», \
-«ВОТ ПОЧЕМУ Я СПОКОЕН». The picture shows what the viewer wants to feel.
-- hidden_warning: a warning whose object is held back + a character with a telling gesture or face \
-(stopping hand, alarmed look). «НЕ ДЕЛАЙТЕ ЭТО ПОСЛЕ 60», «ЭТО ВАС ИСТОЩАЕТ», «ХВАТИТ ТАК ДЕЛАТЬ».
-- contrast: text and picture contradict each other, the brain stops at the mismatch: «Я НИЧЕГО НЕ ДЕЛАЮ» \
-on a radiant, energetic character; «У МЕНЯ ВСЁ ПОЛУЧИЛОСЬ» on an exhausted one.
-- pain_question: the question the viewer asks themselves, in first person, + the character living that \
-pain: «ПОЧЕМУ Я ВСЁ ВРЕМЯ УСТАЮ?», «КУДА УХОДЯТ СИЛЫ?».
-- number_hook: a number from the video with a sting, the content held back: «ВСЕГО 3 ДЕЛА В ДЕНЬ», \
-«3 ДНЯ БЕЗ НОВОСТЕЙ» + a character showing the effect.
-- before_after: two states of the same character side by side + a text about the switch: «Я ПРОСТО \
-ПЕРЕСТАЛ…», «ЧТО Я ИЗМЕНИЛ?».
+NO TEMPLATES. Every channel dies of look-alike thumbnails. Everything – the text, the scene, the pose, the \
+props – is invented for THIS video from its BRIEF and its visual material. There are no model packages to \
+imitate here; a thumbnail that could be put on another video of the channel is a failure.
+
+SCHEMES – the mechanism of the question; each candidate uses one, at least 5 different schemes overall:
+- confession_result: a first-person confession or discovery about the video's core change, the decisive \
+part held back; the picture shows the result in this video's own terms.
+- hidden_warning: a warning or a verdict about something from the video, its object held back or shocking.
+- contrast: text and picture contradict each other, the brain stops at the mismatch.
+- pain_question: the question the viewer secretly asks themselves about the video's problem; the picture \
+shows that problem in its concrete form from the video.
+- number_hook: a striking number or fact from the video, its meaning held back.
+- before_after: two states of the same subject of the video side by side, the reason held back.
+Text forms must vary too: first person, an address to the viewer, a quoted line of a person of the video, a \
+bare number with a word, a verdict. A held-back object («это», «так») is ONE tool – at most one package \
+of the set uses it.
 
 THE TEXT («headline», in {language})
 - 2–5 words, at most {max_chars} characters, written in normal case (capitals are applied later), no \
 emoji, no trailing period. Native, spoken {language}.
-- It raises the question; it never answers it and never names the topic plainly. Holding the object back \
-with «это», «так», «вот почему», «одно» is a strong tool – the title and the picture make the area clear.
-- It is about the core change of the WHOLE video, not a side detail. Provocative is good, false is not: \
+- It raises the question; it never answers it and never names the topic plainly. No truisms, no empty \
+words («shock», «the whole truth»).
+- It is about the core of the WHOLE video, not a side detail. Provocative is good, false is not: \
 everything it says or implies is really in the BRIEF.
 - «accent»: the ONE word of the headline that carries the hook (it is highlighted); a number if there is one.
 
 THE PICTURE («prompt», in English, 40–80 words)
-- ONE character (or one object) with a clear, instantly readable state that serves the scheme: the \
-desired calm or joy for a result, real exhaustion or guilt for a pain, alarm for a warning. A calm picture \
-is GOOD when the text makes the calm intriguing; a mild, vague, «nothing to read» face is bad.
-- Concrete scene from the viewer's life (kitchen, armchair, garden, window...), at most 3 elements, the \
-character is BIG, close framing, simple background. No clichés: no gears or circuits in brains, light \
-bulbs, glowing orbs, hourglasses, surreal collages, floating symbols.
-- The subject sits on ONE side and fills about half of the frame; the other ~45% is calm empty background \
-for the headline. «side» = the side where the SUBJECT is: "left" or "right".
+- It is built from the VISUAL MATERIAL of the brief («material» = the item you use; every package uses a \
+different item): the real person the video is about with their recognisable look, the video's own object, \
+place, scene or number made visible – shown at its most striking: exaggerated, broken, piled up, at an odd \
+scale, at the tense moment. A stranger should guess the subject area of the video from the picture alone.
+- A person in it acts or reacts within the concrete situation of the video – never a generic person just \
+showing a feeling. BANNED stock scenes: a person holding a cup or mug, sitting in an armchair or at a \
+window, holding their head or resting it on a desk, raising a hand in a «stop» gesture, staring at a phone, \
+smiling with closed eyes. No clichés: no gears or circuits in brains, light bulbs, glowing orbs, \
+hourglasses, surreal collages, floating symbols.
+- The emotion or state is clear and fits the scheme – it can be calm, fear, joy, shock or anything else \
+the idea needs; it is readable at 170 px.
+- One focal point, at most 3 elements, the subject is BIG, close framing, simple background. The subject \
+sits on ONE side and fills about half of the frame; the other ~45% is calm empty background for the \
+headline. «side» = the side where the SUBJECT is: "left" or "right".
 - The art style is FIXED, MANDATORY and added to the prompt automatically: «{style}». The prompt describes \
 ONLY the scene – never copy the style into it, never name colours, lighting, style, medium or camera words \
 and never contradict the style: for a cartoon style describe cartoon characters, not real people. No \
@@ -615,18 +621,22 @@ THE TITLE («title», in {language})
 {title_task}
 
 FINAL CHECK for every package: a stranger sees ONLY the thumbnail – which question pops into their head, \
-and do they need the answer? Then they read the title – do they think «это мне надо»? If not, redo it.
-Packages must differ from each other in scheme, headline and picture.
+and do they need the answer? Could this thumbnail be put on another video of the channel? Then they read \
+the title – do they think «это мне надо»? If anything fails, redo it.
+Packages must differ from each other in scheme, text form, material, scene and pose.
 
 Write {count} packages. Answer ONLY with JSON, fields in this order (the chain of thought):
-{{"packages": [{{"scheme": "{schemes}", "headline": "...", "accent": "...", "subject": "what the picture \
-shows, 2–8 English words", "question": "the question the viewer asks at the sight of the thumbnail alone, \
-in {language}", "title": "...", "side": "left|right", "prompt": "..."}}]}}"""
+{{"packages": [{{"scheme": "{schemes}", "headline": "...", "accent": "...", "material": "the item of the \
+visual material the picture is built from", "subject": "what the picture shows, 2–8 English words", \
+"question": "the question the viewer asks at the sight of the thumbnail alone, in {language}", \
+"title": "...", "side": "left|right", "prompt": "..."}}]}}"""
 
 _PACKAGE_TITLE_FREE = """Write the title for THIS thumbnail. {title_rules}
 - The title does not repeat the words of the headline and does not reveal what the headline holds back \
-(it may name the category – «8 вещей», not the things).
+(it may name the category and the count, not the things themselves).
 - It promises exactly what the video is: a list of N things is never «the main reason» or «one simple way».
+- The picture may show ONE concrete episode of the video; the title is still about the WHOLE video (its \
+premise), never about that episode only.
 - Grammatically correct, every part of it agrees with the rest.{ideas}"""
 
 _PACKAGE_TITLE_FIXED = """The title is FIXED: «{title}». Copy it into «title» exactly; build the thumbnail \
@@ -643,19 +653,33 @@ if none does (a truism, a topic name, a statement that explains itself)
 striking mismatch of text and picture, one focal point (calm is not a minus by itself; a vague, \
 nothing-to-read picture is)
 - picture_instant: 0–10, the picture is understood in one second at 170 px
+- only_this: 0–10, the picture and the text could belong ONLY to this video – its own person, object, place \
+or fact (0 if they would fit any video of the channel: a generic person showing a feeling, a stock pose)
 STEP 2 – the viewer reads the title:
 - for_me: 0–10, they think «это мне надо» – a concrete gain or pain of their own life (0 for an abstract \
 topic or a slogan)
 - closes: 0–10, the title promises the answer to the thumbnail's question without giving it away and \
 without repeating the headline
 - clarity: 0–10, it is clear in one second what the video is
+- covers: 0–10, the title is about the WHOLE video (its premise); 0 if it is about one episode or item that \
+the picture happens to show
 - honest: 0–10, every claim of the headline, the picture and the title is really in the BRIEF and about \
 the whole video, not a side detail
 and booleans: "repeats" (the title repeats the headline's words or idea), "abstract" (the picture relies \
-on a cliché symbol or an abstraction that is not understood at once).
+on a cliché symbol or an abstraction that is not understood at once), "stock" (the picture is a stock \
+scene: a person with a cup or mug, in an armchair or at a window, holding their head, raising a «stop» \
+hand, staring at a phone – or anything else that would fit any video).
 Answer ONLY with JSON: {{"scores": [{{"i": <index>, "question": "...", "gap": 0, "stop": 0, \
-"picture_instant": 0, "for_me": 0, "closes": 0, "clarity": 0, "honest": 0, "repeats": false, \
-"abstract": false}}]}}"""
+"picture_instant": 0, "only_this": 0, "for_me": 0, "closes": 0, "clarity": 0, "covers": 0, "honest": 0, \
+"repeats": false, "abstract": false, "stock": false}}]}}"""
+
+
+#: Stock scenes a model falls back to on any topic; they made every thumbnail of a channel look alike.
+_STOCK_SCENE = re.compile(
+    r"\b(?:mug|teacup|cup of (?:tea|coffee)|armchair|stop gesture|(?:raises?|raising|holds? up|holding up) "
+    r"(?:a |one |his |her |their )?(?:hand|palm)|palm (?:facing|out)|(?:holding|clutching) (?:his|her|their) "
+    r"head|head (?:in|on) (?:his |her |their )?hands|staring at (?:a |the |his |her )?(?:phone|smartphone))\b",
+    re.I)
 
 
 def _thumb_headline_ok(headline: str) -> bool:
@@ -665,14 +689,15 @@ def _thumb_headline_ok(headline: str) -> bool:
 def thumbnail_concepts(
     fg: FastgenClient, brief: dict[str, Any], script_head: str, language: str, title: str | None,
     llm: LlmSettings, publish: PublishSettings, count: int, avoid: list[dict[str, Any]] | None = None,
-    title_ideas: list[str] | None = None,
+    title_ideas: list[str] | None = None, channel_used: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The best ``count`` packages: a thumbnail (headline + picture) and the title that goes with it.
 
-    Each one is ``{"prompt", "headline", "accent", "side", "subject", "angle", "question", "title",
+    Each one is ``{"prompt", "headline", "accent", "side", "subject", "material", "angle", "question", "title",
     "title_fixed", "score"}``. ``title`` – make thumbnails for this fixed title; ``None`` – every package gets
     its own title. ``avoid`` are ideas that were already shown: new ones differ in headline, picture and title.
     ``title_ideas`` – the strongest titles of :func:`make_titles`, a package may take or adapt one of them.
+    ``channel_used`` – thumbnail ideas of the channel's other videos: a new one must not look like them.
     """
     name = language_name(language)
     wanted = max(count * 3, 8)
@@ -690,6 +715,11 @@ def thumbnail_concepts(
         user += ("\nALREADY MADE – a new package must not repeat or paraphrase their headline, picture or title:\n"
                  + "\n".join(f"- «{a.get('headline', '')}» / {a.get('subject') or str(a.get('prompt', ''))[:120]}"
                              f" / {a.get('title', '')}" for a in shown[:12]) + "\n")
+    used = [a for a in channel_used or [] if a.get("headline") or a.get("subject")]
+    if used:
+        user += ("\nUSED ON OTHER VIDEOS OF THIS CHANNEL – new thumbnails must not look like any of them: no same "
+                 "scene, pose, prop or text structure:\n"
+                 + "\n".join(f"- «{a.get('headline', '')}» / {a.get('subject', '')}" for a in used[:30]) + "\n")
     if script_head.strip():
         user += f"\nSCRIPT BEGINNING (only a source of accurate details, not a menu of scenes):\n{script_head[:4_000]}"
     data = _chat(fg, system, user, llm, 0.9)
@@ -720,6 +750,7 @@ def thumbnail_concepts(
             "accent": accent if accent and accent.lower() in headline.lower() else "",
             "side": side,
             "subject": _clean_line(it.get("subject"))[:80],
+            "material": _clean_line(it.get("material"))[:120],
             "angle": _clean_line(it.get("scheme"))[:30],
             "question": _clean_line(it.get("question"))[:200],
             "title": own_title,
@@ -729,9 +760,16 @@ def thumbnail_concepts(
     if not cands:
         return []
 
+    for c in cands:
+        # The critic does not see the channel: a look-alike of another video is pushed down here.
+        c["penalty"] = 2.5 if any(
+            (c["subject"] and a.get("subject") and _similar(c["subject"], str(a["subject"]), 0.5))
+            or (a.get("headline") and _similar(c["headline"], str(a["headline"]), 0.6)) for a in used) else 0.0
+        if _STOCK_SCENE.search(c["prompt"]):
+            c["penalty"] += 2
     scores = _judge_packages(fg, brief, cands, llm, name)
     for i, c in enumerate(cands):
-        c["score"] = round(_package_score(scores.get(i), c) if i in scores else 5.0 - 0.01 * i, 2)
+        c["score"] = round(_package_score(scores[i], c) if i in scores else 5.0 - 0.01 * i - c["penalty"], 2)
         question = _clean_line((scores.get(i) or {}).get("question"))
         if question:  # the critic's question is the viewer's, the generator's only its intent
             c["question"] = question[:200]
@@ -746,6 +784,7 @@ def thumbnail_concepts(
             # a different text, picture and title from the already chosen ones
             if any(_similar(c["headline"], p["headline"], 0.5)
                    or (c["subject"] and p["subject"] and _similar(c["subject"], p["subject"], 0.7))
+                   or (c["material"] and c["material"].lower() == p["material"].lower())
                    or (not fixed and _similar(c["title"], p["title"], 0.7))
                    or (distinct_scheme and c["angle"] and c["angle"] == p["angle"])
                    for p in picked):
@@ -757,6 +796,8 @@ def thumbnail_concepts(
         except (ApiError, ValueError) as exc:
             log.warning("package title sharpening failed: %s", exc)
         picked.sort(key=lambda c: -c["score"])
+    for c in picked:
+        c.pop("penalty", None)
     return picked
 
 
@@ -785,13 +826,18 @@ def _package_score(s: dict[str, Any], pack: dict[str, Any]) -> float:
             return max(0.0, min(10.0, float(s.get(k, 0))))
         except (TypeError, ValueError):
             return 0.0
-    # The question of the thumbnail leads, «это мне надо» of the title comes next.
-    value = (0.25 * num("gap") + 0.12 * num("stop") + 0.08 * num("picture_instant") + 0.20 * num("for_me")
-             + 0.15 * num("closes") + 0.08 * num("clarity") + 0.12 * num("honest"))
+    # The question of the thumbnail leads, then «это мне надо» of the title and a picture of THIS video.
+    value = (0.22 * num("gap") + 0.10 * num("stop") + 0.06 * num("picture_instant") + 0.14 * num("only_this")
+             + 0.18 * num("for_me") + 0.12 * num("closes") + 0.06 * num("clarity") + 0.12 * num("honest"))
+    value -= float(pack.get("penalty") or 0)
+    if num("covers") < 5:  # a title about one episode – the viewer would expect another video
+        value -= 0.5 * (5 - num("covers"))
     if num("honest") < 5:  # invented claim – never wins over a grounded idea
         value -= 4
     if not _clean_line(s.get("question")):
         value -= 3  # the thumbnail raises no question at all
+    if _flag(s, "stock"):
+        value -= 3
     for flag in ("repeats", "abstract"):
         if _flag(s, flag):
             value -= 2
@@ -806,8 +852,9 @@ current title. Write 3 different, better titles for each. The viewer reads the t
 thumbnail and must think «это мне надо»: it says what the video is, names a concrete gain or pain of the \
 viewer's own life and promises the answer to the thumbnail's question without giving it away and without \
 repeating the headline. It promises exactly what the video is: a list of N things is never «the main \
-reason» or «one simple way», and one item of the list is never the title. When the video is a list, at \
-least one of the 3 uses its exact count.
+reason» or «one simple way», and one item of the list is never the title. The picture often shows one \
+episode of the video – the title is still about the WHOLE video (its premise), never about that episode. \
+When the video is a list, at least one of the 3 uses its exact count.
 
 {rules}{ideas}
 

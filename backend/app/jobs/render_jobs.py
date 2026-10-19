@@ -8,7 +8,10 @@ from typing import Any
 
 from ..config import get_settings
 from ..db import session_scope
-from ..models import Track
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..models import Project, Track
 from ..pipeline import chapters as chapters_mod
 from ..pipeline import llm_tasks, packaging
 from ..render.engine import RESOLUTIONS, PlanScene, RenderPlan, render_video
@@ -273,6 +276,7 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
         old_meta = dict(track.publish_meta or {})
         old_files = list(track.thumbnails or [])
         project_name = tc.project.name
+        channel_used = _channel_thumbnails(db, tc.project)
     # Ideas that already have images are the user's to manage (new ideas / redraw buttons);
     # plain "recreate metadata" must not throw them away. A forced pipeline run asks for new ones.
     kept = llm_tasks.thumbnail_files(old_meta, old_files)
@@ -292,7 +296,8 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
         if new_ideas and pub.thumbnail_count > 0:
             ctx.progress(0.85, "Обложки: текст, картинка и своё название к каждой", force=True)
             meta["thumbnails"] = packaging.thumbnail_concepts(
-                fg, brief, script[:6000], lang, None, llm, pub, pub.thumbnail_count, title_ideas=titles)
+                fg, brief, script[:6000], lang, None, llm, pub, pub.thumbnail_count, title_ideas=titles,
+                channel_used=channel_used)
         else:
             meta["thumbnails"] = kept
     meta["description_full"] = llm_tasks.build_description(meta, pub, lang)
@@ -310,6 +315,21 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
     track_changed(track_id, "metadata")
     return {"message": f"Названий: {len(meta['titles'])}, тегов: {len(meta['tags'])}, глав: {len(meta['chapters'])}, "
                        f"идей обложек: {len(meta['thumbnails'])}"}
+
+
+def _channel_thumbnails(db: Session, project: Project, limit: int = 30) -> list[dict[str, Any]]:
+    """Thumbnail ideas of the channel's other projects, newest first: a new video must not look like them."""
+    metas = db.execute(
+        select(Track.publish_meta).join(Project, Track.project_id == Project.id)
+        .where(Project.channel_id == project.channel_id, Project.id != project.id)
+        .order_by(Track.updated_at.desc()).limit(40)
+    ).scalars()
+    out: list[dict[str, Any]] = []
+    for meta in metas:
+        for c in (meta or {}).get("thumbnails") or []:
+            if isinstance(c, dict) and (c.get("headline") or c.get("subject")):
+                out.append({"headline": c.get("headline") or "", "subject": c.get("subject") or ""})
+    return out[:limit]
 
 
 def _idea_title(project_name: str, generated: list[str]) -> str:
@@ -336,6 +356,7 @@ def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
         concepts = llm_tasks.thumbnail_files(meta, list(track.thumbnails or []))
         script, lang, llm, pub, track_id = track.script, track.language, tc.settings.llm, tc.settings.publish, track.id
         project_id, project_name = tc.project.id, tc.project.name
+        channel_used = _channel_thumbnails(db, tc.project)
     if index is not None and not 0 <= int(index) < len(concepts):
         raise JobError("Такой идеи уже нет")
     # ``None`` – a package: the thumbnail and its own title are made together.
@@ -351,12 +372,12 @@ def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
     avoid = [c for c in concepts if c.get("prompt")]
     with FastgenClient() as fg:
         brief = meta.get("brief")
-        if not brief:  # metadata made before briefs existed
+        if not brief or "visual_material" not in brief:  # made before briefs (or their visual material) existed
             ctx.progress(0.1, "Изучаю сценарий", force=True)
             brief = packaging.build_brief(fg, script, lang, llm, project_name)
         ctx.progress(0.4, "Придумываю текст и картинку обложки", force=True)
         fresh = packaging.thumbnail_concepts(fg, brief, script[:6000], lang, target, llm, pub, count, avoid=avoid,
-                                             title_ideas=list(meta.get("titles") or []))
+                                             title_ideas=list(meta.get("titles") or []), channel_used=channel_used)
     if not fresh:
         raise JobError("Модель не предложила ни одной идеи — попробуйте ещё раз")
     removed: list[str | None] = []
