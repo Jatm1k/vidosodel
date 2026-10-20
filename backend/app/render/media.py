@@ -193,9 +193,13 @@ def cover_fit(img: np.ndarray, width: int, height: int) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- watermark
-#: Alpha map of the Gemini "sparkle" (64×64 patch around a 48 px star), measured
-#: from real generations: a white star blended at ~50% opacity.
+#: Shape of the Gemini "sparkle" (64×64 patch around a 48 px star), measured from
+#: real generations. The star is white blended at this map × ``_SPARKLE_OPACITY``
+#: (≈0.3 in the core): fitted on 28 untouched outputs over backgrounds 12…155.
 _SPARKLE_FILE = Path(__file__).with_name("assets") / "gemini_sparkle_alpha.png"
+_SPARKLE_OPACITY = 0.59
+#: Patch corner of the star relative to the bottom-right edge, ×scale (centre at w − 120).
+_SPARKLE_SPOT = 152
 #: Match score needed at the standard spot / anywhere else in the corner.
 _SPARKLE_SCORE_EXPECTED = 0.55
 _SPARKLE_SCORE_ELSEWHERE = 0.8
@@ -208,6 +212,24 @@ def _sparkle_alpha(scale: float) -> np.ndarray:
         size = max(8, round(alpha.shape[0] * scale))
         alpha = cv2.resize(alpha, (size, size), interpolation=cv2.INTER_LINEAR)
     return alpha
+
+
+def _star_rings(alpha: np.ndarray, scale: float) -> tuple[np.ndarray, np.ndarray]:
+    """Masks of the star's rim (just inside its outline) and of the background around it."""
+    k = np.ones((3, 3), np.uint8)
+    star = (alpha > 0.3).astype(np.uint8)
+    inner = (star - cv2.erode(star, k, iterations=max(1, round(3 * scale)))).astype(bool)
+    outer = (cv2.dilate(star, k, iterations=max(2, round(4 * scale)))
+             - cv2.dilate(star, k, iterations=max(1, round(scale)))).astype(bool)
+    return inner, outer
+
+
+def _sparkle_strength(patch: np.ndarray, alpha: np.ndarray, scale: float) -> float:
+    """How strongly a white star is blended into ``patch``, relative to the real watermark (≈1)."""
+    inner, outer = _star_rings(alpha, scale)
+    b = float(np.median(patch[outer]))
+    a = alpha[inner] * _SPARKLE_OPACITY
+    return float(((patch[inner] - b) * a).sum() / max(1e-6, ((255.0 - b) * a * a).sum()))
 
 
 def _unblend_test(gray: np.ndarray, x0: int, y0: int, scale: float) -> bool:
@@ -223,23 +245,22 @@ def _unblend_test(gray: np.ndarray, x0: int, y0: int, scale: float) -> bool:
     if x0 < 0 or y0 < 0 or y0 + size > gray.shape[0] or x0 + size > gray.shape[1]:
         return False
     patch = gray[y0:y0 + size, x0:x0 + size].astype(np.float32)
-    k = np.ones((3, 3), np.uint8)
-    star = (alpha > 0.3).astype(np.uint8)
-    inner = (star - cv2.erode(star, k, iterations=max(1, round(3 * scale)))).astype(bool)
-    outer = (cv2.dilate(star, k, iterations=max(2, round(4 * scale)))
-             - cv2.dilate(star, k, iterations=max(1, round(scale)))).astype(bool)
-    a = np.minimum(alpha, 0.95)
+    # A faint bright star-shaped detail is not the watermark: its opacity must match.
+    if not 0.68 < _sparkle_strength(patch, alpha, scale) < 2.4:
+        return False
+    inner, outer = _star_rings(alpha, scale)
+    a = np.minimum(alpha * _SPARKLE_OPACITY, 0.95)
     restored = (patch - a * 255.0) / (1.0 - a)
     before = float(np.median(patch[inner]) - np.median(patch[outer]))
     after = float(np.median(restored[inner]) - np.median(restored[outer]))
-    return before > 30 and abs(after) < before * 0.4
+    return before > 30 * _SPARKLE_OPACITY and abs(after) < before * 0.4
 
 
 def find_sparkle(img: np.ndarray) -> tuple[int, int, float, float] | None:
     """Locate the Gemini sparkle watermark: ``(x0, y0, scale, score)`` of its patch or ``None``.
 
     Gemini-based models (Nano Banana via Gemini, Flower) stamp it on *some* images:
-    a 48 px star 32 px from the bottom-right corner (96 px / 64 px on large images).
+    a 48 px star centred 120 px from the bottom-right corner (1376×768 output).
     The corner is searched at a few scales so resized outputs are found too.
     """
     h, w = img.shape[:2]
@@ -248,15 +269,14 @@ def find_sparkle(img: np.ndarray) -> tuple[int, int, float, float] | None:
     for scale in (1.0, 2.0, 0.75, 1.5, 1.25, 2.5):
         tpl = _sparkle_alpha(scale)
         size = tpl.shape[0]
-        rw, rh = min(w, max(int(w * 0.3), size * 3)), min(h, max(int(h * 0.3), size * 3))
+        rw, rh = min(w, max(int(w * 0.3), size * 4)), min(h, max(int(h * 0.3), size * 4))
         if size >= rw or size >= rh:
             continue
         region = gray[h - rh:, w - rw:].astype(np.float32)
         res = cv2.matchTemplate(region, tpl, cv2.TM_CCOEFF_NORMED)
-        # Standard placement: star centre at (w - 56·s, h - 56·s) → patch corner 88·s from the edge.
-        ex, ey = rw - round(88 * scale), rh - round(88 * scale)
+        ex, ey = rw - round(_SPARKLE_SPOT * scale), rh - round(_SPARKLE_SPOT * scale)
         candidates = []
-        if scale in (1.0, 2.0) and 0 <= ex < res.shape[1] and 0 <= ey < res.shape[0]:
+        if scale == 1.0 and 0 <= ex < res.shape[1] and 0 <= ey < res.shape[0]:
             win = res[max(0, ey - 3):ey + 4, max(0, ex - 3):ex + 4]
             _, score, _, loc = cv2.minMaxLoc(win)
             x, y = max(0, ex - 3) + loc[0], max(0, ey - 3) + loc[1]
@@ -271,6 +291,26 @@ def find_sparkle(img: np.ndarray) -> tuple[int, int, float, float] | None:
         if best and best[3] > 0.9:
             break
     return best
+
+
+def _unblend_star(img: np.ndarray, x0: int, y0: int, alpha: np.ndarray,
+                  extra_mask: np.ndarray | None = None) -> np.ndarray:
+    """Reverse a white star blended with ``alpha`` at ``(x0, y0)`` and inpaint its soft rim
+    (plus ``extra_mask`` – pixels whose value is lost)."""
+    h, w = img.shape[:2]
+    patch = img[y0:y0 + alpha.shape[0], x0:x0 + alpha.shape[1]].astype(np.float32)
+    a = np.minimum(alpha[: patch.shape[0], : patch.shape[1], None], 0.95)
+    restored = np.clip((patch - a * 255.0) / (1.0 - a), 0, 255).astype(np.uint8)
+    out = img.copy()
+    out[y0:y0 + patch.shape[0], x0:x0 + patch.shape[1]] = restored
+    # The soft rim does not invert exactly (JPEG ringing) – let inpainting blend it.
+    rim = ((a[..., 0] > 0.04 * _SPARKLE_OPACITY) & (a[..., 0] < 0.4 * _SPARKLE_OPACITY)).astype(np.uint8) * 255
+    if extra_mask is not None:
+        rim |= extra_mask[: rim.shape[0], : rim.shape[1]]
+    rim = cv2.dilate(rim, np.ones((3, 3), np.uint8))
+    mask = np.zeros((h, w), np.uint8)
+    mask[y0:y0 + rim.shape[0], x0:x0 + rim.shape[1]] = rim
+    return cv2.inpaint(out, mask, 2, cv2.INPAINT_TELEA)
 
 
 def remove_watermark(img: np.ndarray, method: str = "auto") -> tuple[np.ndarray, bool]:
@@ -290,19 +330,35 @@ def remove_watermark(img: np.ndarray, method: str = "auto") -> tuple[np.ndarray,
     if method == "crop":
         cut = max(w - x0, h - y0) + 4
         return cover_fit(img[: h - cut, : w - cut], w, h), True
-    alpha = _sparkle_alpha(scale)
+    return _unblend_star(img, x0, y0, _sparkle_alpha(scale) * _SPARKLE_OPACITY), True
+
+
+def repair_overcorrected(img: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Fix a star left dark by the old removal, which un-blended at full alpha-map strength.
+
+    That ~1.7× over-subtraction turned the white sparkle into a dark/black one.
+    Re-applying the old blend restores the original pixels (except those clipped
+    to black, which are inpainted), then the star is removed with the right opacity.
+    Only for images whose watermark was already removed by that code.
+    """
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    alpha = _sparkle_alpha(1.0)
     size = alpha.shape[0]
+    ex, ey = w - _SPARKLE_SPOT, h - _SPARKLE_SPOT
+    if ex < 3 or ey < 3:
+        return img, False
+    region = gray[ey - 3:ey + size + 3, ex - 3:ex + size + 3]
+    _, score, _, loc = cv2.minMaxLoc(cv2.matchTemplate(-region, alpha, cv2.TM_CCOEFF_NORMED))
+    if score < 0.6:
+        return img, False
+    x0, y0 = ex - 3 + loc[0], ey - 3 + loc[1]
     patch = img[y0:y0 + size, x0:x0 + size].astype(np.float32)
-    a = np.minimum(alpha[: patch.shape[0], : patch.shape[1], None], 0.95)
-    restored = np.clip((patch - a * 255.0) / (1.0 - a), 0, 255).astype(np.uint8)
+    old = np.minimum(alpha, 0.95)[..., None]
+    clipped = ((patch <= 3).any(axis=2) & (alpha > 0.04)).astype(np.uint8) * 255
     out = img.copy()
-    out[y0:y0 + size, x0:x0 + size] = restored
-    # The soft rim does not invert exactly (JPEG ringing) – let inpainting blend it.
-    rim = ((a[..., 0] > 0.04) & (a[..., 0] < 0.4)).astype(np.uint8) * 255
-    rim = cv2.dilate(rim, np.ones((3, 3), np.uint8))
-    mask = np.zeros((h, w), np.uint8)
-    mask[y0:y0 + rim.shape[0], x0:x0 + rim.shape[1]] = rim
-    return cv2.inpaint(out, mask, 2, cv2.INPAINT_TELEA), True
+    out[y0:y0 + size, x0:x0 + size] = np.clip(patch * (1.0 - old) + old * 255.0, 0, 255).astype(np.uint8)
+    return _unblend_star(out, x0, y0, alpha * _SPARKLE_OPACITY, clipped), True
 
 
 def make_thumbnail(src: Path, dest: Path, width: int = 1280, height: int = 720) -> Path:

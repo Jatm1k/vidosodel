@@ -17,7 +17,7 @@ from ..pipeline import characters as chars
 from ..pipeline import llm_tasks
 from ..pipeline.image_plan import plan_project
 from ..render import thumb_text
-from ..render.media import imread, imwrite, make_thumbnail, remove_watermark
+from ..render.media import imread, imwrite, make_thumbnail, remove_watermark, repair_overcorrected
 from ..services.fastgen import IMAGE_OPS_BY_ID, FastgenClient, GenerationFailed, image_credits
 from ..services.http import ApiError
 from ..services.limiter import Cancelled, is_limit_error, limiter
@@ -107,7 +107,7 @@ def generate_one(
                         commit(usage.get("credits") or credits, started.get("id"))
                     raise
             dest = dest_dir / unique_name(stem, ".jpg")
-            meta["watermark_removed"] = postprocess(raw, dest, images)
+            meta.update(watermark_removed=postprocess(raw, dest, images), watermark_v2=True)
             meta.update({"attempts": attempt, "prompt_used": current})
             return dest, meta
         except (Cancelled, JobCancelled):
@@ -475,27 +475,32 @@ def watermarks_job(ctx: JobContext) -> dict[str, Any]:
         tc = load_track(db, ctx.track_id)
         if tc.shares_images:
             raise JobError("Этот язык использует картинки основного языка — очистите их там.")
-        items = [(s.id, s.image_file) for s in tc.track.scenes if s.image_file]
+        # Images cleaned before v1.20.1 may carry a dark star (the old removal over-subtracted).
+        items = [(s.id, s.image_file, bool((s.image_meta or {}).get("watermark_removed"))
+                  and not (s.image_meta or {}).get("watermark_v2"))
+                 for s in tc.track.scenes if s.image_file]
         method = _watermark_method(tc.settings.images)
         track_id = tc.track.id
     if method == "none":
         raise JobError("Удаление водяных знаков выключено в настройках изображений.")
     cleaned = 0
-    for k, (scene_id, rel) in enumerate(items):
+    for k, (scene_id, rel, repair) in enumerate(items):
         ctx.check()
         ctx.progress(k / max(1, len(items)), f"Проверено {k}/{len(items)}, очищено {cleaned}")
         path = to_abs(rel)
         if not path or not path.exists():
             continue
-        img, removed = remove_watermark(imread(path), method)
-        if not removed:
-            continue
+        img, repaired = repair_overcorrected(imread(path)) if repair else (None, False)
+        if not repaired:
+            img, removed = remove_watermark(imread(path), method)
+            if not removed:
+                continue
         imwrite(path, img, quality=95)
         cleaned += 1
         with session_scope() as db:
             sc = db.get(Scene, scene_id)
             if sc:
-                sc.image_meta = {**(sc.image_meta or {}), "watermark_removed": True}
+                sc.image_meta = {**(sc.image_meta or {}), "watermark_removed": True, "watermark_v2": True}
                 scene_changed(track_id, scene_to_dict(sc))
     track_changed(track_id, "images")
     if not cleaned:
