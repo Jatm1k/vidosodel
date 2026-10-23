@@ -61,7 +61,7 @@ class BackupLlm:
         body: dict[str, Any] = {"model": self.model, "messages": messages, "temperature": temperature}
         if max_tokens:
             body["max_tokens"] = max_tokens
-        data = request_json(self._client, SERVICE, "POST", self._url, json=body, attempts=4)
+        data = request_json(self._client, SERVICE, "POST", self._url, json=body, attempts=4, cancellable=True)
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:

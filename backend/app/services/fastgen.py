@@ -66,6 +66,10 @@ class GenerationFailed(ApiError):
         return bool(_POLICY_PATTERNS.search(f"{self.message} {self.reason or ''}"))
 
 
+#: FastGen chat model ids and when they were fetched (see ``FastgenClient._spare_model``).
+_models_cache: tuple[list[str], float] = ([], 0.0)
+
+
 class FastgenClient:
     def __init__(self, api_key: str | None = None):
         key = api_key if api_key is not None else load_config().fastgen_api_key
@@ -184,40 +188,70 @@ class FastgenClient:
              max_tokens: int | None = None) -> str:
         """One chat completion within the hourly token budget.
 
-        Without a backup LLM it waits when the budget is used up. With one (Settings →
-        Резервный LLM) the request goes to the backup instead of waiting, and also when
-        FastGen fails or sends a canned stub instead of an answer.
+        Fallback chain when FastGen fails or sends a canned stub instead of an answer:
+        the channel's model → another FastGen model (see :meth:`_spare_model`) → the
+        backup API. When the hourly token budget is used up the spare FastGen model is
+        skipped (the budget is per key): the request goes to the backup API, or waits
+        for the budget without one.
         """
-        from .limiter import LimitReached  # noqa: PLC0415 – import cycle
+        from .limiter import LimitReached, check_cancelled  # noqa: PLC0415 – import cycle
         from .llm_fallback import backup_llm, backup_usage, is_fastgen_stub  # noqa: PLC0415
 
+        spare = self._spare_model(model)
+        models = [model] + ([spare] if spare else [])
         backup = backup_llm()
+        stub = error = None
+        reason = ""
+        for i, m in enumerate(models):
+            if i:
+                log.info("LLM %s → spare FastGen model %s (%s)", model, m, reason)
+            try:
+                text = self._chat(messages, model=m, temperature=temperature, max_tokens=max_tokens,
+                                  wait=backup is None)
+                check_cancelled()  # the job was cancelled while the answer was on its way
+                if not is_fastgen_stub(text):
+                    return text
+                stub, reason = text, f"{m}: FastGen ответил заглушкой"
+            except LimitReached:
+                reason = "лимит токенов FastGen"
+                break
+            except ApiError as exc:
+                error, reason = error or exc, f"{m}: ошибка FastGen: {exc.message}"
         if backup is None:
-            return self._chat(messages, model=model, temperature=temperature, max_tokens=max_tokens)
-        stub = None
-        try:
-            stub = self._chat(messages, model=model, temperature=temperature, max_tokens=max_tokens, wait=False)
-            if not is_fastgen_stub(stub):
-                return stub
-            reason, error = "FastGen ответил заглушкой", None
-        except LimitReached:
-            reason, error = "лимит токенов FastGen", None
-        except ApiError as exc:
-            reason, error = f"ошибка FastGen: {exc.message}", exc
+            if stub is not None:
+                return stub  # the caller handles stubs (see pipeline.llm_tasks)
+            raise error  # type: ignore[misc] – every model failed
         with backup:
             log.info("LLM → backup %s (%s)", backup.model, reason)
             try:
                 text = backup.chat(messages, temperature=temperature, max_tokens=max_tokens)
             except ApiError as exc:
                 log.warning("backup LLM %s failed: %s", backup.model, exc)
+                if stub is not None:
+                    return stub
                 if error is not None:
                     raise error from exc
-                if stub is not None:
-                    return stub  # the caller handles stubs (see pipeline.llm_tasks)
                 # Over the limit and the backup is down: wait for FastGen as without a backup.
                 return self._chat(messages, model=model, temperature=temperature, max_tokens=max_tokens)
+        check_cancelled()
         backup_usage.note(reason)
         return text
+
+    def _spare_model(self, model: str) -> str | None:
+        """Another FastGen chat model to try when ``model`` fails: preferably from another
+        provider (``openai/auto`` → ``google/gemini-auto``), since a refusal or an outage
+        is usually the provider's. The model list is cached for an hour."""
+        global _models_cache
+        ids, fetched_at = _models_cache
+        if not ids or time.time() - fetched_at > 3600:
+            try:
+                ids = [m["id"] for m in self.chat_models() if m.get("id")]
+                _models_cache = (ids, time.time())
+            except ApiError as exc:
+                log.warning("FastGen chat models: %s", exc)
+        others = [m for m in ids if m != model]
+        provider = model.split("/", 1)[0]
+        return next((m for m in others if m.split("/", 1)[0] != provider), others[0] if others else None)
 
     def _chat(self, messages: list[dict[str, str]], *, model: str, temperature: float,
               max_tokens: int | None, wait: bool = True) -> str:
@@ -231,7 +265,7 @@ class FastgenClient:
         for _ in range(_LIMIT_RETRIES):
             with token_limiter.slot(estimate, wait=wait) as commit:
                 try:
-                    data = self._req("POST", "/v1/chat/completions", json=body,
+                    data = self._req("POST", "/v1/chat/completions", json=body, cancellable=True,
                                      attempts=4 if wait else 2, retry_429=False)  # a backup is waiting
                 except ApiError as exc:
                     if not is_limit_error(exc):
@@ -255,7 +289,10 @@ class FastgenClient:
         """Ask for JSON and parse it, re-asking on malformed output."""
         last_err: Exception | None = None
         msgs = list(messages)
+        from .limiter import check_cancelled  # noqa: PLC0415 – import cycle
+
         for attempt in range(1, attempts + 1):
+            check_cancelled()
             try:
                 text = self.chat(msgs, model=model, temperature=temperature)
             except ApiError as exc:  # transient backend failure – treat like a bad answer

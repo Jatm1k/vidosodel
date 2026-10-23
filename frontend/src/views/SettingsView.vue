@@ -128,8 +128,9 @@ async function check(service: 'lumean' | 'fastgen' | 'llm_fallback') {
         </div>
         <p class="mt-1 text-[13px] text-ink-3">
           Любой сервис с OpenAI-совместимым API: OpenRouter, OpenAI, DeepSeek, локальная Ollama. Тексты уходят туда,
-          когда у FastGen кончились токены за час, он вернул ошибку или отказ-заглушку. Без него приложение ждёт
-          следующего часа.
+          когда у FastGen кончились токены за час или ошибку либо отказ-заглушку вернули обе его модели: сначала
+          модель канала, затем другая модель FastGen (например, OpenAI Auto ↔ Gemini Auto). Без резервного LLM
+          приложение ждёт следующего часа.
         </p>
         <div class="mt-4 grid grid-cols-2 gap-5" :class="{ 'opacity-60': !cfg.llm_fallback_enabled }">
           <label class="col-span-2 flex flex-col gap-1.5">

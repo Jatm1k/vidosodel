@@ -21,6 +21,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ..services.limiter import Cancelled
 from ..settings_schema import LlmSettings, SceneSettings
 from .timings import Sentence, Timings, sentences
 
@@ -162,6 +163,8 @@ def split_smart(
                 model=llm.model, temperature=0.2,
             )
             batch = _validate(data, pos, end)
+        except Cancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 – any LLM problem falls back to DP
             log.warning("smart split failed for units %d..%d: %s – using auto", pos, end, exc)
             batch = None

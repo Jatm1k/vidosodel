@@ -26,6 +26,7 @@ from ..render.motion import EFFECTS
 from ..render.subtitles import build_cues, write_ass, write_srt
 from ..render.transitions import DYNAMIC, TRANSITIONS
 from ..services.fastgen import FastgenClient
+from ..services.limiter import Cancelled
 from ..storage import safe_filename, to_abs, to_rel, track_dir
 from .common import TrackCtx, load_timings, load_track, scene_image, text_hash
 from .events import track_changed
@@ -219,6 +220,8 @@ def _accent_items(ctx: JobContext, track_id: int, req: dict[str, Any]) -> list[d
     try:
         with FastgenClient() as fg:
             items = llm_tasks.text_accents(fg, req["script"], req["language"], req["count"], req["llm"])
+    except Cancelled:
+        raise
     except Exception as e:  # text on screen is a nicety: the video renders without it
         ctx.progress(0.0, f"Ключевые фразы не подобраны: {e}", force=True)
         return cached.get("items") or []
@@ -242,6 +245,8 @@ def _chapter_items(ctx: JobContext, track_id: int, req: dict[str, Any]) -> list[
     try:
         with FastgenClient() as fg:
             items = chapters_mod.make_chapters(fg, req["cands"], req["language"], req["llm"], existing=existing)
+    except Cancelled:
+        raise
     except Exception as e:  # the cards are a nicety: the video renders without them
         ctx.progress(0.0, f"Главы не подобраны: {e}", force=True)
         return items or []

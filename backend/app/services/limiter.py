@@ -83,6 +83,18 @@ def _thread_hooks() -> tuple[Callable[[], bool] | None, Callable[[str], None] | 
     return getattr(_local, "hooks", None) or (None, None)
 
 
+def current_should_stop() -> Callable[[], bool] | None:
+    """Cancel flag of the job running in this thread (None outside jobs)."""
+    return _thread_hooks()[0]
+
+
+def check_cancelled() -> None:
+    """Raise :class:`Cancelled` when the job running in this thread was cancelled."""
+    should_stop = current_should_stop()
+    if should_stop and should_stop():
+        raise Cancelled()
+
+
 _LIMIT_PATTERNS = re.compile(
     r"rate.?limit|quota|limit (?:exceeded|reached)|exceed(?:ed|s)? .*limit|too many|per.?hour|hourly|"
     r"threads?.{0,20}(?:limit|allowed|busy)|concurren|лимит|превыш",

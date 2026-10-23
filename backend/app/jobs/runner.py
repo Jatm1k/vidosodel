@@ -186,19 +186,25 @@ class JobRunner:
     def cancel(self, job_id: int) -> bool:
         with self._lock:
             entry = self._running.get(job_id)
-        if entry:
-            entry[1]._cancel.set()
-            return True
-        with session_scope() as db:
-            job = db.get(Job, job_id)
-            if job and job.status == "queued":
-                job.status, job.finished_at, job.message = "cancelled", utcnow(), "Отменено"
-                data = job_to_dict(job)
-            else:
-                return False
+            if entry:
+                entry[1]._cancel.set()
+                return True
+            data = self._close_unstarted(job_id)
+        if data is None:
+            return False
         bus.publish({"type": "job", "job": data})
         self._cancel_dependents(job_id)
         return True
+
+    @staticmethod
+    def _close_unstarted(job_id: int) -> dict[str, Any] | None:
+        with session_scope() as db:
+            job = db.get(Job, job_id)
+            # "running" without a worker thread is an orphan (its thread is gone): close it too.
+            if job and job.status in ("queued", "running"):
+                job.status, job.finished_at, job.message = "cancelled", utcnow(), "Отменено"
+                return job_to_dict(job)
+        return None
 
     def active_for_track(self, track_id: int, kinds: set[str] | None = None) -> list[int]:
         with session_scope() as db:
@@ -281,10 +287,12 @@ class JobRunner:
             bus.publish({"type": "job", "job": job_to_dict(job)})
 
     def _start(self, job_id: int, lane: str) -> None:
-        with session_scope() as db:
+        # Under the lock: ``cancel`` must see either the worker or the job still without one.
+        with self._lock, session_scope() as db:
             job = db.get(Job, job_id)
+            if job is None or job.status != "running":
+                return  # cancelled right after being picked
             ctx = JobContext(job.id, job.kind, dict(job.params or {}), job.project_id, job.track_id)
-        with self._lock:
             self._running[job_id] = (lane, ctx)
         threading.Thread(target=self._execute, args=(ctx,), name=f"job-{job_id}", daemon=True).start()
 

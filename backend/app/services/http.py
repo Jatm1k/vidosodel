@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+from .limiter import Cancelled, current_should_stop
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +57,7 @@ def request_json(
     *,
     attempts: int = 5,
     retry_429: bool = True,
+    cancellable: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Send a request and return parsed JSON, retrying transient failures.
@@ -61,16 +65,20 @@ def request_json(
     Retries network errors and 5xx with exponential backoff; 429 is retried
     after ``Retry-After`` when ``retry_429`` is set. Other 4xx raise
     :class:`ApiError` immediately.
+
+    ``cancellable``: inside a job, cancelling it raises :class:`~.limiter.Cancelled`
+    right away, even mid-request (used for LLM answers that may hang for minutes).
     """
+    should_stop = current_should_stop() if cancellable else None
     delay = 2.0
     for attempt in range(1, attempts + 1):
         try:
-            resp = client.request(method, url, **kwargs)
+            resp = _send(client, method, url, should_stop, **kwargs)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             if attempt == attempts:
                 raise ApiError(service, 0, f"сеть недоступна: {exc}") from exc
             log.warning("%s %s %s: %s, retry in %.0fs", service, method, url, exc, delay)
-            time.sleep(delay + random.random())
+            _sleep(delay + random.random(), should_stop)
             delay = min(delay * 2, 60)
             continue
 
@@ -95,11 +103,47 @@ def request_json(
         if retryable and attempt < attempts:
             wait = _retry_after(resp, delay) if resp.status_code == 429 else delay
             log.warning("%s %s %s → %s (%s), retry in %.0fs", service, method, url, resp.status_code, message, wait)
-            time.sleep(min(wait, 300) + random.random())
+            _sleep(min(wait, 300) + random.random(), should_stop)
             delay = min(delay * 2, 60)
             continue
         raise ApiError(service, resp.status_code, message, body)
     raise ApiError(service, 0, "исчерпаны попытки")  # pragma: no cover
+
+
+def _send(client: httpx.Client, method: str, url: str, should_stop: Any, **kwargs: Any) -> httpx.Response:
+    """``client.request``; with ``should_stop`` it runs in a helper thread and the flag is
+    checked meanwhile, so a cancelled job does not wait for the answer (it is dropped)."""
+    if should_stop is None:
+        return client.request(method, url, **kwargs)
+    if should_stop():
+        raise Cancelled()
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            box["resp"] = client.request(method, url, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 – re-raised in the caller's thread
+            box["exc"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=run, name="http", daemon=True).start()
+    while not done.wait(0.5):
+        if should_stop():
+            raise Cancelled()
+    if "exc" in box:
+        raise box["exc"]
+    return box["resp"]
+
+
+def _sleep(seconds: float, should_stop: Any) -> None:
+    """Pause between retries; a cancelled job stops waiting at once."""
+    end = time.time() + seconds
+    while (left := end - time.time()) > 0:
+        if should_stop and should_stop():
+            raise Cancelled()
+        time.sleep(min(left, 0.5))
 
 
 def _error_message(body: Any) -> str:
