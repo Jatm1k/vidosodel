@@ -156,6 +156,26 @@ def _window_rms(x: np.ndarray, win: int) -> np.ndarray:
     return np.sqrt(np.mean(x[: n * win].reshape(n, win) ** 2, axis=1) + 1e-12)
 
 
+def _drop_tail_burst(loud: np.ndarray, rms: np.ndarray, win: int) -> tuple[np.ndarray, int | None]:
+    """Cut the noise burst Gemini TTS appends after the speech.
+
+    The burst is a last run of loud windows: shorter than 0.3 s, after at least 0.2 s of
+    silence and much louder than the speech. Returns ``loud`` without it and the sample
+    where it starts (``None`` – no burst).
+    """
+    breaks = np.nonzero(np.diff(loud) > 1)[0]
+    if not len(breaks):
+        return loud, None
+    last = breaks[-1]
+    start, end = int(loud[last + 1]), int(loud[-1])
+    short = (end - start + 1) * win <= 0.3 * RATE
+    after_pause = (start - int(loud[last]) - 1) * win >= 0.2 * RATE
+    louder = float(rms[start:end + 1].mean()) > 1.5 * float(rms[loud[: last + 1]].mean())
+    if short and after_pause and louder:
+        return loud[: last + 1], start * win
+    return loud, None
+
+
 def process_clip(raw: Path, dest: Path, words: list[list[Any]] | None) -> tuple[float, list[list[Any]], float]:
     """Trim silence at both ends and level a voiced clip; returns ``(duration, words, trimmed_head)``.
 
@@ -167,9 +187,10 @@ def process_clip(raw: Path, dest: Path, words: list[list[Any]] | None) -> tuple[
     rms = _window_rms(x, win)
     thr = max(float(rms.max()) * 10 ** (-40 / 20), 10 ** (-52 / 20))
     loud = np.nonzero(rms > thr)[0]
+    loud, burst = _drop_tail_burst(loud, rms, win)
     if len(loud):
         a = max(0, loud[0] * win - int(0.05 * RATE))
-        b = min(len(x), (loud[-1] + 1) * win + int(0.15 * RATE))
+        b = min(len(x), (loud[-1] + 1) * win + int(0.15 * RATE), burst or len(x))
     else:
         a, b = 0, len(x)
     y = x[a:b]
