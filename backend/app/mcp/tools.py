@@ -18,20 +18,28 @@ from pathlib import Path
 from typing import Any, Literal
 
 import cv2
+import numpy as np
 from pydantic import BaseModel, Field, ValidationError
 
 from .. import series_ops as ops
 from ..api.pipeline_runner import run_pipeline
+from ..api.projects import _mark as mark_track
+from ..config import ffmpeg_bin
 from ..db import session_scope
 from ..jobs.common import scene_to_dict
+from ..jobs.events import track_changed
 from ..jobs.runner import job_to_dict, runner
-from ..models import Channel, Character, EpisodeBlock, Job, Project, Scene, Series, SeriesCharacter, SeriesLocation
-from ..render.media import imread
+from ..models import (
+    Channel, Character, EpisodeBlock, Job, Project, Scene, Series, SeriesCharacter, SeriesLocation, Track,
+)
+from ..pipeline import llm_tasks, packaging
+from ..render.media import imread, imwrite, make_thumbnail, probe_duration, run
 from ..services import gemini_tts
 from ..services.http import ApiError
 from ..services.limiter import limiter, token_limiter
 from ..services.lumean import LumeanClient
-from ..storage import to_abs
+from ..settings_schema import effective_settings
+from ..storage import to_abs, to_rel, track_dir, unique_name
 
 INSTRUCTIONS = """\
 Vidosodel — локальная студия видео. Через эти инструменты вы создаёте сериалы: вы автор и режиссёр, \
@@ -52,8 +60,16 @@ set_screenplay блоками: narration (диктор, ведёт повест�
 7. assemble_episode: речь + звук → дорожка серии, тайминги, сцены по блокам.
 8. get_scenes → update_scenes (промпты по-английски; characters/location — по именам) или \
 write_scene_prompts (LLM) → generate_images → view_image по сценам, перерисуйте неудачные.
-9. render_episode (сначала preview=true для проверки), затем generate_packaging (название, описание, обложки).
-10. update_episode(summary=…): что произошло в серии — это память сериала для следующих серий.
+9. render_episode (сначала preview=true для проверки, кадры смотрите view_video_frame), mark_episode(approved).
+10. Упаковку для YouTube пишите сами — автоупаковка (generate_packaging) рассчитана на обычные ролики \
+и годится разве что как черновик. set_metadata: название, описание (главы, футер канала и хэштеги \
+приложение добавит само), теги, главы по блокам. set_thumbnails: обложки с героями и локациями по \
+референсам, крупная надпись и название в пару → wait_for_jobs → view_image(kind="thumbnail"); неудачные — \
+draw_thumbnails. Итог — get_publish_info.
+11. update_episode(summary=…): что произошло в серии — это память сериала для следующих серий.
+
+Настройки производства (стиль обложек, субтитры, рендер, атмосфера…) — get_settings / update_settings: \
+для всего сериала (series_id) или одной серии (episode_id); настройки канала не меняются.
 
 Задачи (jobs) выполняются в фоне: инструменты запуска возвращают job_id; ждите wait_for_jobs. \
 Изменение текста или голоса блока требует переозвучки только этого блока; после любых правок \
@@ -89,15 +105,41 @@ class Tool:
             args = self.args.model_validate(arguments)
         except ValidationError as exc:
             raise ToolError(f"Неверные параметры: {exc}") from exc
+        touched = None if self.read_only else _touched(args)
         try:
             out = self.fn(args)
         except ops.OpError as exc:
             raise ToolError(exc.message) from exc
         except ApiError as exc:
             raise ToolError(f"{exc.service}: {exc.message}") from exc
+        if touched:  # open pages of the app refetch what the agent changed
+            ops.notify(touched[0], "episodes" if touched[1] else "series", touched[1])
         if isinstance(out, list) and out and isinstance(out[0], dict) and "type" in out[0]:
             return out
         return [{"type": "text", "text": json.dumps(out, ensure_ascii=False, default=str)}]
+
+
+def _touched(args: BaseModel) -> tuple[int | None, int | None] | None:
+    """``(series id, episode id)`` a changing tool works on (looked up before it runs: it may delete it)."""
+    a = args.model_dump()
+    with session_scope() as db:
+        project = None
+        if a.get("episode_id"):
+            project = db.get(Project, a["episode_id"])
+        elif a.get("block_id"):
+            block = db.get(EpisodeBlock, a["block_id"])
+            project = block.project if block else None
+        elif a.get("scene_id"):
+            scene = db.get(Scene, a["scene_id"])
+            project = scene.track.project if scene else None
+        if project is not None:
+            return project.series_id, project.id
+        if a.get("series_id"):
+            return a["series_id"], None
+        if a.get("kind") in ("character", "location") and a.get("id"):
+            ref = db.get(SeriesCharacter if a["kind"] == "character" else SeriesLocation, a["id"])
+            return (ref.series_id, None) if ref else None
+    return (None, None) if a.get("channel_id") else None  # a new series: the list refetches
 
 
 TOOLS: dict[str, Tool] = {}
@@ -330,16 +372,36 @@ def set_reference_image(a: RefFileIn) -> dict[str, Any]:
 
 
 class ViewImageIn(BaseModel):
-    kind: Literal["character", "location", "scene"]
-    id: int
+    kind: Literal["character", "location", "scene", "thumbnail"]
+    id: int = Field(description="id персонажа, локации или сцены; для thumbnail — id серии")
+    index: int = Field(0, description="Для thumbnail: индекс обложки")
     max_side: int = Field(1024, ge=256, le=1600)
+
+
+def _image_content(img: Any, max_side: int, caption: str) -> list[dict[str, Any]]:
+    h, w = img.shape[:2]
+    k = min(1.0, max_side / max(h, w))
+    if k < 1:
+        img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return [{"type": "image", "data": base64.b64encode(buf.tobytes()).decode(), "mimeType": "image/jpeg"},
+            {"type": "text", "text": caption}]
 
 
 @tool("view_image", "Посмотреть картинку", ViewImageIn, read_only=True)
 def view_image(a: ViewImageIn) -> list[dict[str, Any]]:
-    """Показать картинку: референс персонажа/локации или кадр сцены — чтобы проверить сходство и качество."""
+    """Показать картинку: референс персонажа/локации, кадр сцены или обложку серии — чтобы проверить сходство и качество."""
     with session_scope() as db:
-        if a.kind == "scene":
+        if a.kind == "thumbnail":
+            p = ops.get_episode(db, a.id)
+            t = ops.episode_track(p)
+            concepts = llm_tasks.thumbnail_files(dict(t.publish_meta or {}), list(t.thumbnails or []))
+            if not 0 <= a.index < len(concepts):
+                raise ToolError(f"Нет обложки с индексом {a.index} (всего {len(concepts)})")
+            c = concepts[a.index]
+            rel = c.get("file")
+            caption = f"Обложка {a.index}: «{c.get('headline') or ''}», название в пару: {c.get('title') or '—'}"
+        elif a.kind == "scene":
             sc = db.get(Scene, a.id)
             if sc is None:
                 raise ToolError("Сцена не найдена")
@@ -354,14 +416,7 @@ def view_image(a: ViewImageIn) -> list[dict[str, Any]]:
     path = to_abs(rel)
     if not path or not path.exists():
         raise ToolError("Картинки ещё нет")
-    img = imread(path)
-    h, w = img.shape[:2]
-    k = min(1.0, a.max_side / max(h, w))
-    if k < 1:
-        img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    return [{"type": "image", "data": base64.b64encode(buf.tobytes()).decode(), "mimeType": "image/jpeg"},
-            {"type": "text", "text": caption}]
+    return _image_content(imread(path), a.max_side, caption)
 
 
 # ===================================================================== episodes
@@ -664,8 +719,6 @@ def update_scenes(a: UpdateScenesIn) -> dict[str, Any]:
             s.characters = list(dict.fromkeys(ids))
             if e.continue_previous is not None:
                 s.continuity = {"change": e.continue_previous.strip()[:500]} if e.continue_previous.strip() and s.idx > 0 else None
-        from ..jobs.events import track_changed  # noqa: PLC0415
-
         track_changed(ops.episode_track(p).id, "scenes")
     return {"updated": len(a.scenes)}
 
@@ -711,31 +764,453 @@ def render_episode(a: RenderIn) -> dict[str, Any]:
         return {"job_id": ops.start_episode_job(db, p, "render", {})}
 
 
+# ===================================================================== packaging (YouTube)
+def _publish_dict(p: Project, t: Track) -> dict[str, Any]:
+    meta = dict(t.publish_meta or {})
+    concepts = llm_tasks.thumbnail_files(meta, list(t.thumbnails or []))
+    return {
+        "episode_title": p.name,
+        "title": (meta.get("titles") or [""])[0],
+        "alt_titles": (meta.get("titles") or [])[1:],
+        "description": meta.get("description") or "\n\n".join(x for x in (meta.get("hook"), meta.get("about")) if x),
+        "description_full": meta.get("description_full") or "",
+        "tags": meta.get("tags") or [],
+        "hashtags": meta.get("hashtags") or [],
+        "chapters": meta.get("chapters") or [],
+        "made_by": meta.get("made_by") or ("app" if meta.get("titles") else None),
+        "thumbnails": [{
+            "index": i, "title": c.get("title") or "", "headline": c.get("headline") or "",
+            "accent": c.get("accent") or "", "side": c.get("side") or "", "prompt": c.get("prompt") or "",
+            "characters": c.get("characters") or [], "location": c.get("location"),
+            "image_path": str(to_abs(c["file"])) if c.get("file") else None,
+        } for i, c in enumerate(concepts)],
+        "video_path": str(to_abs(t.video_file)) if t.video_file else None,
+        "preview_path": str(to_abs(t.preview_file)) if t.preview_file else None,
+        "approved": bool(t.approved_at), "published": bool(t.published_at),
+    }
+
+
+def _save_concepts(t: Track, concepts: list[dict[str, Any]]) -> None:
+    t.publish_meta = {**(t.publish_meta or {}), "thumbnails": concepts}
+    t.thumbnails = [c["file"] for c in concepts if c.get("file")]
+
+
+def _unlink(files: list[str | None]) -> None:
+    for rel in files:
+        path = to_abs(rel)
+        if path and path.exists():
+            path.unlink(missing_ok=True)
+
+
 class PackagingIn(BaseModel):
     episode_id: int
+    parts: list[Literal["metadata", "thumbnails"]] = Field(
+        default_factory=lambda: ["metadata", "thumbnails"],
+        description="metadata — названия, описание, теги, главы; thumbnails — идеи и отрисовка обложек")
     force: bool = Field(False, description="Сделать заново, даже если уже есть")
 
 
-@tool("generate_packaging", "Упаковка", PackagingIn)
+@tool("generate_packaging", "Упаковка (авто)", PackagingIn)
 def generate_packaging(a: PackagingIn) -> dict[str, Any]:
-    """Название, описание, теги и обложки для YouTube (как у обычных роликов). Возвращает job_ids."""
+    """Автоупаковка встроенной LLM, как у обычных роликов (ей сообщается сериал, номер и план серии). \
+Обложки авто-идей рисуются без референсов героев. Для сериала надёжнее написать упаковку самому: \
+set_metadata и set_thumbnails; автоупаковку можно взять как черновик и поправить. Возвращает job_ids."""
     with session_scope() as db:
         p = ops.get_episode(db, a.episode_id)
-        ids = run_pipeline(db, p, track_ids=None, steps=["metadata", "thumbnails"], force=a.force)
+        ids = run_pipeline(db, p, track_ids=None, steps=list(dict.fromkeys(a.parts)), force=a.force)
         db.commit()
     return {"job_ids": ids}
 
 
-@tool("get_publish_info", "Готовые материалы", EpisodeIdIn, read_only=True)
+@tool("get_publish_info", "Упаковка серии", EpisodeIdIn, read_only=True)
 def get_publish_info(a: EpisodeIdIn) -> dict[str, Any]:
-    """Пути к видео, обложкам и сгенерированные метаданные серии."""
+    """Всё для публикации: название и варианты, описание (ваш текст и полное — с главами, футером канала и \
+хэштегами), теги, главы, обложки (index, надпись, название в пару, путь к файлу), пути к видео, отметки."""
+    with session_scope() as db:
+        p = ops.get_episode(db, a.episode_id)
+        return _publish_dict(p, ops.episode_track(p))
+
+
+class ChapterIn(BaseModel):
+    title: str
+    block_id: int | None = Field(None, description="Глава начинается с этого блока сценария")
+    t: float | None = Field(None, description="…или с этой секунды видео")
+
+
+class MetadataIn(BaseModel):
+    episode_id: int
+    title: str | None = Field(None, description="Название ролика на YouTube (до 100 символов, лучше до 60–70)")
+    alt_titles: list[str] | None = Field(None, description="Запасные варианты названия")
+    description: str | None = Field(None, description="Текст описания на языке сериала. Главы, футер канала и "
+                                                      "хэштеги приложение добавит само — не пишите их сюда")
+    tags: list[str] | None = Field(None, description="Теги (вместе до 500 символов)")
+    hashtags: list[str] | None = Field(None, description="Хэштеги без # (YouTube показывает первые 3)")
+    chapters: list[ChapterIn] | None = Field(None, description="Главы (тайм-коды в описании): от 3, первая — с "
+                                                               "начала, каждая не короче 10 с; [] — без глав")
+    footer: bool | None = Field(None, description="Добавлять футер описания из настроек канала (по умолчанию да)")
+
+
+def _chapters(p: Project, items: list[ChapterIn]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Chapters with times (a block's start on the episode timeline) and what YouTube will not like."""
+    series = p.series
+    spans, _ = ops.ep.layout(list(p.blocks), ops.ep.series_options(series))
+    start = {s.block_id: s.start for s in spans}
+    out, notes = [], []
+    for c in items:
+        if c.block_id is not None:
+            if c.block_id not in start:
+                raise ToolError(f"Блок #{c.block_id} не из этой серии")
+            t = start[c.block_id]
+        elif c.t is not None:
+            t = c.t
+        else:
+            raise ToolError(f"Главе «{c.title}» нужен block_id или t")
+        out.append({"t": round(max(0.0, t), 1), "title": c.title.strip()})
+    out.sort(key=lambda c: c["t"])
+    if out and out[0]["t"] > 0:
+        out[0]["t"] = 0.0
+        notes.append("первая глава перенесена на 0:00 — YouTube этого требует")
+    if out and len(out) < 3:
+        notes.append("YouTube показывает главы, только если их от 3")
+    if any(b["t"] - a["t"] < 10 for a, b in zip(out, out[1:])):
+        notes.append("есть главы короче 10 с — YouTube тогда не покажет главы")
+    return out, notes
+
+
+@tool("set_metadata", "Название, описание, теги", MetadataIn)
+def set_metadata(a: MetadataIn) -> dict[str, Any]:
+    """Записать упаковку серии самому. Меняются только переданные поля — так можно и поправить автоупаковку. \
+Полное описание собирается так: ваш текст → главы → футер канала → хэштеги. Возвращает итог (как \
+get_publish_info) и замечания (warnings)."""
     with session_scope() as db:
         p = ops.get_episode(db, a.episode_id)
         t = ops.episode_track(p)
-        return {"video_path": str(to_abs(t.video_file)) if t.video_file else None,
-                "preview_path": str(to_abs(t.preview_file)) if t.preview_file else None,
-                "thumbnails": [str(to_abs(x)) for x in (t.thumbnails or [])],
-                "publish_meta": {k: v for k, v in (t.publish_meta or {}).items() if k != "brief"}}
+        pub = effective_settings(p.channel.settings, p.settings).publish
+        meta = dict(t.publish_meta or {})
+        warnings: list[str] = []
+        if a.title is not None or a.alt_titles is not None:
+            current = list(meta.get("titles") or [])
+            title = a.title.strip() if a.title is not None else (current[0] if current else "")
+            if not title:
+                raise ToolError("Нужно название")
+            if len(title) > 100:
+                raise ToolError(f"Название длиннее 100 символов ({len(title)}) — YouTube его не примет")
+            if len(title) > packaging.TITLE_HARD_MAX:
+                warnings.append(f"название длинное ({len(title)} симв.) — в выдаче обрежется")
+            alts = [x.strip() for x in a.alt_titles] if a.alt_titles is not None else current[1:]
+            meta["titles"] = list(dict.fromkeys(x for x in [title, *alts] if x))
+            meta["title_info"] = [i for i in meta.get("title_info") or [] if i.get("text") in meta["titles"]]
+        if a.description is not None:
+            for key in ("hook", "about", "bullets", "bullets_heading"):
+                meta.pop(key, None)
+            meta["description"] = a.description.strip()
+        if a.tags is not None:
+            given = [x.strip().lstrip("#").strip() for x in a.tags]
+            tags = list(dict.fromkeys(x for x in given if x))
+            while tags and len(",".join(tags)) > 500:
+                tags.pop()
+            if len(tags) < len([x for x in given if x]):
+                warnings.append(f"тегов осталось {len(tags)}: были повторы или вместе больше 500 символов")
+            meta["tags"] = tags
+        if a.hashtags is not None:
+            meta["hashtags"] = list(dict.fromkeys(
+                h for h in ("".join(x.strip().lstrip("#").split()) for x in a.hashtags) if h))
+        if a.chapters is not None:
+            meta["chapters"], notes = _chapters(p, a.chapters)
+            warnings += notes
+            if meta["chapters"] and not pub.with_chapters:
+                warnings.append("главы сохранены, но в описание не попадут: у канала они выключены "
+                                "(publish.with_chapters — update_settings)")
+        if a.footer is not None:
+            meta["footer"] = a.footer
+        settings = pub if meta.get("footer", True) else pub.model_copy(update={"description_footer": ""})
+        meta["description_full"] = llm_tasks.build_description(meta, settings, t.language)
+        if len(meta["description_full"]) > 5000:
+            raise ToolError(f"Полное описание длиннее 5000 символов ({len(meta['description_full'])}) — "
+                            "сократите текст")
+        meta["made_by"] = "agent"
+        t.publish_meta = meta
+        db.flush()
+        track_changed(t.id, "metadata")
+        return {**_publish_dict(p, t), "warnings": warnings}
+
+
+class ThumbIn(BaseModel):
+    prompt: str = Field(description="Картинка обложки по-английски: кто что делает, эмоция, план, фон. Внешность "
+                                    "героев не описывайте (её дают референсы) и текст не пишите — надпись "
+                                    "добавит программа")
+    headline: str = Field("", description="Крупная надпись на обложке: 1–4 слова на языке сериала; пусто — без неё")
+    accent: str = Field("", description="Слово из надписи, выделяемое цветом")
+    side: Literal["left", "right"] = Field("right", description="Сторона главного объекта; надпись — на другой")
+    characters: list[str] = Field(default_factory=list, description="Герои на обложке (имена, до 3) — их "
+                                                                     "референсы уйдут в модель")
+    location: str | None = Field(None, description="Локация (имя) — её референс тоже уйдёт в модель")
+    title: str = Field("", description="Название ролика в пару к этой обложке")
+
+
+class SetThumbsIn(BaseModel):
+    episode_id: int
+    thumbnails: list[ThumbIn]
+    mode: Literal["replace", "append"] = Field("replace", description="replace — заменить все обложки, "
+                                                                       "append — добавить к имеющимся")
+    draw: bool = Field(True, description="Сразу нарисовать")
+
+
+@tool("set_thumbnails", "Свои обложки", SetThumbsIn)
+def set_thumbnails(a: SetThumbsIn) -> dict[str, Any]:
+    """Задать идеи обложек самому: картинка, надпись, кто в кадре (по референсам героев и локаций) и название \
+в пару. Стиль обложек — publish.thumbnail_style (get_settings / update_settings). Возвращает индексы и \
+job_id отрисовки; результат смотрите view_image(kind="thumbnail", id=episode_id, index=…)."""
+    with session_scope() as db:
+        p = ops.get_episode(db, a.episode_id)
+        t = ops.episode_track(p)
+        by_id, people, places = _cast_names(p)
+        fresh = []
+        for th in a.thumbnails:
+            missing = [n for n in th.characters if n.strip().lower() not in people]
+            if missing:
+                raise ToolError(f"Неизвестные персонажи: {', '.join(missing)}. Есть: "
+                                + ", ".join(c.name for c in by_id.values() if c.kind != "location"))
+            cast = list(dict.fromkeys(people[n.strip().lower()] for n in th.characters))[:3]
+            if th.location and th.location.strip():
+                lid = places.get(th.location.strip().lower())
+                if lid is None:
+                    raise ToolError(f"Неизвестная локация «{th.location}». Есть: "
+                                    + ", ".join(c.name for c in by_id.values() if c.kind == "location"))
+                cast.append(lid)
+            fresh.append({
+                "prompt": th.prompt.strip(), "headline": th.headline.strip(), "accent": th.accent.strip(),
+                "side": th.side, "title": th.title.strip(), "title_fixed": bool(th.title.strip()),
+                "cast": cast, "characters": [by_id[i].name for i in cast if by_id[i].kind != "location"],
+                "location": next((by_id[i].name for i in cast if by_id[i].kind == "location"), None),
+                "made_by": "agent", "file": None,
+            })
+        concepts = llm_tasks.thumbnail_files(dict(t.publish_meta or {}), list(t.thumbnails or []))
+        removed: list[str | None] = []
+        if a.mode == "replace":
+            removed, concepts = [c.get("file") for c in concepts], []
+        indices = list(range(len(concepts), len(concepts) + len(fresh)))
+        _save_concepts(t, concepts + fresh)
+        db.flush()
+        job_id = ops.start_episode_job(db, p, "thumbnails", {"indices": indices}) if a.draw and fresh else None
+        track_changed(t.id, "metadata")
+    _unlink(removed)
+    return {"indices": indices, "job_id": job_id}
+
+
+class ThumbIndicesIn(BaseModel):
+    episode_id: int
+    indices: list[int] = Field(default_factory=list, description="Индексы обложек (пусто — все)")
+
+
+@tool("draw_thumbnails", "Перерисовать обложки", ThumbIndicesIn)
+def draw_thumbnails(a: ThumbIndicesIn) -> dict[str, Any]:
+    """Нарисовать обложки заново: та же идея, новая отрисовка. Возвращает job_id."""
+    with session_scope() as db:
+        p = ops.get_episode(db, a.episode_id)
+        return {"job_id": ops.start_episode_job(db, p, "thumbnails", {"indices": a.indices} if a.indices else {})}
+
+
+@tool("delete_thumbnails", "Удалить обложки", ThumbIndicesIn, destructive=True)
+def delete_thumbnails(a: ThumbIndicesIn) -> dict[str, Any]:
+    """Удалить обложки по индексам (пусто — все). Индексы оставшихся сдвигаются."""
+    with session_scope() as db:
+        p = ops.get_episode(db, a.episode_id)
+        t = ops.episode_track(p)
+        concepts = llm_tasks.thumbnail_files(dict(t.publish_meta or {}), list(t.thumbnails or []))
+        drop = set(a.indices) if a.indices else set(range(len(concepts)))
+        removed = [c.get("file") for i, c in enumerate(concepts) if i in drop]
+        concepts = [c for i, c in enumerate(concepts) if i not in drop]
+        _save_concepts(t, concepts)
+        track_changed(t.id, "metadata")
+    _unlink(removed)
+    return {"left": len(concepts)}
+
+
+class ThumbFileIn(BaseModel):
+    episode_id: int
+    file_path: str = Field(description="Путь к готовой картинке на этом компьютере (будет приведена к 1280×720)")
+    index: int | None = Field(None, description="Заменить картинку этой обложки; пусто — добавить новую")
+    title: str = Field("", description="Название в пару (для новой обложки)")
+
+
+@tool("set_thumbnail_image", "Своя картинка обложки", ThumbFileIn)
+def set_thumbnail_image(a: ThumbFileIn) -> dict[str, Any]:
+    """Поставить готовое изображение (файл на этом компьютере) обложкой: новой или вместо существующей."""
+    src = Path(a.file_path)
+    if not src.is_file():
+        raise ToolError(f"Файл не найден: {src}")
+    with session_scope() as db:
+        p = ops.get_episode(db, a.episode_id)
+        t = ops.episode_track(p)
+        concepts = llm_tasks.thumbnail_files(dict(t.publish_meta or {}), list(t.thumbnails or []))
+        if a.index is not None and not 0 <= a.index < len(concepts):
+            raise ToolError(f"Нет обложки с индексом {a.index}")
+        try:
+            dest = make_thumbnail(src, track_dir(p.id, t.id, "thumbs") / unique_name("thumb_file", ".jpg"))
+        except Exception as exc:  # noqa: BLE001 – any decoder error means "not an image"
+            raise ToolError(f"Не удалось прочитать изображение: {exc}") from exc
+        old = None
+        if a.index is None:
+            concepts.append({"prompt": "", "title": a.title.strip(), "title_fixed": bool(a.title.strip()),
+                             "made_by": "file", "file": to_rel(dest)})
+            index = len(concepts) - 1
+        else:
+            index, old = a.index, concepts[a.index].get("file")
+            concepts[index]["file"] = to_rel(dest)
+        _save_concepts(t, concepts)
+        track_changed(t.id, "thumbnails")
+    _unlink([old])
+    return {"index": index, "image_path": str(dest)}
+
+
+class MarkIn(BaseModel):
+    episode_id: int
+    approved: bool | None = Field(None, description="Видео проверено (только для отрендеренного)")
+    published: bool | None = Field(None, description="Выложено на YouTube")
+
+
+@tool("mark_episode", "Отметить серию", MarkIn)
+def mark_episode(a: MarkIn) -> dict[str, Any]:
+    """Отметки на доске канала: «проверено» и «выложено»."""
+    with session_scope() as db:
+        p = ops.get_episode(db, a.episode_id)
+        t = ops.episode_track(p)
+        if a.approved and not t.video_file:
+            raise ToolError("Сначала отрендерите видео (render_episode)")
+        mark_track(t, a.approved, a.published)
+        track_changed(t.id, "status")
+        return {"approved": bool(t.approved_at), "published": bool(t.published_at)}
+
+
+# ===================================================================== settings
+SETTINGS_SECTIONS = ("voice", "scenes", "images", "llm", "render", "atmosphere", "subtitles", "chapters",
+                     "unique", "publish")
+
+
+class GetSettingsIn(BaseModel):
+    episode_id: int | None = Field(None, description="Настройки, с которыми работает эта серия")
+    series_id: int | None = Field(None, description="…или общие настройки сериала")
+    sections: list[str] = Field(default_factory=list, description=f"Разделы: {', '.join(SETTINGS_SECTIONS)} "
+                                                                  "(пусто — все)")
+
+
+@tool("get_settings", "Настройки производства", GetSettingsIn, read_only=True)
+def get_settings(a: GetSettingsIn) -> dict[str, Any]:
+    """Действующие настройки (канал + сериал + серия): картинки, рендер, субтитры, атмосфера, главы в видео, \
+упаковка (стиль обложек, футер описания…) — и что переопределено у сериала и у серии."""
+    with session_scope() as db:
+        if a.episode_id is not None:
+            p = ops.get_episode(db, a.episode_id)
+            series, own = p.series, dict(p.settings or {})
+            effective = effective_settings(p.channel.settings, p.settings).model_dump()
+        elif a.series_id is not None:
+            series, own = ops.get_series(db, a.series_id), None
+            channel = db.get(Channel, series.channel_id)
+            effective = effective_settings(channel.settings if channel else {},
+                                           ops.ep.episode_settings(series, {})).model_dump()
+        else:
+            raise ToolError("Нужен episode_id или series_id")
+        wanted = [s for s in a.sections if s in SETTINGS_SECTIONS] or list(SETTINGS_SECTIONS)
+        out: dict[str, Any] = {"effective": {k: effective[k] for k in wanted},
+                               "series_overrides": (series.options or {}).get("settings") or {}}
+        if own is not None:
+            out["episode_overrides"] = own
+        return out
+
+
+class UpdateSettingsIn(BaseModel):
+    episode_id: int | None = Field(None, description="Только для этой серии")
+    series_id: int | None = Field(None, description="…или для всего сериала: всех серий, и будущих тоже")
+    settings: dict[str, Any] = Field(description='Частичные настройки по разделам, напр. {"publish": '
+                                                 '{"thumbnail_style": "..."}, "subtitles": {"enabled": true}}')
+
+
+@tool("update_settings", "Изменить настройки", UpdateSettingsIn)
+def update_settings(a: UpdateSettingsIn) -> dict[str, Any]:
+    """Изменить настройки производства поверх настроек канала (сам канал не меняется). Переданные поля \
+заменяются, остальные остаются. Готовые картинки и видео сами не переделываются."""
+    unknown = [k for k in a.settings if k not in SETTINGS_SECTIONS]
+    if unknown:
+        raise ToolError(f"Неизвестные разделы: {', '.join(unknown)}. Есть: {', '.join(SETTINGS_SECTIONS)}")
+    with session_scope() as db:
+        if a.episode_id is not None:
+            p = ops.get_episode(db, a.episode_id)
+            return {"episode_overrides": ops.update_episode_settings(db, p, a.settings)}
+        if a.series_id is not None:
+            s = ops.get_series(db, a.series_id)
+            return {"series_overrides": ops.update_series_settings(db, s, a.settings)}
+    raise ToolError("Нужен episode_id или series_id")
+
+
+# ===================================================================== episode housekeeping
+class SceneFileIn(BaseModel):
+    scene_id: int
+    file_path: str = Field(description="Путь к изображению на этом компьютере")
+
+
+@tool("set_scene_image", "Своя картинка сцены", SceneFileIn)
+def set_scene_image(a: SceneFileIn) -> dict[str, Any]:
+    """Поставить своё изображение (файл на этом компьютере) картинкой сцены."""
+    src = Path(a.file_path)
+    if not src.is_file():
+        raise ToolError(f"Файл не найден: {src}")
+    with session_scope() as db:
+        s = db.get(Scene, a.scene_id)
+        if s is None or not s.track.project.series_id:
+            raise ToolError("Сцена не найдена")
+        try:
+            img = imread(src)
+        except Exception as exc:  # noqa: BLE001 – any decoder error means "not an image"
+            raise ToolError(f"Не удалось прочитать изображение: {exc}") from exc
+        dest = imwrite(track_dir(s.track.project_id, s.track_id, "images") / unique_name(f"scene_{s.id}", ".jpg"),
+                       img, quality=95)
+        old = s.image_file
+        s.image_file, s.image_status, s.image_error = to_rel(dest), "done", None
+        s.image_meta = {**(s.image_meta or {}), "uploaded": True, "filename": src.name}
+        s.source_scene_id = None  # a manual image overrides the shared one
+        track_changed(s.track_id, "images")
+    _unlink([old])
+    return {"scene_id": a.scene_id, "image_status": "done"}
+
+
+@tool("delete_episode", "Удалить серию", EpisodeIdIn, destructive=True)
+def delete_episode(a: EpisodeIdIn) -> dict[str, Any]:
+    """Удалить серию целиком: сценарий, озвучку, звуки, картинки, видео. Необратимо."""
+    with session_scope() as db:
+        ops.delete_episode(db, ops.get_episode(db, a.episode_id))
+    return {"deleted": a.episode_id}
+
+
+class FrameIn(BaseModel):
+    episode_id: int
+    t: float = Field(description="Секунда видео")
+    source: Literal["video", "preview"] = Field("video", description="Полный рендер или последнее превью "
+                                                                     "(время превью — от его начала)")
+    max_side: int = Field(1280, ge=256, le=1920)
+
+
+@tool("view_video_frame", "Кадр из видео", FrameIn, read_only=True)
+def view_video_frame(a: FrameIn) -> list[dict[str, Any]]:
+    """Показать кадр отрендеренного видео или превью: проверить субтитры, движение, переходы, карточки глав."""
+    with session_scope() as db:
+        p = ops.get_episode(db, a.episode_id)
+        t = ops.episode_track(p)
+        path = to_abs(t.video_file if a.source == "video" else t.preview_file)
+    if not path or not path.exists():
+        raise ToolError("Видео ещё нет — render_episode" + (" с preview=true" if a.source == "preview" else ""))
+    duration = probe_duration(path)
+    if not 0 <= a.t < duration:
+        raise ToolError(f"Видео длится {duration:.1f} с — укажите t от 0 до {max(0.0, duration - 0.1):.1f}")
+    try:
+        proc = run([ffmpeg_bin(), "-v", "error", "-ss", f"{a.t:.3f}", "-i", str(path), "-frames:v", "1",
+                    "-f", "image2pipe", "-vcodec", "png", "-"], timeout=60)
+    except RuntimeError as exc:
+        raise ToolError(f"Не удалось взять кадр: {exc}") from exc
+    img = cv2.imdecode(np.frombuffer(proc.stdout, dtype=np.uint8), cv2.IMREAD_COLOR) if proc.stdout else None
+    if img is None:
+        raise ToolError("Не удалось взять кадр в этот момент")
+    return _image_content(img, a.max_side, f"{a.source} @ {a.t:.1f} с")
 
 
 # ===================================================================== jobs

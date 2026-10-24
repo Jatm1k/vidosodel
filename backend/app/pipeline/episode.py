@@ -581,11 +581,13 @@ def visual_context(series: Series) -> str:
 
 
 def episode_settings(series: Series, current: dict[str, Any] | None) -> dict[str, Any]:
-    """Project overrides every episode needs: references on, the series style and language."""
+    """Project overrides every episode needs: the series settings (the episode's own win),
+    references on and the series style."""
     images: dict[str, Any] = {"character_refs": True}
     if series.visual_style.strip():
         images["style_prompt"] = series.visual_style.strip()
-    return deep_merge(dict(current or {}), {"images": images})
+    shared = (series.options or {}).get("settings") or {}
+    return deep_merge(deep_merge(dict(shared), current or {}), {"images": images})
 
 
 def sync_cast(db: Session, project: Project) -> dict[tuple[str, int], int]:

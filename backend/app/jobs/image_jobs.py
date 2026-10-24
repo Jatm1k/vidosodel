@@ -408,6 +408,30 @@ def job_status(job_id: int) -> str | None:
 
 
 # ------------------------------------------------------------------------ thumbnails
+def _cover_refs(cast: list[tuple[str, str, str | None, str]], operation: str) -> tuple[list[Any], str]:
+    """Reference inputs and their note for the characters and the place of a cover.
+
+    ``cast`` – ``(name, description, image, kind)``; entries without an image are skipped.
+    """
+    if not cast or not chars.accepts_refs(operation):
+        return [], ""
+    taken: set[str] = set()
+    inputs: list[Any] = []
+    people: list[tuple[str, str, str]] = []
+    places = ""
+    for name, desc, rel, kind in cast:
+        uri = image_data_uri(rel, 1024)
+        if not uri:
+            continue
+        file = chars.reference_name(name, taken)
+        inputs.append({"name": file, "input": uri})
+        if kind == "location":
+            places += chars.location_note(name, file, desc)
+        else:
+            people.append((name, file, desc))
+    return inputs[:chars.MAX_INPUTS], chars.reference_note(people) + places
+
+
 @register("thumbnails", "images_few", "Превью (обложки)")
 def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
     """Draw the thumbnails of the saved ideas; ``index`` redraws one idea (same idea, new render)."""
@@ -422,6 +446,8 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
             raise JobError("Сначала сгенерируйте метаданные — в них есть идеи для обложек.")
         pub, images, llm = tc.settings.publish, tc.settings.images, tc.settings.llm
         project_id, track_id = tc.project.id, tc.track.id
+        # character id → (name, description, image, kind): an idea may name who is on the cover
+        cast = {c.id: (c.name, c.description or "", c.image_file, c.kind) for c in tc.project.characters}
     todo = sorted({int(i) for i in only if 0 <= int(i) < len(concepts)}) if only is not None else list(range(len(concepts)))
     if not todo:
         raise JobError("Такой идеи уже нет")
@@ -443,8 +469,10 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
                 "upscale_2x": False,
             })
             prompt = llm_tasks.thumbnail_image_prompt(concept, pub, overlay=overlay or not headline)
-            path, _ = generate_one(fg, prompt, out_dir, f"thumb_src_{k}", thumb_images, llm, [], ctx,
-                                   operation=pub.thumbnail_operation)
+            inputs, note = _cover_refs([cast[i] for i in concept.get("cast") or [] if i in cast],
+                                       pub.thumbnail_operation)
+            path, _ = generate_one(fg, prompt, out_dir, f"thumb_src_{k}", thumb_images, llm, inputs, ctx,
+                                   operation=pub.thumbnail_operation, note=note)
             if overlay:
                 img = thumb_text.draw_headline(
                     imread(path), headline, side="right" if concept.get("side") == "left" else "left",

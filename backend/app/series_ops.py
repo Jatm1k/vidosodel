@@ -23,7 +23,7 @@ from .models import (
 from .pipeline import episode as ep
 from .pipeline.languages import LANGUAGES
 from .services.gemini_tts import VOICES
-from .settings_schema import effective_settings, template_for_language
+from .settings_schema import deep_merge, effective_settings, template_for_language
 from .storage import media_root, media_url, project_dir, to_abs
 
 BLOCK_KINDS = ("narration", "line", "pause")
@@ -248,11 +248,41 @@ def update_series(db: Session, s: Series, data: dict[str, Any]) -> Series:
         s.language = data["language"]
     if data.get("options") is not None:
         merged = {**(s.options or {}), **data["options"]}
-        s.options = ep.SeriesOptions.model_validate(merged).model_dump(exclude_defaults=True)
+        options = ep.SeriesOptions.model_validate(merged).model_dump(exclude_defaults=True)
+        if (s.options or {}).get("settings"):  # pipeline settings live next to the options
+            options["settings"] = s.options["settings"]
+        s.options = options
     db.flush()
     if any(data.get(k) is not None for k in ("setting", "visual_style", "language")):
         resync_episodes(db, s)
     return s
+
+
+def _check_settings(channel: Any, settings: dict[str, Any]) -> None:
+    try:
+        effective_settings(channel.settings if channel else {}, settings)
+    except ValueError as exc:  # pydantic ValidationError
+        raise OpError(f"Неверные настройки: {exc}") from exc
+
+
+def update_series_settings(db: Session, s: Series, patch: dict[str, Any]) -> dict[str, Any]:
+    """Merge pipeline settings into the series and every episode (the patch wins over episode overrides)."""
+    shared = deep_merge(dict((s.options or {}).get("settings") or {}), patch)
+    channel = db.get(Channel, s.channel_id)
+    _check_settings(channel, shared)
+    s.options = {**(s.options or {}), "settings": shared}
+    for p in _episodes(db, s.id):
+        p.settings = deep_merge(dict(p.settings or {}), patch)
+    db.flush()
+    return shared
+
+
+def update_episode_settings(db: Session, p: Project, patch: dict[str, Any]) -> dict[str, Any]:
+    merged = deep_merge(dict(p.settings or {}), patch)
+    _check_settings(p.channel, merged)
+    p.settings = merged
+    db.flush()
+    return merged
 
 
 def delete_series(db: Session, s: Series) -> None:

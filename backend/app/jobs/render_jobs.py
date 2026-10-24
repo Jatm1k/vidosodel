@@ -278,6 +278,7 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
         chapters_key = chapters_mod.cache_key(track.script, chapters)
         fixed = chapters_mod.cached(track.chapters, chapters_key)  # the video's chapter cards show these
         script, lang, llm, pub, track_id = track.script, track.language, tc.settings.llm, tc.settings.publish, track.id
+        script = _with_series_context(tc.project, script)
         old_meta = dict(track.publish_meta or {})
         old_files = list(track.thumbnails or [])
         project_name = tc.project.name
@@ -322,6 +323,19 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
                        f"идей обложек: {len(meta['thumbnails'])}"}
 
 
+def _with_series_context(project: Project, script: str) -> str:
+    """An episode's script headed by what the series is: packaging must sell an episode of a show."""
+    series = project.series
+    if series is None:
+        return script
+    head = [f"THIS IS EPISODE {project.episode_number} OF THE SERIES «{series.name}»: «{project.name}»."]
+    if (series.logline or "").strip():
+        head.append(f"THE SERIES: {series.logline.strip()}")
+    if (project.synopsis or "").strip():
+        head.append(f"THE EPISODE: {project.synopsis.strip()}")
+    return "\n".join(head) + "\n\nEPISODE SCRIPT:\n" + script
+
+
 def _channel_thumbnails(db: Session, project: Project, limit: int = 30) -> list[dict[str, Any]]:
     """Thumbnail ideas of the channel's other projects, newest first: a new video must not look like them."""
     metas = db.execute(
@@ -360,6 +374,7 @@ def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
             raise JobError("Нет сценария")
         concepts = llm_tasks.thumbnail_files(meta, list(track.thumbnails or []))
         script, lang, llm, pub, track_id = track.script, track.language, tc.settings.llm, tc.settings.publish, track.id
+        script = _with_series_context(tc.project, script)
         project_id, project_name = tc.project.id, tc.project.name
         channel_used = _channel_thumbnails(db, tc.project)
     if index is not None and not 0 <= int(index) < len(concepts):
