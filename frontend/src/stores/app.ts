@@ -11,6 +11,7 @@ export type AppEvent =
   | { type: 'job'; job: Partial<Job> & { id: number } }
   | { type: 'track'; track_id: number; what: string }
   | { type: 'scene'; track_id: number; scene: any }
+  | { type: 'series'; series_id: number | null; project_id: number | null; what: string }
 
 type Listener = (e: AppEvent) => void
 

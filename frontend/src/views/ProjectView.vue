@@ -284,7 +284,10 @@ const hasOverrides = computed(() => !!project.value && Object.keys(project.value
 <template>
   <div v-if="project" class="mx-auto max-w-[1400px] px-8 pb-16 pt-6">
     <!-- header -->
-    <RouterLink :to="`/channels/${project.channel.id}`" class="inline-flex items-center gap-2 text-[13px] text-ink-3 hover:text-ink">
+    <RouterLink v-if="project.series_id" :to="`/episodes/${project.id}`" class="inline-flex items-center gap-2 text-[13px] text-ink-3 hover:text-ink">
+      <i class="pi pi-arrow-left text-[11px]" />Серия {{ project.episode_number }}: сценарий и звук
+    </RouterLink>
+    <RouterLink v-else :to="`/channels/${project.channel.id}`" class="inline-flex items-center gap-2 text-[13px] text-ink-3 hover:text-ink">
       <span class="h-2 w-2 rounded-sm" :style="{ background: project.channel.color }" />{{ project.channel.name }}
     </RouterLink>
     <header class="mt-1 flex items-start gap-4">

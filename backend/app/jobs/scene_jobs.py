@@ -25,6 +25,10 @@ log = logging.getLogger(__name__)
 
 @register("scenes", "llm", "Разбивка на сцены")
 def scenes_job(ctx: JobContext) -> dict[str, Any]:
+    from .series_jobs import episode_scenes, is_episode_track  # noqa: PLC0415 – series_jobs imports voice → this module
+
+    if is_episode_track(ctx.track_id):
+        return episode_scenes(ctx)  # episode scenes follow the screenplay blocks
     mode_override = ctx.params.get("mode")
     with session_scope() as db:
         tc = load_track(db, ctx.track_id)

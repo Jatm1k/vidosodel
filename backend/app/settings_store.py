@@ -41,6 +41,12 @@ class AppConfig(BaseModel):
     llm_fallback_url: str = ""
     llm_fallback_api_key: str = ""
     llm_fallback_model: str = ""
+    #: Google AI Studio keys for Gemini TTS (character lines of series); used in turn.
+    gemini_api_keys: list[str] = []
+    #: Gemini TTS model id; empty – the newest TTS model the keys can use.
+    gemini_tts_model: str = ""
+    #: Requests per key per day (free tier); the counter resets at midnight Pacific time.
+    gemini_tts_daily_limit: int = 20
 
 
 _SECRET_KEYS = ("lumean_api_key", "fastgen_api_key", "llm_fallback_api_key")
@@ -66,6 +72,8 @@ def save_config(patch: dict[str, Any]) -> AppConfig:
                 continue
             if key in _SECRET_KEYS and isinstance(value, str) and "•" in value:
                 continue  # the UI sent back the masked placeholder – keep the stored key
+            if key == "gemini_api_keys":
+                value = _merge_masked(value, load_config().gemini_api_keys)
             row = db.get(AppSetting, key)
             if row is None:
                 db.add(AppSetting(key=key, value=value))
@@ -80,9 +88,22 @@ def mask_secret(value: str) -> str:
     return value[:4] + "•" * 8 + value[-4:] if len(value) > 10 else "•" * 8
 
 
+def _merge_masked(value: Any, stored: list[str]) -> list[str]:
+    """Key list from the UI: a masked entry stands for the stored key it masks."""
+    by_mask = {mask_secret(k): k for k in stored}
+    out = []
+    for item in value if isinstance(value, list) else []:
+        item = str(item).strip()
+        item = by_mask.get(item, "") if "•" in item else item
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
 def public_config() -> dict[str, Any]:
     """Config safe to send to the browser (secrets masked)."""
     cfg = load_config().model_dump()
     for key in _SECRET_KEYS:
         cfg[key] = mask_secret(cfg[key])
+    cfg["gemini_api_keys"] = [mask_secret(k) for k in cfg["gemini_api_keys"]]
     return cfg

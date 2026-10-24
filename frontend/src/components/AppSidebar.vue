@@ -39,6 +39,7 @@ function resetLabel(resetAt?: number) {
 }
 
 function isActive(path: string) {
+  if (path === '/series' && route.path.startsWith('/episodes')) return true
   return route.path === path || (path !== '/' && route.path.startsWith(path))
 }
 
@@ -72,6 +73,7 @@ async function createChannel() {
       <RouterLink
         v-for="item in [
           { to: '/', icon: 'pi-home', label: 'Обзор' },
+          { to: '/series', icon: 'pi-clone', label: 'Сериалы' },
           { to: '/jobs', icon: 'pi-list-check', label: 'Очередь задач' },
           { to: '/settings', icon: 'pi-cog', label: 'Настройки' },
         ]"

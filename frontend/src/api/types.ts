@@ -155,6 +155,9 @@ export interface ProjectSummary {
   updated_at: string
   languages: string[]
   cover_url: string | null
+  /** Set for an episode of a series. */
+  series_id?: number | null
+  episode_number?: number | null
   progress: ProjectProgress
   status: ProductionStatus
   tracks_status: TrackStatus[]
@@ -279,7 +282,7 @@ export interface LimiterStatus {
 
 export interface SystemStatus {
   ffmpeg: string | null
-  keys: { lumean: boolean; fastgen: boolean }
+  keys: { lumean: boolean; fastgen: boolean; gemini?: boolean }
   fastgen: LimiterStatus | null
   /** LLM tokens per hour (prompt + completion), shared by every app on the key. */
   llm: Omit<LimiterStatus, 'active' | 'threads'> | null
@@ -303,6 +306,10 @@ export interface AppConfig {
   llm_fallback_url: string
   llm_fallback_api_key: string
   llm_fallback_model: string
+  /** Google AI Studio keys for Gemini TTS (masked when read). */
+  gemini_api_keys: string[]
+  gemini_tts_model: string
+  gemini_tts_daily_limit: number
 }
 
 export type CleanupKind = 'published_videos' | 'depth' | 'previews' | 'work' | 'orphans'
@@ -362,6 +369,160 @@ export interface Character {
   image_url: string | null
   image_status: 'none' | 'generating' | 'done' | 'failed'
   image_error: string | null
-  /** generated | upload */
+  /** generated | upload | series */
   image_origin: string | null
+  /** character | location (series episodes) */
+  kind?: string
+}
+
+// ------------------------------------------------------------------ series
+export interface SeriesVoice {
+  provider: 'gemini' | 'lumean'
+  voice: string
+  style: string
+  template_id: string
+}
+
+export interface SeriesRef {
+  id: number
+  name: string
+  description: string
+  position: number
+  image_url: string | null
+  image_path: string | null
+  image_status: 'none' | 'generating' | 'done' | 'failed'
+  image_error: string | null
+  image_origin: string | null
+}
+
+export interface SeriesCharacter extends SeriesRef {
+  role: string
+  personality: string
+  voice: SeriesVoice
+}
+
+export interface SeriesOptions {
+  narrator_template_id: string
+  narrator_speed: number | null
+  gap: number
+  line_gap: number
+  lead_in: number
+  tail: number
+  music_volume: number
+  ambience_volume: number
+  sfx_volume: number
+  duck_db: number
+  line_style: string
+  speaker_names_in_subtitles: boolean
+}
+
+export interface EpisodeSummary {
+  id: number
+  series_id: number
+  number: number | null
+  title: string
+  synopsis: string
+  summary: string
+  track_id: number
+  blocks: number
+  voiced: number
+  to_voice: number
+  cues: number
+  cues_ready: number
+  assembled: boolean
+  duration: number | null
+  scenes: number
+  images: number
+  video_url: string | null
+  updated_at: string
+}
+
+export interface SeriesSummary {
+  id: number
+  channel_id: number
+  name: string
+  language: string
+  logline: string
+  updated_at: string
+  episodes_count: number
+  cover_url: string | null
+}
+
+export interface SeriesDetail extends SeriesSummary {
+  setting: string
+  bible: string
+  visual_style: string
+  options: SeriesOptions
+  narrator_template_id: string | null
+  characters: SeriesCharacter[]
+  locations: SeriesRef[]
+  episodes: EpisodeSummary[]
+}
+
+export type BlockKind = 'narration' | 'line' | 'pause'
+export type MediaStatus = 'none' | 'queued' | 'generating' | 'done' | 'failed'
+
+export interface EpisodeBlock {
+  id: number
+  position: number
+  kind: BlockKind
+  character_id: number | null
+  character: string | null
+  text: string
+  direction: string
+  location_id: number | null
+  location: string | null
+  visible: string[]
+  gap_after: number | null
+  pause: number
+  shots: number | null
+  visual: string
+  audio_url: string | null
+  audio_duration: number | null
+  audio_status: MediaStatus
+  audio_error: string | null
+  audio_stale: boolean
+  audio_provider: string | null
+  audio_warning: string | null
+  start: number | null
+  end: number | null
+}
+
+export type CueKind = 'music' | 'ambience' | 'sfx'
+
+export interface SoundCue {
+  id: number
+  kind: CueKind
+  prompt: string
+  start_block_id: number | null
+  anchor: 'start' | 'end'
+  offset: number
+  end_block_id: number | null
+  duration: number | null
+  volume: number
+  fade_in: number
+  fade_out: number
+  audio_url: string | null
+  audio_duration: number | null
+  audio_status: MediaStatus
+  audio_error: string | null
+  window: [number, number] | null
+}
+
+export interface EpisodeDetail extends Omit<EpisodeSummary, 'blocks' | 'cues'> {
+  blocks: EpisodeBlock[]
+  cues: SoundCue[]
+  estimated_duration: number
+  timeline_estimated: boolean
+  audio_url: string | null
+  jobs: { id: number; kind: string; title: string; status: string; progress: number; message: string }[]
+}
+
+export interface GeminiStatus {
+  day: string
+  limit: number
+  keys: { key: string; id: string; used: number; left: number; exhausted: boolean }[]
+  left: number
+  resets_at: number
+  model: string | null
 }

@@ -175,8 +175,32 @@ class LumeanClient:
                 raise
         raise ApiError("Lumean", 0, "не удалось создать заказ")
 
-    def find_order_by_name(self, name: str) -> dict[str, Any] | None:
-        data = self._req("GET", "/orders", params={"per_page": 20, "task_type": "tts"})
+    def create_sound_order(self, task_type: str, task_data: dict[str, Any], name: str) -> dict[str, Any]:
+        """Create a template-less ``sfx`` or ``music`` order (one-shot: no item retry/regenerate).
+
+        Like :meth:`create_tts_order`, a lost answer is resolved by looking the order up by name.
+        """
+        body = {"task_type": task_type, "task_data": task_data, "name": name}
+        for attempt in range(6):
+            try:
+                return self._req("POST", "/orders", json=body, attempts=1, retry_429=False)
+            except ApiError as exc:
+                if exc.status == 0:
+                    found = self.find_order_by_name(name, task_type)
+                    if found:
+                        return found
+                    if attempt < 5:
+                        time.sleep(5)
+                        continue
+                if exc.status == 429 and exc.reason in {"rate_limit_exceeded", "concurrency_limit_exceeded",
+                                                       "policy_cooldown_active"} and attempt < 5:
+                    time.sleep(min(float((exc.body or {}).get("retry_after") or 30), 300))
+                    continue
+                raise
+        raise ApiError("Lumean", 0, "не удалось создать заказ")
+
+    def find_order_by_name(self, name: str, task_type: str = "tts") -> dict[str, Any] | None:
+        data = self._req("GET", "/orders", params={"per_page": 20, "task_type": task_type})
         return next((o for o in data.get("items", []) if o.get("name") == name), None)
 
     def order(self, order_id: str) -> dict[str, Any]:

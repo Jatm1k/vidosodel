@@ -26,7 +26,7 @@ def character_to_dict(c: Character) -> dict[str, Any]:
     return {
         "id": c.id, "name": c.name, "description": c.description, "position": c.position,
         "image_url": media_url(c.image_file), "image_status": c.image_status,
-        "image_error": c.image_error, "image_origin": c.image_origin,
+        "image_error": c.image_error, "image_origin": c.image_origin, "kind": c.kind,
     }
 
 

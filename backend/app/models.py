@@ -4,7 +4,9 @@ Domain hierarchy::
 
     Channel ─┬─ Project ─┬─ Track (one per language) ─── Scene
              │           └─ ...
-             └─ ...
+             └─ Series ─┬─ SeriesCharacter, SeriesLocation
+                        └─ Project (an episode) ─┬─ EpisodeBlock (screenplay)
+                                                 └─ SoundCue (music, sfx)
 
 * **Channel** – a YouTube channel preset: voices, visual style, render look.
 * **Project** – one video idea; produces one video per language track.
@@ -12,6 +14,11 @@ Domain hierarchy::
   scenes → images → video. Every stage can be produced by the pipeline *or*
   supplied manually (uploaded audio, SRT, images...).
 * **Scene** – a time span of the track illustrated by one image.
+* **Series** – a serial: a world, recurring characters and places shared by its
+  episodes. An episode is an ordinary project with ``series_id``: its voice-over
+  is assembled from the screenplay blocks (narrator via Lumean, character lines
+  via Gemini TTS) and mixed with music and sound effects; scenes, images and the
+  render are the usual pipeline (see :mod:`app.pipeline.episode`).
 
 All media paths are stored *relative* to ``settings.media_dir`` using forward
 slashes, so the data folder can be moved between machines.
@@ -68,7 +75,18 @@ class Project(TimestampMixin, Base):
     #: When the script was last scanned for recurring characters (None – never).
     characters_scanned_at: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # --- series episode (all empty for an ordinary video) ---------------------
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    episode_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: What happens in the episode (the plan the screenplay is written from).
+    synopsis: Mapped[str] = mapped_column(Text, default="")
+    #: What actually happened – the series memory read when writing the next episodes.
+    episode_summary: Mapped[str] = mapped_column(Text, default="")
+
     channel: Mapped[Channel] = relationship(back_populates="projects")
+    series: Mapped[Series | None] = relationship(viewonly=True)
     tracks: Mapped[list[Track]] = relationship(
         back_populates="project", cascade="all, delete-orphan", passive_deletes=True,
         order_by="Track.position",
@@ -76,6 +94,14 @@ class Project(TimestampMixin, Base):
     characters: Mapped[list[Character]] = relationship(
         back_populates="project", cascade="all, delete-orphan", passive_deletes=True,
         order_by="Character.position",
+    )
+    blocks: Mapped[list[EpisodeBlock]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", passive_deletes=True,
+        order_by="EpisodeBlock.position",
+    )
+    sound_cues: Mapped[list[SoundCue]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", passive_deletes=True,
+        order_by="SoundCue.id",
     )
 
 
@@ -99,8 +125,13 @@ class Character(TimestampMixin, Base):
     #: none | generating | done | failed
     image_status: Mapped[str] = mapped_column(String(20), default="none")
     image_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    #: ``generated`` or ``upload`` (an own photo/drawing is never replaced automatically).
+    #: ``generated``, ``upload`` (an own photo/drawing is never replaced automatically) or
+    #: ``series`` (a copy of a series character/location, kept in sync by the series).
     image_origin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    #: ``character`` or ``location`` (a place of a series, sent as a reference too).
+    kind: Mapped[str] = mapped_column(String(20), default="character")
+    #: Id of the series character/location this row mirrors (``kind`` tells which table).
+    series_ref_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="characters")
 
@@ -195,6 +226,182 @@ class Scene(Base):
 
     track: Mapped[Track] = relationship(back_populates="scenes", foreign_keys=[track_id])
     source_scene: Mapped[Scene | None] = relationship(remote_side=[id], foreign_keys=[source_scene_id])
+
+
+class Series(TimestampMixin, Base):
+    """A serial: its world and story bible, shared by every episode."""
+
+    __tablename__ = "series"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: Episodes are projects of this channel and inherit its settings (style, render, voice).
+    channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(300))
+    language: Mapped[str] = mapped_column(String(10), default="ru")
+    #: One or two sentences: what the series is about.
+    logline: Mapped[str] = mapped_column(Text, default="")
+    #: The world: place, era, rules, atmosphere.
+    setting: Mapped[str] = mapped_column(Text, default="")
+    #: Story bible: tone, themes, arcs, rules the story must keep.
+    bible: Mapped[str] = mapped_column(Text, default="")
+    #: Visual style of the images in English (replaces the channel style when set).
+    visual_style: Mapped[str] = mapped_column(Text, default="")
+    #: Narrator, sound levels, pauses (see :class:`app.pipeline.episode.SeriesOptions`).
+    options: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    characters: Mapped[list[SeriesCharacter]] = relationship(
+        back_populates="series", cascade="all, delete-orphan", passive_deletes=True,
+        order_by="SeriesCharacter.position",
+    )
+    locations: Mapped[list[SeriesLocation]] = relationship(
+        back_populates="series", cascade="all, delete-orphan", passive_deletes=True,
+        order_by="SeriesLocation.position",
+    )
+    episodes: Mapped[list[Project]] = relationship(order_by="Project.episode_number", viewonly=True)
+
+
+class _SeriesRef:
+    """Columns shared by series characters and locations: a description and a reference image."""
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    name: Mapped[str] = mapped_column(String(100))
+    #: Fixed appearance in English – repeated in every image prompt.
+    description: Mapped[str] = mapped_column(Text, default="")
+    image_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    #: none | generating | done | failed
+    image_status: Mapped[str] = mapped_column(String(20), default="none")
+    image_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: ``generated`` or ``upload``.
+    image_origin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+
+class SeriesCharacter(_SeriesRef, TimestampMixin, Base):
+    __tablename__ = "series_characters"
+
+    series_id: Mapped[int] = mapped_column(ForeignKey("series.id", ondelete="CASCADE"), index=True)
+    #: Role in the story ("главная героиня, следователь").
+    role: Mapped[str] = mapped_column(Text, default="")
+    #: Character, manner of speech, motives – for writing lines.
+    personality: Mapped[str] = mapped_column(Text, default="")
+    #: Voice of the lines: ``{"provider": "gemini"|"lumean", "voice": "Kore", "style": "...",
+    #: "template_id": "<Lumean template>"}`` (see :mod:`app.pipeline.episode`).
+    voice: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    series: Mapped[Series] = relationship(back_populates="characters")
+
+
+class SeriesLocation(_SeriesRef, TimestampMixin, Base):
+    __tablename__ = "series_locations"
+
+    series_id: Mapped[int] = mapped_column(ForeignKey("series.id", ondelete="CASCADE"), index=True)
+
+    series: Mapped[Series] = relationship(back_populates="locations")
+
+
+class EpisodeBlock(Base):
+    """One piece of an episode screenplay, voiced as one audio clip.
+
+    ``narration`` – the narrator (Lumean); ``line`` – a character's line (Gemini TTS or
+    the character's Lumean voice); ``pause`` – silence of ``pause`` seconds.
+    """
+
+    __tablename__ = "episode_blocks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(20), default="narration")
+    character_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series_characters.id", ondelete="SET NULL"), nullable=True
+    )
+    text: Mapped[str] = mapped_column(Text, default="")
+    #: How a line is said ("шёпотом, испуганно") – sent to the TTS as a delivery note.
+    direction: Mapped[str] = mapped_column(Text, default="")
+    #: Where the block happens (images use the location reference).
+    location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series_locations.id", ondelete="SET NULL"), nullable=True
+    )
+    #: Other characters visible during the block (series character ids).
+    visible: Mapped[list[int]] = mapped_column(JSON, default=list)
+    #: Silence after the block, seconds (``None`` – the series default).
+    gap_after: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Length of a ``pause`` block, seconds.
+    pause: Mapped[float] = mapped_column(Float, default=1.0)
+    #: How many images (scenes) the block gets; ``None`` – by duration.
+    shots: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: What to show, in English – the prompt of the block's scenes until they get their own.
+    visual: Mapped[str] = mapped_column(Text, default="")
+
+    audio_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    audio_duration: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Hash of what was voiced (text, direction, voice) – a changed block is voiced again.
+    audio_hash: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: none | queued | generating | done | failed
+    audio_status: Mapped[str] = mapped_column(String(20), default="none")
+    audio_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Provider, voice, word timings of the clip (``words``), cost…
+    audio_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    project: Mapped[Project] = relationship(back_populates="blocks")
+
+
+class SoundCue(Base):
+    """Music or a sound effect of an episode, placed relative to screenplay blocks."""
+
+    __tablename__ = "sound_cues"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    #: ``music`` (a bed under several blocks, ducked under speech), ``ambience`` (a looped
+    #: background like rain) or ``sfx`` (a single sound at a moment).
+    kind: Mapped[str] = mapped_column(String(20), default="sfx")
+    #: Generation prompt in English.
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    #: Starts at this block (``None`` – the episode start) plus ``offset`` seconds.
+    start_block_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episode_blocks.id", ondelete="SET NULL"), nullable=True
+    )
+    #: ``start`` or ``end`` of the start block.
+    anchor: Mapped[str] = mapped_column(String(10), default="start")
+    offset: Mapped[float] = mapped_column(Float, default=0.0)
+    #: Music/ambience lasts until the end of this block (``None`` – the episode end).
+    end_block_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episode_blocks.id", ondelete="SET NULL"), nullable=True
+    )
+    #: Length of an sfx in seconds (``None`` – as generated).
+    duration: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Loudness relative to the series default for this kind, dB.
+    volume: Mapped[float] = mapped_column(Float, default=0.0)
+    fade_in: Mapped[float] = mapped_column(Float, default=1.0)
+    fade_out: Mapped[float] = mapped_column(Float, default=1.5)
+
+    audio_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    audio_duration: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Hash of the generation request – a changed prompt/length is generated again.
+    audio_hash: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: none | queued | generating | done | failed
+    audio_status: Mapped[str] = mapped_column(String(20), default="none")
+    audio_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audio_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    project: Mapped[Project] = relationship(back_populates="sound_cues")
+
+
+class TtsUsage(Base):
+    """Requests made with each Gemini API key (free keys have a daily request limit)."""
+
+    __tablename__ = "tts_usage"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[float] = mapped_column(Float, index=True)
+    #: Short hash of the key (keys themselves are never stored here).
+    key_id: Mapped[str] = mapped_column(String(16), index=True)
+    #: Quota day of the request (Google resets daily limits at midnight Pacific time).
+    day: Mapped[str] = mapped_column(String(10), index=True)
+    #: ``ok`` – a counted request; ``exhausted`` – the server said the key is over its limit.
+    status: Mapped[str] = mapped_column(String(20), default="ok")
+    chars: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Job(Base):

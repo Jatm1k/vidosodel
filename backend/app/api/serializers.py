@@ -18,7 +18,8 @@ from .characters import character_to_dict
 
 
 def channel_to_dict(db: Session, ch: Channel) -> dict[str, Any]:
-    projects = db.scalar(select(func.count(Project.id)).where(Project.channel_id == ch.id)) or 0
+    projects = db.scalar(select(func.count(Project.id)).where(Project.channel_id == ch.id,
+                                                            Project.series_id.is_(None))) or 0
     return {
         "id": ch.id, "name": ch.name, "description": ch.description, "color": ch.color,
         "settings": ch.settings or {}, "projects_count": projects,
@@ -138,6 +139,7 @@ def project_to_dict(db: Session, project: Project, *, full: bool = False) -> dic
         "image_mode": project.image_mode, "master_track_id": project.master_track_id,
         "created_at": project.created_at.isoformat(), "updated_at": project.updated_at.isoformat(),
         "languages": [t.language for t in project.tracks],
+        "series_id": project.series_id, "episode_number": project.episode_number,
     }
     cover = db.scalar(
         select(Scene.image_file).join(Track, Track.id == Scene.track_id)

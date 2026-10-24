@@ -84,6 +84,10 @@ def voice_config_override(language: str, speed: float | None, paragraph_mode: bo
 
 @register("voice", "voice", "Озвучка (Lumean)")
 def voice_job(ctx: JobContext) -> dict[str, Any]:
+    from .series_jobs import is_episode_track, voice_and_assemble  # noqa: PLC0415 – series_jobs imports this module
+
+    if is_episode_track(ctx.track_id):
+        return voice_and_assemble(ctx)  # an episode is voiced block by block and assembled
     with session_scope() as db:
         tc = load_track(db, ctx.track_id)
         track = tc.track

@@ -72,6 +72,8 @@ def ensure_portraits(project_id: int, ctx: JobContext, *, only: set[int] | None 
     """Draw missing portraits (or the ``only`` ones when ``force``). Returns ``(done, failed)``."""
     def wanted(c: Character) -> bool:
         missing = not c.image_file or c.image_status == "failed"
+        if c.image_origin == "series":
+            return False  # drawn on the series page, shared by every episode
         if only is not None:
             return c.id in only and (force or missing)
         return missing and c.image_origin != "upload"

@@ -103,8 +103,11 @@ class ProjectPatch(BaseModel):
 
 
 @router.get("/projects")
-def list_projects(channel_id: int | None = None, limit: int = 200, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+def list_projects(channel_id: int | None = None, limit: int = 200, episodes: bool = False,
+                  db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     q = select(Project).order_by(Project.updated_at.desc()).limit(limit)
+    if not episodes:
+        q = q.where(Project.series_id.is_(None))  # series episodes live on the series page
     if channel_id:
         q = q.where(Project.channel_id == channel_id)
     return [project_to_dict(db, p) for p in db.scalars(q)]

@@ -170,8 +170,8 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
     submitted: set[int] = set()
     # scene id → characters in it (only when the scene's model can take reference images)
     scene_cast: dict[int, list[int]] = {}
-    # character id → (name, file name of the input, description, image data URI)
-    portraits: dict[int, tuple[str, str, str, str]] = {}
+    # character id → (name, file name of the input, description, image data URI, kind)
+    portraits: dict[int, tuple[str, str, str, str, str]] = {}
     # scene id → (id of the scene whose image it continues, what changes)
     follows: dict[int, tuple[int, str]] = {}
     # scenes of this job that are finished (drawn, failed or stopped): their followers may start
@@ -211,7 +211,8 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             with session_scope() as db:
                 for c in db.query(Character).filter(Character.project_id == project_id):
                     if c.image_file and (uri := image_data_uri(c.image_file, 1024)):
-                        portraits[c.id] = (c.name, chars.reference_name(c.name, taken), c.description or "", uri)
+                        portraits[c.id] = (c.name, chars.reference_name(c.name, taken), c.description or "", uri,
+                                           c.kind)
         if not refs:
             refs = reference_inputs(images, {op for _, _, op in batch})
         for _, _, op in batch:
@@ -251,10 +252,15 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
         cast_here = [portraits[c] for c in scene_cast.get(scene_id, []) if c in portraits]
         if not cast_here and not base:
             return refs, "", None
+        people = [p for p in cast_here if p[4] != "location"]
+        # Continuing the previous frame already keeps the place: its reference is not needed then.
+        places = [p for p in cast_here if p[4] == "location"] if not base else []
         inputs: list[Any] = [{"name": chars.PREVIOUS_FRAME, "input": base}] if base else []
-        inputs += [{"name": file, "input": uri} for _, file, _, uri in cast_here]
+        inputs += [{"name": file, "input": uri} for _, file, _, uri, _ in people + places]
         note = chars.continuity_note(follows[scene_id][1]) if base else ""
-        note += chars.reference_note([(name, file, desc) for name, file, desc, _ in cast_here])
+        note += chars.reference_note([(name, file, desc) for name, file, desc, _, _ in people])
+        for name, file, desc, _, _ in places:
+            note += chars.location_note(name, file, desc)
         if not base:
             inputs += [{"name": f"style_reference_{i + 1}.jpg", "input": uri} for i, uri in enumerate(refs)]
             if refs:

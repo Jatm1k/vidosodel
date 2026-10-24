@@ -13,6 +13,7 @@ from ..render.media import available_encoders, ffmpeg_version
 from ..render.motion import EFFECT_LABELS, EFFECTS
 from ..render.transitions import DYNAMIC, TRANSITION_LABELS, TRANSITIONS
 from ..services.fastgen import IMAGE_OPERATIONS, FastgenClient
+from ..services.gemini_tts import GeminiTts
 from ..services.http import ApiError
 from ..services.limiter import limiter, token_limiter
 from ..services.llm_fallback import BackupLlm, backup_usage
@@ -48,7 +49,8 @@ def status() -> dict[str, Any]:
     cfg = load_config()
     return {
         "ffmpeg": ffmpeg_version(),
-        "keys": {"lumean": bool(cfg.lumean_api_key), "fastgen": bool(cfg.fastgen_api_key)},
+        "keys": {"lumean": bool(cfg.lumean_api_key), "fastgen": bool(cfg.fastgen_api_key),
+                 "gemini": bool(cfg.gemini_api_keys)},
         "fastgen": limiter.status() if cfg.fastgen_api_key else None,
         "llm": token_limiter.status() if cfg.fastgen_api_key else None,
         "llm_fallback": backup_usage.status(),
@@ -116,6 +118,22 @@ def check_key(body: KeyCheck) -> dict[str, Any]:
         if body.service == "lumean":
             with LumeanClient() as lm:
                 lm.user()
+        elif body.service == "gemini":
+            cfg = load_config()
+            if not cfg.gemini_api_keys:
+                return {"ok": False, "error": "добавьте хотя бы один ключ"}
+            results, models = [], []
+            with GeminiTts() as g:
+                for key in cfg.gemini_api_keys:
+                    try:
+                        models = g.tts_models(key) or models
+                        results.append(f"{key[:4]}…{key[-4:]}: ок")
+                    except ApiError as exc:
+                        results.append(f"{key[:4]}…{key[-4:]}: {exc.message[:120]}")
+            ok = any(r.endswith(": ок") for r in results)
+            if ok and not models:
+                return {"ok": False, "error": "ключи работают, но ни одна TTS-модель Gemini им недоступна"}
+            return {"ok": ok, "error": None if ok else "; ".join(results), "details": results, "models": models}
         elif body.service == "llm_fallback":
             cfg = load_config()
             if not (cfg.llm_fallback_url.strip() and cfg.llm_fallback_model.strip()):

@@ -44,26 +44,33 @@ def mentioned(prompt: str, characters: Sequence[Character]) -> list[int]:
 
 
 def scene_character_ids(scene: Scene, characters: Sequence[Character]) -> list[int]:
-    """Characters visible in the scene (assigned list, or names found in the prompt)."""
-    known = {c.id for c in characters}
+    """Characters visible in the scene (assigned list, or names found in the prompt).
+
+    At most :data:`MAX_PER_SCENE` people plus one location (series episodes).
+    """
+    known = {c.id: c for c in characters}
     if scene.characters is not None:
         ids = [i for i in scene.characters if i in known]
     else:
         ids = mentioned(scene.prompt or "", characters)
-    return ids[:MAX_PER_SCENE]
+    people = [i for i in ids if known[i].kind != "location"][:MAX_PER_SCENE]
+    places = [i for i in ids if known[i].kind == "location"][:1]
+    return people + places
 
 
 def ids_from_names(names: Sequence[str] | None, characters: Sequence[Character]) -> list[int] | None:
     """Map names returned by the LLM to character ids (case-insensitive)."""
     if names is None:
         return None
-    by_name = {c.name.strip().lower(): c.id for c in characters}
-    ids = []
+    by_name = {c.name.strip().lower(): c for c in characters}
+    people: list[int] = []
+    places: list[int] = []
     for n in names:
-        cid = by_name.get(str(n).strip().lower())
-        if cid and cid not in ids:
-            ids.append(cid)
-    return ids[:MAX_PER_SCENE]
+        c = by_name.get(str(n).strip().lower())
+        group = places if c is not None and c.kind == "location" else people
+        if c is not None and c.id not in group:
+            group.append(c.id)
+    return people[:MAX_PER_SCENE] + places[:1]
 
 
 def continued_from(scene: Scene, scenes: Sequence[Scene]) -> Scene | None:
@@ -101,6 +108,14 @@ def reference_name(name: str, taken: set[str]) -> str:
         out, n = f"{base}_{n}.jpg", n + 1
     taken.add(out.lower())
     return out
+
+
+def location_note(name: str, file: str, description: str) -> str:
+    """Tells the model which reference file shows the place of the scene."""
+    desc = f" ({' '.join(description.split())[:300]})" if description.strip() else ""
+    return (f"Location of this image: {name} = {file}{desc}. Keep this place recognisable – the same "
+            "architecture, layout, materials and landmarks – but choose the camera angle and framing the "
+            "description asks for; the people of the reference image (if any) are not part of the place. ")
 
 
 def reference_note(cast: Sequence[tuple[str, str, str]]) -> str:
