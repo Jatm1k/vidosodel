@@ -8,12 +8,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db
 from ..jobs.common import scene_image
 from ..jobs.events import track_changed
+from ..jobs.runner import runner
 from ..models import Track
 from ..motion import store
 from ..motion.node import MotionUnavailable, run_cli
@@ -106,6 +108,43 @@ def delete_item(track_id: int, item_id: str, db: Session = Depends(get_db)) -> d
     if gone.get("kind") == "scene":
         need = sum(1 for sc in t.scenes if sc.idx in gone["slots"] and not scene_image(sc))
     return {"ok": True, "pictures_needed": need}
+
+
+class ToPicture(BaseModel):
+    scene_ids: list[int]
+
+
+@router.post("/tracks/{track_id}/motion/to-picture")
+def to_picture(track_id: int, body: ToPicture, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Scenes back to pictures: the motion scenes covering them are removed (all their slots), then a prompt and a
+    picture are made for every such scene that has none."""
+    t = _track(db, track_id)
+    if t.project.image_mode == "shared" and t.project.master_track_id not in (None, t.id):
+        raise HTTPException(400, "Картинки этого языка берутся из основного — верните картинку там")
+    idxs = {sc.idx for sc in t.scenes if sc.id in set(body.scene_ids)}
+    mo = json.loads(json.dumps(t.motion or {}))
+    slots: set[int] = set(idxs)
+    keep = []
+    for it in store.items(mo):
+        if it.get("kind") == "scene" and set(it.get("slots") or []) & idxs:
+            slots |= set(it["slots"])
+        else:
+            keep.append(it)
+    mo["items"] = keep
+    mo["plan_slots"] = [i for i in mo.get("plan_slots") or [] if i not in slots]
+    t.motion = mo
+    need = [sc for sc in t.scenes if sc.idx in slots and not scene_image(sc)]
+    db.commit()
+    track_changed(track_id, "motion")
+    job_ids = []
+    if need:
+        ids = [sc.id for sc in need]
+        no_prompt = [sc.id for sc in need if not sc.prompt.strip()]
+        prompts = runner.enqueue("prompts", project_id=t.project_id, track_id=t.id, params={"scene_ids": no_prompt}) if no_prompt else None
+        images = runner.enqueue("images", project_id=t.project_id, track_id=t.id, params={"scene_ids": ids},
+                                depends_on=prompts.id if prompts else None)
+        job_ids = [j.id for j in (prompts, images) if j]
+    return {"ok": True, "scenes": len(slots), "jobs": job_ids}
 
 
 @router.delete("/tracks/{track_id}/motion")

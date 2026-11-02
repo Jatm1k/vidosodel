@@ -300,17 +300,17 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
                     halt["on"] = True
             done_parts["n"] += 1
             report()
-    m = _finish(track_id, scenes)
+    m, dropped = _finish(track_id, scenes)
     track_changed(track_id, "motion")
     if ctx.should_stop() and not errors:
         raise JobCancelled()
     written = len(store.items(m))
-    missing_pictures = _pictures_needed(ctx, track_id, m)
+    missing_pictures = _pictures_needed(track_id, dropped)
     tokens = f"токены: вход {usage['in'] + usage['cache_write']:,}, кэш {usage['cache_read']:,}, выход {usage['out']:,}".replace(",", " ")
     if errors and not written:
         raise JobError("; ".join(errors)[:900])
     msg = (f"Моушн-сцен: {len(store.scene_items(m))}, оверлеев: {len(store.overlay_items(m))} · {tokens}"
-           + (f" · картинок дорисовать: {missing_pictures}" if missing_pictures else ""))
+           + (f" · сцен вернулось к картинкам: {missing_pictures}" if missing_pictures else ""))
     if errors:
         msg += " · ошибки: " + "; ".join(errors)[:400]
     return {"message": msg, "usage": usage}
@@ -336,28 +336,38 @@ def _part_planned(m: dict[str, Any], token: str) -> None:
         m["planning"] = False
 
 
-def _finish(track_id: int, scenes: list[Any]) -> dict[str, Any]:
-    """Planned scenes nobody wrote go back to pictures; the plan is over."""
+def _finish(track_id: int, scenes: list[Any]) -> tuple[dict[str, Any], set[int]]:
+    """Planned scenes nobody wrote go back to pictures; the plan is over. Returns the motion and those scenes."""
+    dropped: set[int] = set()
+
     def apply(m: dict[str, Any]) -> None:
         written = {i for it in store.scene_items(m) for i in it["slots"]}
-        m["plan_slots"] = sorted(i for i in m.get("plan_slots") or [] if i in written)
+        planned = {int(i) for i in m.get("plan_slots") or []}
+        dropped.update(planned - written)
+        m["plan_slots"] = sorted(planned & written)
         m["planning"] = False
         m.pop("plan_parts", None)
         m.pop("plan_total", None)
-    return _save(track_id, apply)
+    return _save(track_id, apply), dropped
 
 
-def _pictures_needed(ctx: JobContext, track_id: int, m: dict[str, Any]) -> int:
-    """Scenes that turned out to need a picture after all (the plan dropped them) get one, if no image job runs."""
+def _pictures_needed(track_id: int, dropped: set[int]) -> int:
+    """Scenes the plan dropped need a picture after all. A running image job picks them up by itself
+    (it re-reads the plan); otherwise prompts and pictures are queued for them."""
+    if not dropped:
+        return 0
     with session_scope() as db:
         t = db.get(Track, track_id)
-        owned = store.motion_scene_idxs(m)
-        need = [sc.id for sc in t.scenes if sc.idx not in owned and not (sc.image_file or sc.source_scene_id)
-                and sc.prompt.strip()]
+        scenes = [sc for sc in t.scenes if sc.idx in dropped and not (sc.image_file or sc.source_scene_id)]
+        no_prompt = [sc.id for sc in scenes if not sc.prompt.strip()]
+        ids = [sc.id for sc in scenes]
         project_id = t.project_id
-    if need and not runner.active_for_track(track_id, {"images"}):
-        runner.enqueue("images", project_id=project_id, track_id=track_id, params={"scene_ids": need})
-    return len(need)
+    if ids and not runner.active_for_track(track_id, {"images", "prompts"}):
+        prompts = runner.enqueue("prompts", project_id=project_id, track_id=track_id,
+                                 params={"scene_ids": no_prompt}) if no_prompt else None
+        runner.enqueue("images", project_id=project_id, track_id=track_id, params={"scene_ids": ids},
+                       depends_on=prompts.id if prompts else None)
+    return len(ids)
 
 
 def _full_tasks(scenes: list[Any], duration: float, mode: str, ms: MotionSettings,

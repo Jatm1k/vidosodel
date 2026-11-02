@@ -27,7 +27,7 @@ const { run, starting } = useTrackActions(() => props.track.id)
 const scenes = ref<Scene[]>([])
 const loading = ref(true)
 const selected = ref<number | null>(null)
-const filter = ref<'all' | 'missing' | 'failed'>('all')
+const filter = ref<'all' | 'missing' | 'failed' | 'motion'>('all')
 const visibleCount = ref(40)
 const sentinel = ref<HTMLElement>()
 const viewer = ref<Scene | null>(null)
@@ -42,9 +42,13 @@ const shares = computed(() => props.track.shares_images)
 const cast = computed(() => (props.project.effective_settings.images.character_refs ? props.project.characters : []))
 const stats = computed(() => props.track.scene_stats)
 const master = computed(() => props.project.tracks.find((t) => t.is_master))
+/** Drawn as motion graphics (written or planned): needs neither a prompt nor a picture. */
+const isMotion = (s: Scene) => s.motion != null && !s.image_url
 const filtered = computed(() =>
   scenes.value.filter((s) =>
-    filter.value === 'missing' ? !s.image_url : filter.value === 'failed' ? s.image_status === 'failed' : true,
+    filter.value === 'missing' ? !s.image_url && !isMotion(s)
+      : filter.value === 'failed' ? s.image_status === 'failed'
+        : filter.value === 'motion' ? s.motion != null : true,
   ),
 )
 const shown = computed(() => filtered.value.slice(0, visibleCount.value))
@@ -63,8 +67,28 @@ async function loadPlan() {
     plan.value = null
   }
 }
-const missingImages = computed(() => scenes.value.filter((s) => !s.image_url).length)
-const missingPrompts = computed(() => scenes.value.filter((s) => !s.prompt.trim()).length)
+const missingImages = computed(() => scenes.value.filter((s) => !s.image_url && !isMotion(s)).length)
+const missingPrompts = computed(() => scenes.value.filter((s) => !s.prompt.trim() && !isMotion(s)).length)
+const motionCount = computed(() => scenes.value.filter((s) => s.motion != null).length)
+
+/** A motion scene back to a picture: its graphics are removed, then a prompt and a picture are made. */
+function toPicture(scene: Scene) {
+  confirm.require({
+    header: 'Вернуть картинку?',
+    message: `Моушн-графика этой сцены${scene.motion ? '' : ' (запланированная)'} удалится, для сцены будут созданы промпт и картинка.`,
+    acceptLabel: 'Вернуть картинку', rejectLabel: 'Отмена', rejectProps: { severity: 'secondary', text: true },
+    accept: async () => {
+      try {
+        await api.post(`/api/tracks/${props.track.id}/motion/to-picture`, { scene_ids: [scene.id] })
+        notify.info('Сцена снова с картинкой: промпт и картинка создаются')
+        await load()
+        emit('changed')
+      } catch (e) {
+        notify.error(e)
+      }
+    },
+  })
+}
 
 async function load() {
   scenes.value = await api.get<Scene[]>(`/api/tracks/${props.track.id}/scenes`)
@@ -158,7 +182,7 @@ onMounted(() => {
     else if (e.type === 'scene' && shares.value && e.track_id === master.value?.id) {
       const local = scenes.value.find((s) => s.source_scene_id === e.scene.id)
       if (local) patch({ ...local, image_url: e.scene.image_url, image_status: e.scene.image_status, prompt: e.scene.prompt })
-    } else if (e.type === 'track' && e.track_id === props.track.id && ['scenes', 'voice', 'timings', 'images', 'prompts'].includes(e.what)) {
+    } else if (e.type === 'track' && e.track_id === props.track.id && ['scenes', 'voice', 'timings', 'images', 'prompts', 'motion'].includes(e.what)) {
       window.clearTimeout(reloadTimer)
       reloadTimer = window.setTimeout(load, 300)
     }
@@ -284,6 +308,7 @@ onUnmounted(() => {
             { v: 'all', l: 'Все сцены' },
             { v: 'missing', l: `Без картинки · ${missingImages}` },
             { v: 'failed', l: `С ошибкой · ${stats.failed}` },
+            ...(motionCount ? [{ v: 'motion', l: `Моушн · ${motionCount}` }] : []),
           ]"
           option-value="v"
           option-label="l"
@@ -309,6 +334,7 @@ onUnmounted(() => {
           @regenerate-image="(id) => run('images', { scene_ids: [id] })"
           @regenerate-prompt="(id) => run('prompts', { scene_ids: [id] })"
           @open="(sc) => (viewer = sc)"
+          @to-picture="toPicture"
         />
         <div ref="sentinel" class="h-1" />
         <p v-if="!filtered.length" class="p-8 text-center text-ink-3">Таких сцен нет.</p>

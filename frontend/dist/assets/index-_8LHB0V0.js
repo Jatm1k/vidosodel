@@ -1,4 +1,4 @@
-import{P as a,R as s,a2 as r,k as c,c as g,b as d,Z as o,J as h}from"./index-JIBFBZUu.js";var u=`
+import{P as a,R as s,a2 as r,k as c,c as g,b as d,Z as o,J as h}from"./index-Dmm_B-8f.js";var u=`
     .p-toggleswitch {
         display: inline-block;
         width: dt('toggleswitch.width');
