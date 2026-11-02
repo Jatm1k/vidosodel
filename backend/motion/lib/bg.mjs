@@ -89,8 +89,8 @@ export function drawBackground(ctx, env, spec, t, seed, cam) {
   // camera parallax: patterns move at a third of the camera speed
   const px = cam ? -(cam.x - VW / 2) * 0.3 : 0, py = cam ? -(cam.y - VH / 2) * 0.3 : 0
   if (bg.kind === 'none') return
-  if (bg.kind === 'image' && env.images[bg.src]) {
-    const img = env.images[bg.src]
+  if (bg.kind === 'image' && env.image(bg.src)) {
+    const img = env.image(bg.src)
     const k = Math.max(VW / img.width, VH / img.height) * (1.06 + 0.04 * Math.sin(t * 0.2))
     ctx.drawImage(img, VW / 2 - img.width * k / 2 + px * 0.2, VH / 2 - img.height * k / 2 + py * 0.2, img.width * k, img.height * k)
     ctx.fillStyle = css(withAlpha(base, bg.dim ?? 0.55)); ctx.fillRect(0, 0, VW, VH)
@@ -152,6 +152,7 @@ export function drawBackground(ctx, env, spec, t, seed, cam) {
         g.addColorStop(0, css(c)); g.addColorStop(1, css(withAlpha(c, 0)))
         ctx.fillStyle = g; ctx.fillRect(0, 0, VW, VH)
       })
+      if (bg.grain) ctx.drawImage(texture(key + ':grain', scale, (x) => noiseTexture(x, seed, bg.grain, dark)), 0, 0, VW, VH)
       break
     }
     case 'vignette': {

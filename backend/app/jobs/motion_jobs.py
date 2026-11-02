@@ -131,11 +131,16 @@ def _scene_lines(scenes: list[Any], lo: int, hi: int, duration: float, motion: d
     return "\n".join(lines)
 
 
-def _assets_line(scenes: list[Any], lo: int, hi: int) -> str:
-    have = [sc.idx for sc in scenes[lo:hi + 1] if sc.image]
-    if not have:
+def _assets_line(scenes: list[Any], lo: int, hi: int, mode: str) -> str:
+    """Pictures a photo may show. In mixed mode they are still being drawn: any scene of the part that stays a
+    picture scene will have one (grey stand-ins in the contact sheets)."""
+    if mode == "full":
+        have = [sc.idx for sc in scenes if sc.image]
+        return f"ASSETS: pictures img<N> exist for scenes {', '.join(map(str, have[:80]))}" if have else ""
+    if mode != "mixed":
         return ""
-    return f"ASSETS: pictures img<N> exist for scenes {', '.join(map(str, have[:60]))}" + ("…" if len(have) > 60 else "")
+    return (f"ASSETS: img<N> = the picture of scene #N (#{max(0, lo - 3)}-#{min(len(scenes) - 1, hi + 3)}); never use the "
+            "picture of a scene you turn into motion. Pictures not drawn yet show as grey stand-ins.")
 
 
 def _head(tc: TrackCtx, style: dict[str, Any], ms: MotionSettings, duration: float, subs_bottom: bool) -> str:
@@ -395,7 +400,7 @@ def _full_tasks(scenes: list[Any], duration: float, mode: str, ms: MotionSetting
             body = (f"TASK: {MODE_TEXT[mode].format(k=k, o=o)}\n"
                     f"YOUR PART: scenes #{lo}–#{hi} ({t0:.1f}–{t1:.1f} s)" + ("" if (lo, hi) == (first, last) else
                                                                            " — other parts are done by other sessions") + "\n"
-                    + (_assets_line(scenes, lo, hi) + "\n" if mode in ("mixed", "full") and _assets_line(scenes, lo, hi) else "")
+                    + (_assets_line(scenes, lo, hi, mode) + "\n" if _assets_line(scenes, lo, hi, mode) else "")
                     + f"\nSCENES (#index [start–end in video seconds · duration] narration):\n{_scene_lines(scenes, lo, hi, duration)}")
         tasks.append((lo, hi, body, k if mode != "adapt" else 0, o if mode != "adapt" else 0))
     return tasks

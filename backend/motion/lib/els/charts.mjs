@@ -31,8 +31,8 @@ export const bars = {
     const max = +(el.max ?? Math.max(...data.map((d) => d.v)) * (horizontal ? 1 : 1.0))
     const lf = fontSpec(env.style, 'label')
     const vf = fontSpec(env.style, 'display')
-    const lsize = +(el.labelSize ?? (horizontal ? 34 : Math.min(34, (w / data.length) * 0.22 + 10)))
-    const vsize = +(el.valueSize ?? Math.min(64, lsize * 1.5))
+    const lsize = Math.max(26, +(el.labelSize ?? (horizontal ? 40 : Math.min(40, (w / data.length) * 0.24 + 12))))
+    const vsize = +(el.valueSize ?? Math.min(76, lsize * 1.7))
     const labels = data.map((d) => layoutText(ctx, d.l, { font: lf, size: lsize, maxw: horizontal ? w * 0.34 : (w / data.length) * 0.94,
                                                           upper: lf.upper, ls: lf.ls ?? 0, lh: 1.05 }))
     const dec = decOf(data.map((d) => d.v), el.dec)
@@ -131,7 +131,7 @@ export const linechart = {
     if (el.min === undefined && lo !== 0) lo -= (hi - lo) * 0.08
     const w = +(el.w ?? 1300), h = +(el.h ?? 620)
     const lf = fontSpec(env.style, 'label')
-    const lsize = +(el.labelSize ?? 28)
+    const lsize = Math.max(26, +(el.labelSize ?? 32))
     const labels = (el.labels || []).map((l) => layoutText(ctx, String(l), { font: lf, size: lsize, upper: lf.upper, ls: lf.ls ?? 0 }))
     const vf = fontSpec(env.style, 'display')
     const dec = decOf(all, el.dec)
@@ -189,7 +189,7 @@ export const linechart = {
       ctx.fillStyle = css(col)
       ctx.beginPath(); ctx.arc(tx, ty, sw * 1.6, 0, Math.PI * 2); ctx.fill()
       if (el.values !== false) {
-        const vs = +(el.valueSize ?? 44)
+        const vs = +(el.valueSize ?? 54)
         ctx.font = fontCss(st.vf, vs)
         ctx.fillText(`${el.prefix ?? ''}${formatNumber(tipV, dec, env.lang)}${el.unit ?? ''}`, tx + 18, ty - 14)
       }
@@ -228,7 +228,7 @@ export const donut = {
     const size = +(el.size ?? 520)
     const total = data.reduce((a, d) => a + d.v, 0) || 1
     const lf = fontSpec(env.style, 'label')
-    const lsize = +(el.labelSize ?? 32)
+    const lsize = Math.max(28, +(el.labelSize ?? 36))
     const legend = el.legend === false ? null : data.map((d) => layoutText(ctx, `${d.l}`, { font: lf, size: lsize, maxw: 520, upper: lf.upper, ls: lf.ls ?? 0 }))
     const legendW = legend ? Math.max(...legend.map((l) => l.w)) + lsize * 4.6 : 0
     const legendH = legend ? legend.reduce((a, l) => a + Math.max(l.h, lsize) + lsize * 0.8, 0) : 0
@@ -292,7 +292,7 @@ export const ring = {
     let label = null
     if (el.label) {
       const lf = fontSpec(env.style, 'label')
-      label = layoutText(ctx, el.label, { font: lf, size: +(el.labelSize ?? Math.max(24, size * 0.075)), maxw: size * 1.3, upper: lf.upper, ls: lf.ls ?? 0 })
+      label = layoutText(ctx, el.label, { font: lf, size: +(el.labelSize ?? Math.max(30, size * 0.08)), maxw: size * 1.3, upper: lf.upper, ls: lf.ls ?? 0 })
     }
     return { size, label, w: Math.max(size, label ? label.w : 0), h: size + (label ? label.h + size * 0.08 : 0) }
   },

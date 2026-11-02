@@ -9,7 +9,7 @@ export const text = {
   hasText: true,
   own: TEXT_MODES,
   prep(el, env, ctx) {
-    const size = +(el.size ?? 72)
+    const size = Math.max(30, +(el.size ?? 84))
     const lay = prepText(ctx, el, env, el.font ? el.font : size >= 56 ? 'display' : 'body', size)
     const pad = el.plate ? Math.round(lay.size * 0.35) : 0
     const mode = el.in ?? env.motion.text
@@ -62,10 +62,11 @@ export const counter = {
     const numW = numberWidth(ctx, final, dw)
     let label = null
     if (el.label) {
-      const lsize = +(el.labelSize ?? Math.max(26, size * 0.24))
+      const lsize = +(el.labelSize ?? Math.max(30, size * 0.26))
       label = layoutText(ctx, el.label, { font: fontSpec(env.style, 'label'), size: lsize, maxw: Math.max(numW, el.w ? +el.w : 0, 420),
                                            upper: fontSpec(env.style, 'label').upper, ls: fontSpec(env.style, 'label').ls ?? 0 })
     }
+    ctx.font = fontCss(font, size) // the label layout above changed the font
     const m = ctx.measureText('0')
     const asc = m.actualBoundingBoxAscent || size * 0.72
     const w = Math.max(numW, label ? label.w : 0)
@@ -118,7 +119,7 @@ export const quote = {
   hasText: true,
   own: TEXT_MODES,
   prep(el, env, ctx) {
-    const size = +(el.size ?? 60)
+    const size = Math.max(34, +(el.size ?? 64))
     const lay = prepText(ctx, { ...el, w: el.w ?? 1300 }, env, el.font || 'display', size)
     let by = null
     if (el.by) by = layoutText(ctx, `— ${plain(el.by)}`, { font: fontSpec(env.style, 'label'), size: Math.max(26, size * 0.42),
@@ -163,7 +164,7 @@ export const tag = {
   own: ['wipe', 'slide'],
   defaultIn: 'slide',
   prep(el, env, ctx) {
-    const size = +(el.size ?? 46)
+    const size = Math.max(32, +(el.size ?? 50))
     const tf = fontSpec(env.style, el.font || 'display')
     const title = layoutText(ctx, el.text ?? el.title ?? '', { font: tf, size, maxw: el.w ? +el.w : 1100, upper: tf.upper, ls: tf.ls ?? 0 })
     let sub = null

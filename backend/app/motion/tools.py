@@ -222,6 +222,7 @@ def _doc(s: Session, m: dict[str, Any], extra: list[dict[str, Any]] | None, only
     doc = store.build_doc(base, s.scenes, s.duration, width=s.width, height=s.height, lang=s.lang, seed=s.seed,
                           fonts_dir=s.fonts_dir, assets=s.assets, safe_bottom=s.safe_bottom, only=only, extra=extra,
                           preview_bg=prev)
+    doc["placeholders"] = True  # pictures still being generated are grey stand-ins while composing
     fd, path = tempfile.mkstemp(suffix=".json", dir=s.work)
     with open(fd, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, ensure_ascii=False)

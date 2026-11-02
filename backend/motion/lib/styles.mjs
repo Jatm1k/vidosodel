@@ -2,6 +2,8 @@
 // shapes, effects, motion character) every element draws with. A channel takes a base style and overrides
 // any token for its niche; every scene is composed anew from the elements.
 
+import { harmonize } from './palette.mjs'
+
 const font = (family, weight, extra = {}) => ({ family, weight, ...extra })
 
 export const STYLES = {
@@ -71,7 +73,7 @@ export const STYLES = {
                accent3: '#8c8cff', panel: '#ffffff', line: '#2e2a3b', good: '#6cc4a4', bad: '#ff7a8a' },
     fonts: { display: font('Unbounded', 700), body: font('Onest', 400), label: font('Onest', 700), mono: font('JetBrains Mono', 400),
              hand: font('Caveat', 700) },
-    bg: { kind: 'blobs', colors: ['accent/22', 'accent2/22', 'accent3/18'] },
+    bg: { kind: 'blobs', colors: ['accentSoft/70', 'accent2Soft/60'] },
     shape: { radius: 28, stroke: 4, bar: 'round', cap: 'round', dot: 'circle' },
     fx: { shadow: 0.25, glow: 0 },
     motion: { ease: 'back', dur: 0.65, stagger: 0.08, text: 'pop', pop: 'back' },
@@ -199,5 +201,7 @@ export function resolveStyle(spec) {
   const s = spec || {}
   const base = STYLES[s.base] || STYLES.editorial
   const { base: _b, about: _a, ...over } = s
-  return { ...merge(base, over), name: STYLES[s.base] ? s.base : 'editorial' }
+  const out = merge(base, over)
+  out.palette = harmonize(out.palette)
+  return { ...out, name: STYLES[s.base] ? s.base : 'editorial' }
 }

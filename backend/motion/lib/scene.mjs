@@ -1,6 +1,7 @@
 // The scene runtime: elements with entrance / exit / keyframes / idle motion, a camera, a background.
 // Every frame is a pure function of (scene, t), so frames render in any order in any worker.
 import { clamp, lerp, ease, phase, boxOrigin, noise1, hash, rgba, css } from './core.mjs'
+import { createCanvas } from '@napi-rs/canvas'
 import { drawBackground } from './bg.mjs'
 import { ELEMENTS } from './els/index.mjs'
 
@@ -8,7 +9,7 @@ export const VW = 1920, VH = 1080
 
 /** Everything an element needs besides its own data. */
 export class Env {
-  constructor({ style, lang = 'ru', assets = {}, images = {}, seed = 1, overlay = false }) {
+  constructor({ style, lang = 'ru', assets = {}, images = {}, seed = 1, overlay = false, placeholders = false }) {
     this.style = style
     this.pal = overlay ? overlayPalette(style.palette) : style.palette
     this.lang = lang
@@ -16,6 +17,17 @@ export class Env {
     this.images = images // asset key → loaded Image
     this.seed = seed
     this.overlay = overlay
+    this.placeholders = placeholders
+  }
+  /** A picture by key; while composing, a missing one is a grey stand-in (it is drawn later in the pipeline). */
+  image(key) {
+    if (this.images[key]) return this.images[key]
+    if (!this.placeholders || !/^img\d+$/.test(String(key))) return null
+    const c = createCanvas(1376, 768), x = c.getContext('2d')
+    x.fillStyle = '#8d929b'; x.fillRect(0, 0, 1376, 768)
+    x.fillStyle = '#b9bdc4'; x.font = '600 90px "Inter"'; x.textAlign = 'center'; x.fillText(`картинка ${String(key).slice(3)}`, 688, 410)
+    this.images[key] = c
+    return c
   }
   color(spec, fallback = 'ink') { return css(rgba(spec ?? fallback, this.pal, fallback)) }
   rgba(spec, fallback = 'ink') { return rgba(spec ?? fallback, this.pal, fallback) }
@@ -207,6 +219,14 @@ export class SceneRuntime {
     const env = this.env
     ctx.save()
     const c = camAt(this.spec.cam, t)
+    if (!Array.isArray(this.spec.cam) && this.spec.cam !== false) {
+      // no camera of its own: a slow push-in with a little drift keeps the frame alive
+      const u = clamp(t / Math.max(1, this.dur))
+      const dir = (this.bgSeed % 4) - 1.5
+      c.zoom = 1 + 0.045 * ease('sine', u)
+      c.x += dir * 14 * ease('sine', u)
+      c.y += ((this.bgSeed >> 3) % 3 - 1) * 8 * ease('sine', u)
+    }
     drawBackground(ctx, env, this.spec.bg, t, this.bgSeed, c)
     ctx.translate(VW / 2, VH / 2)
     if (c.zoom !== 1) ctx.scale(c.zoom, c.zoom)

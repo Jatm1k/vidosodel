@@ -135,13 +135,14 @@ export const icon = {
 // ------------------------------------------------------------------ image
 export const image = {
   prep(el, env) {
-    const img = env.images[el.src]
-    if (!img) throw new Error(`нет картинки «${el.src}» (доступны: ${Object.keys(env.images).join(', ') || 'нет'})`)
-    const w = +(el.w ?? 800), h = +(el.h ?? (el.w ? +el.w * img.height / img.width : 450))
+    const img = env.image(el.src)
+    if (!img && !/^img\d+$/.test(String(el.src))) throw new Error(`image: src «${el.src}» — нужно img<номер сцены>`)
+    const w = +(el.w ?? 800), h = +(el.h ?? (el.w && img ? +el.w * img.height / img.width : 450))
     return { img, w, h }
   },
   draw(ctx, el, st, k, env) {
     const { img, w, h } = st
+    if (!img) return
     const r = +(el.r ?? env.style.shape.radius ?? 0)
     ctx.save()
     if (el.border) { ctx.fillStyle = env.color(el.border); rr(ctx, -8, -8, w + 16, h + 16, r + 6); ctx.fill() }

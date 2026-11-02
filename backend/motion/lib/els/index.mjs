@@ -4,6 +4,7 @@ import { shape, icon, image, group, decor } from './shapes.mjs'
 import { bars, linechart, donut, ring, iconarray } from './charts.mjs'
 import { timeline, list, compare, flow, callout } from './diagram.mjs'
 import { map } from './map.mjs'
+import { photo, stat, progress, stamp, scribble } from './rich.mjs'
 
 export const ELEMENTS = { text, counter, quote, tag, shape, icon, image, group, decor, bars, linechart, donut, ring, iconarray,
-                          timeline, list, compare, flow, callout, map }
+                          timeline, list, compare, flow, callout, map, photo, stat, progress, stamp, scribble }

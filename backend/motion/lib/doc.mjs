@@ -31,7 +31,8 @@ export class Motion {
     this.overlays = null
   }
   env(overlay) {
-    return new Env({ style: this.style, lang: this.doc.lang || 'ru', images: this.images, seed: this.doc.seed || 1, overlay })
+    return new Env({ style: this.style, lang: this.doc.lang || 'ru', images: this.images, seed: this.doc.seed || 1, overlay,
+                     placeholders: !!this.doc.placeholders })
   }
   scene(id) {
     const key = String(id)
@@ -84,9 +85,22 @@ export function checkLayout(boxes, { dur, overlay = false, safeBottom = 0, cam =
       if (b.x0 < -m || b.y0 < -m || b.x1 > VW + m || b.y1 > VH + m)
         warn.push(`${b.id} (${b.type}): выходит за кадр — x ${Math.round(b.x0)}…${Math.round(b.x1)}, y ${Math.round(b.y0)}…${Math.round(b.y1)}`)
     }
-    if (b.text && (el.size !== undefined && +el.size < 24)) warn.push(`${b.id}: слишком мелкий текст (size ${el.size}), минимум 24`)
     if (overlay && safeBottom && b.text && b.y1 > VH * safeBottom && b.y0 < VH * 0.97)
       warn.push(`${b.id}: залезает в зону субтитров (y > ${Math.round(VH * safeBottom)})`)
+  }
+  if (!overlay && boxes.length) {
+    // composition: something must own the frame, and a long scene must develop
+    const clip = (b) => Math.max(0, Math.min(b.x1, VW) - Math.max(b.x0, 0)) * Math.max(0, Math.min(b.y1, VH) - Math.max(b.y0, 0))
+    const cover = boxes.reduce((a, b) => a + clip(b), 0) / (VW * VH)
+    const hero = Math.max(...boxes.map(clip)) / (VW * VH)
+    if (cover < 0.12 || hero < 0.06) warn.push(`композиция пустая (занято ${Math.round(cover * 100)} % кадра, главный элемент ${Math.round(hero * 100)} %): сделайте главный элемент крупнее`)
+    const TEXTY = new Set(['text', 'quote', 'list', 'tag', 'stamp', 'scribble', 'shape', 'decor'])
+    const visual = Math.max(0, ...boxes.filter((b) => !TEXTY.has(b.type)).map(clip)) / (VW * VH)
+    if (dur > 4 && visual < 0.05)
+      warn.push('нет визуального образа — только слова: добавьте фото сцены (photo img<N>), крупное число, график, карту, иконку ≥ 220 px или схему')
+    const beats = boxes.some((b) => b.until < dur) || cam || boxes.filter((b) => b.at > 2.5).length >= 1
+    if (dur > 7 && !beats) warn.push(`статичная сцена ${dur.toFixed(0)} с: нужен второй бит (until/out, новые элементы по фразам или камера)`)
+    for (const b of boxes) if (b.type === 'text' && b.el.size !== undefined && +b.el.size < 40) warn.push(`${b.id}: текст ${b.el.size}px мелковат для сцены (≥ 40)`)
   }
   const texts = boxes.filter((b) => b.text || b.type === 'bars' || b.type === 'linechart' || b.type === 'donut' || b.type === 'ring' || b.type === 'counter')
   for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) {

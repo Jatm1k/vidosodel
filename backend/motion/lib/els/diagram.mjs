@@ -46,8 +46,8 @@ export const timeline = {
     const w = +(el.w ?? (vertical ? 1100 : 1600)), h = +(el.h ?? (vertical ? 860 : 520))
     const n = list.length
     const slot = vertical ? h / n : w / n
-    const dsize = +(el.dateSize ?? (vertical ? 46 : Math.min(64, slot * 0.3)))
-    const tsize = +(el.size ?? (vertical ? 34 : Math.min(34, slot * 0.14 + 12)))
+    const dsize = +(el.dateSize ?? (vertical ? 56 : Math.min(76, slot * 0.32)))
+    const tsize = Math.max(28, +(el.size ?? (vertical ? 40 : Math.min(40, slot * 0.15 + 14))))
     const dates = list.map((it) => lay(ctx, env, 'display', it.d, dsize, vertical ? w * 0.3 : slot * 0.95))
     const texts = list.map((it) => lay(ctx, env, 'body', it.text, tsize, vertical ? w * 0.62 : slot * 0.9))
     const gap = +(el.gap ?? 0.55)
@@ -100,7 +100,7 @@ export const list = {
   prep(el, env, ctx) {
     const its = items(el.items)
     if (!its.length) throw new Error('list: пустой items')
-    const size = +(el.size ?? 46)
+    const size = Math.max(32, +(el.size ?? 54))
     const w = +(el.w ?? 1200)
     const markW = el.marker === 'none' ? 0 : size * 1.5
     const texts = its.map((it) => lay(ctx, env, el.font || 'body', it.text, size, w - markW))
@@ -150,59 +150,78 @@ export const compare = {
   own: ['split'],
   defaultIn: 'split',
   prep(el, env, ctx) {
-    const w = +(el.w ?? 1560), h = +(el.h ?? 640)
-    const colW = w * 0.42
+    const w = +(el.w ?? 1560)
+    const gap = 200
+    const colW = (w - gap) / 2
+    const pad = 56
     const side = (s) => {
       s = typeof s === 'string' ? { title: s } : (s || {})
-      return { ...s,
-        title: lay(ctx, env, 'label', s.title ?? '', +(el.titleSize ?? 40), colW - 60),
-        value: s.value !== undefined ? fitLine(ctx, env, String(s.value), +(el.valueSize ?? 120), colW - 50) : null,
-        sub: s.sub ? lay(ctx, env, 'body', s.sub, +(el.subSize ?? 34), colW - 60) : null }
+      const title = s.title ? lay(ctx, env, 'label', s.title, Math.max(30, +(el.titleSize ?? 40)), colW - pad * 2) : null
+      const value = s.value !== undefined && s.value !== '' ? fitLine(ctx, env, String(s.value), +(el.valueSize ?? 156), colW - pad * 2) : null
+      const sub = s.sub ? lay(ctx, env, 'body', s.sub, Math.max(30, +(el.subSize ?? 42)), colW - pad * 2) : null
+      // without a value the title becomes the big line of the card
+      const big = !value && s.title ? lay(ctx, env, 'display', s.title, +(el.valueSize ?? 72), colW - pad * 2) : null
+      const icon = s.icon ? +(el.iconSize ?? 132) : 0
+      const iconName = s.icon
+      const parts = [icon, big ? 0 : title?.h ?? 0, value?.h ?? 0, big?.h ?? 0, sub?.h ?? 0].filter(Boolean)
+      const h = pad * 2 + parts.reduce((a, b) => a + b, 0) + Math.max(0, parts.length - 1) * 26
+      return { ...s, title: big ? null : title, value, big, sub, icon, iconName, h }
     }
-    return { w, h, colW, a: side(el.a), b: side(el.b) }
+    const a = side(el.a), b = side(el.b)
+    const h = +(el.h ?? Math.max(a.h, b.h))
+    return { w, h, colW, gap, pad, a, b }
   },
   inDur() { return 1.4 },
   draw(ctx, el, st, k, env, node) {
-    const { w, h, colW, a, b } = st
-    const p = k.inName === 'split' ? ease('expo-out', k.local / 0.8) : 1
+    const { w, h, colW, pad, a, b } = st
     const drawSide = (s, x, dir, delay, color) => {
       const sp = k.inName === 'split' ? ease(env.motion.ease, (k.local - delay) / 0.7) : 1
       if (sp <= 0) return
       ctx.save(); ctx.translate(x + dir * (1 - sp) * 60, 0); ctx.globalAlpha *= clamp(sp * 1.4)
-      if (el.panels !== false) panel(ctx, env, 0, 0, colW, h, {}, node.seed + delay * 10)
-      const tc = el.panels !== false ? panelText(env) : env.color('ink')
-      let y = h * 0.14
-      if (s.icon) { drawIcon(ctx, env, s.icon, colW / 2 - 50, y, 100, env.color(color), clamp((k.local - delay) / 0.8)); y += 130 }
-      ctx.save(); ctx.translate((colW - s.title.w) / 2, y); drawLabel(ctx, s.title, env, el.panels !== false ? 'muted' : 'muted', 'c', s.title.w); ctx.restore()
-      y += s.title.h + 24
-      if (s.value) {
-        ctx.save(); ctx.translate((colW - s.value.w) / 2, y)
-        drawText(ctx, s.value, env, { color: env.color(color), acc: env.color(color), align: 'c', boxW: s.value.w, mode: 'none', local: 99, styleKey: env.style.name })
-        ctx.restore(); y += s.value.h + 20
+      const plates = el.panels !== false
+      if (plates) panel(ctx, env, 0, 0, colW, h, {}, node.seed + delay * 10)
+      const tc = plates ? panelText(env) : env.color('ink')
+      // content block centred vertically in the card
+      let y = (h - (s.h - pad * 2)) / 2
+      const step = 26
+      if (s.icon) {
+        const ip = clamp((k.local - delay) / 0.8)
+        ctx.save(); ctx.globalAlpha *= 0.9
+        ctx.fillStyle = env.color(color === 'accent' ? 'accentSoft' : color === 'accent2' ? 'accent2Soft' : 'accent3Soft')
+        ctx.beginPath(); ctx.arc(colW / 2, y + s.icon / 2, s.icon * 0.62 * Math.max(0.01, ease('back', ip)), 0, Math.PI * 2); ctx.fill(); ctx.restore()
+        drawIcon(ctx, env, s.iconName, colW / 2 - s.icon * 0.35, y + s.icon * 0.15, s.icon * 0.7, env.color(color), ip)
+        y += s.icon + step
+      }
+      if (s.title) { ctx.save(); ctx.translate((colW - s.title.w) / 2, y); drawLabel(ctx, s.title, env, plates ? 'muted' : 'muted', 'c', s.title.w); ctx.restore(); y += s.title.h + step }
+      for (const big of [s.value, s.big]) {
+        if (!big) continue
+        ctx.save(); ctx.translate((colW - big.w) / 2, y)
+        drawText(ctx, big, env, { color: env.color(color), acc: env.color(color), align: 'c', boxW: big.w, mode: 'none', local: 99, styleKey: env.style.name })
+        ctx.restore(); y += big.h + step
       }
       if (s.sub) {
-        ctx.translate((colW - s.sub.w) / 2, y)
+        ctx.save(); ctx.translate((colW - s.sub.w) / 2, y)
         drawText(ctx, s.sub, env, { color: tc, acc: env.color('accent'), align: 'c', boxW: s.sub.w, mode: 'none', local: 99, styleKey: env.style.name })
+        ctx.restore()
       }
       ctx.restore()
     }
     drawSide(a, 0, -1, 0, a.c ?? el.colorA ?? 'accent2')
     drawSide(b, w - colW, 1, 0.25, b.c ?? el.colorB ?? 'accent')
-    // the middle: «VS» or an arrow
     const mp = ease('back', (k.local - 0.5) / 0.5)
     if (mp > 0) {
       ctx.save(); ctx.translate(w / 2, h / 2); ctx.scale(Math.max(0.01, mp), Math.max(0.01, mp))
       if (el.mid === 'arrow') {
-        drawIcon(ctx, env, 'arrow-right', -45, -45, 90, env.color('ink'))
-      } else {
-        const r = 62
-        ctx.fillStyle = env.color('accent'); ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill()
-        ctx.font = fontCss(fontSpec(env.style, 'display'), 50); ctx.fillStyle = env.color('bg'); ctx.textAlign = 'center'
-        ctx.fillText(el.mid ?? 'VS', 0, 18); ctx.textAlign = 'left'
+        drawIcon(ctx, env, 'arrow-right', -55, -55, 110, env.color('ink'))
+      } else if (el.mid !== 'none') {
+        const r = 66
+        ctx.fillStyle = env.color('ink'); ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill()
+        const f = fontSpec(env.style, 'display')
+        ctx.font = fontCss(f, 46); ctx.fillStyle = env.color('bg'); ctx.textAlign = 'center'
+        ctx.fillText(el.mid ?? 'VS', 0, 16); ctx.textAlign = 'left'
       }
       ctx.restore()
     }
-    void p
   },
 }
 
@@ -218,7 +237,7 @@ export const flow = {
     const w = +(el.w ?? 1640), h = +(el.h ?? (kind === 'cycle' ? 820 : kind === 'col' ? 860 : 420))
     const n = nodes.length
     const boxW = kind === 'row' ? Math.min(380, (w - (n - 1) * 90) / n) : kind === 'col' ? Math.min(760, w) : Math.min(340, w / 3.2)
-    const size = +(el.size ?? Math.min(46, boxW * 0.12 + 12))
+    const size = Math.max(28, +(el.size ?? Math.min(50, boxW * 0.13 + 12)))
     const texts = nodes.map((nd) => lay(ctx, env, 'body', nd.text, size, boxW - 40))
     const iconS = size * 2.3
     const boxH = Math.max(...texts.map((t) => t.h)) + 56 + (nodes.some((nd) => nd.icon) ? iconS + 16 : 0)
@@ -281,7 +300,7 @@ export const callout = {
   own: ['point'],
   defaultIn: 'point',
   prep(el, env, ctx) {
-    const size = +(el.size ?? 38)
+    const size = Math.max(28, +(el.size ?? 42))
     const t = lay(ctx, env, el.font || 'label', el.text ?? '', size, +(el.w ?? 560))
     const pad = el.plate === false ? 0 : size * 0.45
     const w = t.w + pad * 2, h = t.h + pad * 2

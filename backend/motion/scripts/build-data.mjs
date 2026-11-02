@@ -13,7 +13,10 @@ const here = (p) => new URL(p, import.meta.url)
 const n = (v) => +(+v).toFixed(2)
 function nodeToPath([tag, a]) {
   switch (tag) {
-    case 'path': return a.d
+    // every element is its own path: a leading relative «m» would be read relative to the previous element
+    // («m12 5 7 7-7 7» → «M12 5l7 7-7 7»: the first pair is the start, the pairs after it stay relative lines)
+    case 'path': return a.d.replace(/^\s*m\s*(-?[\d.]+(?:e-?\d+)?)[\s,]*(-?[\d.]+(?:e-?\d+)?)(\s*,?\s*)(?=[-\d.])?/,
+      (_, x, y, sep, offset, str) => `M${x} ${y}` + (/^[\s,]*[-\d.]/.test(str.slice(_.length - sep.length)) ? 'l' : ''))
     case 'circle': { const cx = n(a.cx), cy = n(a.cy), r = n(a.r)
       return `M${cx - r} ${cy}A${r} ${r} 0 1 0 ${cx + r} ${cy}A${r} ${r} 0 1 0 ${cx - r} ${cy}Z` }
     case 'ellipse': { const cx = n(a.cx), cy = n(a.cy), rx = n(a.rx), ry = n(a.ry)

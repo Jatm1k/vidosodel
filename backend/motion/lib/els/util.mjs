@@ -33,11 +33,18 @@ export function panel(ctx, env, x, y, w, h, over = {}, seed = 1) {
   if (p.offset) {
     ctx.fillStyle = env.color('ink'); rr(ctx, x + 9, y + 9, w, h, radius); ctx.fill()
   }
-  if (p.shadow) { ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 36; ctx.shadowOffsetY = 14 }
+  if (p.shadow) {
+    // two shadows: a soft wide one and a tight contact one – reads as a real card, not a blur
+    ctx.save(); ctx.fillStyle = env.color(p.fill ?? 'panel')
+    ctx.shadowColor = css(withAlpha(env.rgba('shadow'), 0.18)); ctx.shadowBlur = 48; ctx.shadowOffsetY = 22
+    rr(ctx, x, y, w, h, radius); ctx.fill()
+    ctx.shadowColor = css(withAlpha(env.rgba('shadow'), 0.22)); ctx.shadowBlur = 6; ctx.shadowOffsetY = 2
+    rr(ctx, x, y, w, h, radius); ctx.fill(); ctx.restore()
+  }
   ctx.fillStyle = env.color(p.fill ?? 'panel')
   if (p.rough) roughRect(ctx, x, y, w, h, seed); else rr(ctx, x, y, w, h, radius)
   ctx.fill()
-  if (p.shadow) ctx.restore()
+  if (!p.stroke && !p.rough) { ctx.strokeStyle = env.color('hair'); ctx.lineWidth = 1.5; rr(ctx, x + 0.75, y + 0.75, w - 1.5, h - 1.5, radius); ctx.stroke() }
   if (p.stroke) {
     ctx.strokeStyle = env.color(p.stroke); ctx.lineWidth = p.sw ?? 2
     if (p.rough) roughRect(ctx, x, y, w, h, seed + 9); else rr(ctx, x, y, w, h, radius)
@@ -120,7 +127,7 @@ const HL = { notebook: 'marker', pastel: 'marker', editorial: 'underline', newsp
 
 /** Lays out a text element. ``role`` – the default font role. */
 export function prepText(ctx, el, env, role, defSize) {
-  const size = +(el.size ?? defSize)
+  const size = Math.max(28, +(el.size ?? defSize))
   const font = fontSpec(env.style, el.font || role, el.weight ? { weight: el.weight } : {})
   const upper = el.upper ?? font.upper ?? false
   const ls = el.ls ?? font.ls ?? 0
@@ -179,6 +186,7 @@ export function drawText(ctx, lay, env, o) {
       const w = line.words[u.wi]
       const n = w.text.length
       let x = lx + w.x
+      if (w.acc && (hl === 'marker' || hl === 'box')) accentFx(ctx, env, hl, x, ly, w.w, lay, clamp((local - u.t) / Math.max(0.2, n * stg)), accColor, o.seed, true)
       for (let c = 0; c < n; c++) {
         const ch = w.text[c]
         const cw = ctx.measureText(ch).width // includes ctx.letterSpacing
@@ -188,7 +196,7 @@ export function drawText(ctx, lay, env, o) {
         ctx.save()
         if (mode === 'chars') { ctx.globalAlpha *= p; ctx.translate(0, (1 - p) * lay.size * 0.25) }
         if (mode === 'write' && p < 1) { ctx.beginPath(); ctx.rect(x - 2, ly - lay.asc - 4, (cw + 4) * p, lay.size * 1.6); ctx.clip() }
-        paintWord(ctx, ch, x, ly, w.acc ? accColor : color, stroke)
+        paintWord(ctx, ch, x, ly, !w.acc || hl === 'marker' ? color : hl === 'box' ? env.color('onAccent') : accColor, stroke)
         ctx.restore()
         x += cw
         if (mode === 'type') cursor = { x, y: ly }
@@ -218,7 +226,8 @@ export function drawText(ctx, lay, env, o) {
         if (mode === 'pop') ctx.globalAlpha *= clamp(p * 2)
       }
       if (w.acc) accentFx(ctx, env, hl, wx, ly, w.w, lay, clamp((tu - unitDur * 0.5) / 0.45), accColor, o.seed, true)
-      paintWord(ctx, w.text, wx, ly, w.acc && hl !== 'box' ? accColor : (w.acc && hl === 'box' ? env.color('bg') : color), stroke)
+      // marker: the word stays ink on its tint; box: readable text on the accent; otherwise the accent colour
+      paintWord(ctx, w.text, wx, ly, !w.acc || hl === 'marker' ? color : hl === 'box' ? env.color('onAccent') : accColor, stroke)
       if (w.acc) accentFx(ctx, env, hl, wx, ly, w.w, lay, clamp((tu - unitDur * 0.5) / 0.45), accColor, o.seed, false)
       ctx.restore()
     }
@@ -245,13 +254,14 @@ function accentFx(ctx, env, hl, x, y, w, lay, p, accColor, seed = 1, behind = fa
   if (p <= 0) return
   const s = lay.size
   if (behind && hl === 'marker') {
-    ctx.save(); ctx.fillStyle = css(withAlpha(env.rgba('accent3'), 0.75))
+    // a highlighter stroke over the lower half of the letters, in a soft tint of the same accent
+    ctx.save(); ctx.fillStyle = env.color('accentHl')
     ctx.beginPath()
-    roughLineBox(ctx, x - s * 0.08, y - lay.asc * 0.62, (w + s * 0.16) * p, lay.asc * 0.82, seed)
+    roughLineBox(ctx, x - s * 0.06, y - lay.asc * 0.5, (w + s * 0.12) * p, lay.asc * 0.5 + lay.desc * 0.35, seed)
     ctx.fill(); ctx.restore()
   } else if (behind && hl === 'box') {
     ctx.fillStyle = accColor
-    ctx.fillRect(x - s * 0.1, y - lay.asc - s * 0.04, (w + s * 0.2) * p, lay.asc + lay.desc + s * 0.06)
+    rr(ctx, x - s * 0.12, y - lay.asc - s * 0.02, (w + s * 0.24) * p, lay.asc + lay.desc + s * 0.06, s * 0.08); ctx.fill()
   } else if (!behind && hl === 'underline') {
     ctx.save(); ctx.strokeStyle = accColor; ctx.lineWidth = Math.max(3, s * 0.06); ctx.lineCap = 'round'
     ctx.beginPath(); ctx.moveTo(x, y + s * 0.12); ctx.lineTo(x + w * p, y + s * 0.12); ctx.stroke(); ctx.restore()
