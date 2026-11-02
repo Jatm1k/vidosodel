@@ -290,8 +290,9 @@ class MotionSettings(_Base):
     style_overrides: dict[str, Any] = Field(default_factory=dict)
     #: How this channel shows things (recurring devices, motifs, what to avoid) – the motion bible of the channel.
     direction: str = ""
-    #: Claude model alias: ``sonnet`` – fast and economical, ``opus`` – the best compositions.
-    model: str = "sonnet"
+    #: Claude model alias: ``opus`` – the best compositions (uses photos, metaphors, develops scenes),
+    #: ``sonnet`` – faster and ~3× cheaper on the subscription limits, but leans on plain text.
+    model: str = "opus"
     #: Thinking effort of the model (``low`` spends the fewest tokens).
     effort: Literal["low", "medium", "high"] = "medium"
     #: Claude sessions working at once on parts of a long video.

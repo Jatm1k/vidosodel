@@ -64,7 +64,7 @@ const MOTION_MODES = [
   { value: 'mixed', label: 'Смешанный' }, { value: 'full', label: 'Весь ролик' },
 ]
 const MOTION_MODELS = [
-  { value: 'sonnet', label: 'Sonnet — быстро и экономно' }, { value: 'opus', label: 'Opus — лучшие композиции' },
+  { value: 'opus', label: 'Opus — лучшие композиции (рекомендуется)' }, { value: 'sonnet', label: 'Sonnet — быстрее и экономнее, но проще' },
   { value: 'haiku', label: 'Haiku — самый дешёвый' },
 ]
 /** The palette the channel ends up with: the style's own plus its overrides. */
