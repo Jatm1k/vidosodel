@@ -1,6 +1,7 @@
 """Final video render, quick preview render and YouTube metadata."""
 from __future__ import annotations
 
+import json
 import random
 import shutil
 import time
@@ -12,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Project, Track
+from ..motion import store as motion_store
 from ..pipeline import chapters as chapters_mod
 from ..pipeline import llm_tasks, packaging, research
 from ..render.engine import RESOLUTIONS, PlanScene, RenderPlan, render_video
@@ -42,12 +44,19 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
     scenes = list(track.scenes)
     if not scenes:
         raise JobError("Нет сцен: выполните разбивку на сцены.")
+    duration = track.audio_duration or 0.0
+    # Motion scenes replace the pictures of their slots (see app.motion.store).
+    motion = track.motion if s.motion.mode != "off" or motion_store.items(track.motion) else {}
+    written = {it["id"]: it for it in motion_store.scene_items(motion)}
+    owner = {idx: mid for idx, mid in motion_store.slot_owner(motion).items() if mid in written and idx < len(scenes)}
     images: list[str | None] = []
     missing = []
     for sc in scenes:
         rel = scene_image(sc)
         path = to_abs(rel) if rel else None
-        if path is None or not path.exists():
+        if sc.idx in owner:
+            images.append(str(path) if path is not None and path.exists() else "")
+        elif path is None or not path.exists():
             missing.append(sc.idx + 1)
             images.append(None)
         else:
@@ -60,17 +69,19 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
         if images[i] is None:
             images[i] = next((images[j] for j in range(i - 1, -1, -1) if images[j]), None) or \
                 next((images[j] for j in range(i + 1, len(images)) if images[j]), None)
-    if not any(images):
+    if not any(images) and not owner:
         raise JobError("Нет ни одного изображения для рендера.")
 
     look = random_look(s.unique, seed)
     rnd = random.Random(look.seed)
     effects = [e for e in s.render.motion_effects if e in EFFECTS] or ["zoom_in", "zoom_out"]
     transitions = [t for t in s.render.transitions if t in TRANSITIONS] or ["crossfade"]
-    duration = track.audio_duration or 0.0
     plan_scenes: list[PlanScene] = []
     prev_effect = None
     for i, (sc, img) in enumerate(zip(scenes, images)):
+        mid = owner.get(sc.idx)
+        if mid and min(written[mid]["slots"]) != sc.idx:
+            continue  # a later slot of a motion scene: drawn by its first slot
         ov = sc.overrides or {}
         choices = [e for e in effects if e != prev_effect] or effects
         effect = ov.get("effect") or rnd.choice(choices)
@@ -85,6 +96,10 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
             trans = "cut" if rnd.random() < s.render.cut_ratio else rnd.choice(transitions)
             if trans != "cut" and s.render.dynamic_transitions and rnd.random() < s.render.dynamic_ratio:
                 trans = rnd.choice(DYNAMIC)
+        if mid:
+            a, b = motion_store.span(scenes, written[mid]["slots"], duration)
+            plan_scenes.append(PlanScene(img or "", a, b, effect, rnd.randrange(1, 10**9), trans, motion=mid))
+            continue
         end = scenes[i + 1].start if i + 1 < len(scenes) else duration
         plan_scenes.append(PlanScene(img, 0.0 if i == 0 else sc.start, max(end, sc.start + 0.1), effect,
                                      rnd.randrange(1, 10**9), trans))
@@ -106,7 +121,27 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
         fonts_dir=str(get_settings().fonts_dir),
         extra={"video_end": duration},
     )
+    overlays = motion_store.overlay_items(motion)
+    if owner or overlays:
+        subs = s.subtitles
+        doc = motion_store.build_doc(
+            motion, scenes, duration, width=width, height=height, lang=track.language, seed=look.seed,
+            fonts_dir=str(get_settings().fonts_dir), assets=motion_assets(scenes, owner),
+            safe_bottom=0.8 if subs.enabled and subs.position == "bottom" else 0.0)
+        plan.extra["motion_doc"] = doc
+        plan.motion_overlays = [[float(o["start"]), float(o["end"])] for o in overlays]
     return plan, look.seed
+
+
+def motion_assets(scenes: list, owner: dict[int, str]) -> dict[str, str]:
+    """Pictures motion elements may show: ``img<idx>`` – the picture of scene ``idx`` (when it has one)."""
+    out = {}
+    for sc in scenes:
+        rel = scene_image(sc)
+        path = to_abs(rel) if rel else None
+        if path is not None and path.exists():
+            out[f"img{sc.idx}"] = str(path)
+    return out
 
 
 def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
@@ -139,6 +174,11 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         track_id, unique = track.id, s.unique
         loudness, workers = s.render.loudness, s.render.workers
         phrase_cuts, depth_of_field, shot_moves = s.render.phrase_cuts, s.render.depth_of_field, s.render.shot_moves
+    doc = plan.extra.pop("motion_doc", None)
+    if doc:
+        doc_path = work / "motion_doc.json"
+        doc_path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        plan.motion_doc = str(doc_path)
     t0 = time.time()
     accents = []
     if accent_req:
@@ -160,6 +200,8 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
         cards = chapter_cards.build_cards(
             items, timings.words, plan, duration=cfg_ch.duration, kicker=cfg_ch.kicker,
             language=chapter_req["language"], seed=seed)
+        # a motion scene is its own title card
+        cards = [c for c in cards if not any(sc.motion and sc.start - 0.5 <= c.start < sc.end for sc in plan.scenes)]
         if cards:
             plan.chapter_cards = {"style": chapter_cards.pick_style(cfg_ch.style, seed, cfg_ch.pool),
                                   "variant": seed, "color": cfg_ch.color, "font": cfg_ch.font,
@@ -167,6 +209,10 @@ def _render(ctx: JobContext, preview: bool) -> dict[str, Any]:
             # No key phrase over a chapter title.
             accents = [a for a in accents if not any(c.start - 1.0 < a.end and a.start < c.start + c.duration
                                                      for c in cards)]
+    if accents and (plan.motion_doc):
+        # motion scenes and overlays carry their own text: no key phrase over them
+        busy = [(sc.start, sc.end) for sc in plan.scenes if sc.motion] + [(a - 0.5, b + 0.8) for a, b in plan.motion_overlays]
+        accents = [a for a in accents if not any(x < a.end and a.start < y for x, y in busy)]
     if accents:
         avoid_subject(accents, plan)  # after the depth pass: its subjects are cached by then
         accent_fx.assign_styles(accents, subs.accent_styles, seed)

@@ -106,6 +106,11 @@ export interface PipelineSettings {
     thumbnail_count: number; thumbnail_spare: number; thumbnail_text: boolean; thumbnail_style: string; thumbnail_operation: string
     thumbnail_text_mode: 'overlay' | 'model'; thumbnail_text_color: string; thumbnail_accent_color: string
   }
+  motion: {
+    mode: 'off' | 'accents' | 'mixed' | 'full'; overlays_per_minute: number; scene_share: number
+    style: string; style_overrides: Record<string, any>; direction: string
+    model: string; effort: 'low' | 'medium' | 'high'; parallel: number; chunk_scenes: number; visual_check: boolean
+  }
 }
 
 export interface Channel {
@@ -207,7 +212,8 @@ export interface TrackSummary {
   thumbnails: string[]
   publish_meta: PublishMeta
   scene_stats: SceneStats
-  stages: Record<'script' | 'voice' | 'timings' | 'scenes' | 'prompts' | 'images' | 'video' | 'publish', StageState>
+  stages: Record<'script' | 'voice' | 'timings' | 'scenes' | 'prompts' | 'images' | 'motion' | 'video' | 'publish', StageState>
+  motion: { scenes: number; overlays: number; slots: number; planning: boolean; mode: string | null; stale: boolean }
   status: ProductionStatus
   /** Unix seconds; set by the user. */
   approved_at: number | null
@@ -246,6 +252,33 @@ export interface Scene {
   /** The scene continues the previous frame (its image is drawn from it); null – a new frame. */
   continuity: { change: string } | null
   shared: boolean
+  /** Id of the motion scene drawn instead of the picture ('' – planned, not written yet). */
+  motion?: string | null
+}
+
+export interface MotionItem {
+  id: string
+  kind: 'scene' | 'overlay'
+  note: string
+  warnings: string[]
+  still: string
+  slots?: number[]
+  start?: number
+  end?: number
+}
+
+export interface MotionInfo {
+  mode: string | null
+  style: Record<string, any> | null
+  planning: boolean
+  stale: boolean
+  updated: number | null
+  items: MotionItem[]
+}
+
+export interface MotionStyles {
+  styles: Record<string, { about: string; palette: Record<string, string>; fonts: Record<string, string>; bg: string }>
+  families: string[]
 }
 
 export interface LumeanTemplate {

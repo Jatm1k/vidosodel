@@ -149,11 +149,15 @@ async function restructure(action: 'split' | 'merge-next') {
         <span v-if="busy" class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-[13px] text-tally">
           <i class="pi pi-spin pi-spinner" />{{ scene.image_status === 'queued' ? 'В очереди' : 'Генерация' }}
         </span>
+        <span v-else-if="!scene.image_url && scene.motion != null" class="absolute inset-0 flex flex-col items-center justify-center gap-1 text-[13px] text-tally">
+          <i class="pi pi-chart-bar" />{{ scene.motion ? 'Моушн-графика' : 'Станет моушн-сценой' }}
+        </span>
         <span v-else-if="!scene.image_url" class="absolute inset-0 flex items-center justify-center text-[13px]" :class="scene.image_status === 'failed' ? 'text-bad' : 'text-ink-3'">
           {{ scene.image_status === 'failed' ? 'Ошибка генерации' : 'Нет картинки' }}
         </span>
       </button>
       <span v-if="scene.shared" class="absolute left-1.5 top-1.5 rounded bg-black/60 px-1.5 text-[11px] leading-5 text-white/80">общая</span>
+      <span v-if="scene.motion && scene.image_url" class="absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 text-[11px] leading-5 text-tally">моушн</span>
       <span
         v-if="scene.image_url && usedModel && !busy"
         class="absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 text-[11px] leading-5 text-white/80"

@@ -8,7 +8,8 @@ already done, so the same command is used for the first install and daily start:
 2. ffmpeg (downloaded into ``tools/ffmpeg`` on Windows if not on PATH);
 3. the web UI (rebuilt only when frontend sources changed; Node.js is
    downloaded into ``tools/node`` if missing);
-4. ``.env`` created from ``.env.example`` on first run;
+4. the motion graphics renderer's Node packages (``backend/motion``);
+   ``.env`` created from ``.env.example`` on first run;
 5. the server is started and the browser opened. When the server exits with
    ``RESTART_EXIT_CODE`` (an update installed from the UI), the launcher runs
    itself again so new dependencies and UI are picked up.
@@ -198,6 +199,34 @@ def ensure_frontend() -> None:
     marker.write_text(digest)
 
 
+# ---------------------------------------------------------------------- motion
+MOTION = ROOT / "backend" / "motion"
+
+
+def ensure_motion() -> None:
+    """Packages of the motion graphics renderer (Node + Skia), reinstalled when package.json changes."""
+    step("Моушн-рендер")
+    marker = MOTION / "node_modules" / ".package.sha256"
+    digest = file_hash(MOTION / "package.json")
+    if marker.exists() and marker.read_text() == digest and (MOTION / "node_modules" / "@napi-rs" / "canvas").exists():
+        say("Пакеты актуальны")
+        return
+    tools = node_bin()
+    if tools is None:
+        say("Node.js не найден — скачиваю портативную версию")
+        tools = install_node()
+    node, npm = tools
+    env = dict(os.environ)
+    env["PATH"] = str(Path(node).parent) + os.pathsep + env.get("PATH", "")
+    say("Установка пакетов моушн-рендера…")
+    try:
+        run([npm, "install", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"], cwd=MOTION, env=env, shell=IS_WIN)
+    except subprocess.CalledProcessError:
+        say("Не удалось установить — моушн-графика будет недоступна до следующего запуска")
+        return
+    marker.write_text(digest)
+
+
 # ------------------------------------------------------------------------- env
 def ensure_env() -> None:
     env, example = ROOT / ".env", ROOT / ".env.example"
@@ -286,6 +315,7 @@ def main() -> None:
     py = ensure_venv()
     ensure_ffmpeg()
     ensure_frontend()
+    ensure_motion()
     ensure_env()
     step("Запуск")
     # SUPERVISED: the server may exit with RESTART_EXIT_CODE to be started again (after an update).

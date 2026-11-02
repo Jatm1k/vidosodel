@@ -66,6 +66,8 @@ class PlanScene:
     #: ``[start, end]`` of the whole scene when it is split into shots: the camera move
     #: runs through the cuts instead of restarting in every shot.
     span: list[float] | None = None
+    #: Id of a full-screen motion scene of :attr:`RenderPlan.motion_doc` drawn instead of ``image``.
+    motion: str | None = None
 
 
 @dataclass
@@ -95,6 +97,10 @@ class RenderPlan:
     #: Key phrases ``{"variant", "color", "font", "center_y", "safe_bottom", "items": [Accent as dict]}``.
     accents_fx: dict = field(default_factory=dict)
     fonts_dir: str | None = None
+    #: Motion graphics document (see :mod:`app.motion.store`) – motion scenes and overlays; ``None`` – none.
+    motion_doc: str | None = None
+    #: ``[start, end]`` of every overlay: the frame server is asked only when one is on screen.
+    motion_overlays: list[list[float]] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
 
     @property
@@ -134,6 +140,8 @@ class FrameRenderer:
         self.accents = (AccentRenderer(ax["items"], plan.width, plan.height, ax.get("color", ""), ax.get("font", ""),
                                        int(ax.get("variant", 0)), float(ax.get("center_y", 0.42)),
                                        float(ax.get("safe_bottom", 0.86))) if ax.get("items") else None)
+        self._motion = None  # frame server of the motion graphics, started on first use
+        self._ov = sorted((float(a), float(b)) for a, b in plan.motion_overlays)
         self._starts = [s.start for s in plan.scenes]
         # Half of a transition happens before the boundary, half after.
         self._td = [0.0 if (i == 0 or s.transition == "cut") else transition_length(s.transition, plan.transition_duration)
@@ -178,8 +186,26 @@ class FrameRenderer:
             self._layers_cache.popitem(last=False)
         return layers
 
+    def motion_client(self):
+        if self._motion is None:
+            from ..motion.client import MotionClient  # noqa: PLC0415 – only renders with motion need Node
+
+            self._motion = MotionClient(self.plan.motion_doc, self.plan.width, self.plan.height)
+        return self._motion
+
+    def close(self) -> None:
+        if self._motion is not None:
+            self._motion.close()
+            self._motion = None
+
+    def _overlay_on(self, t: float) -> bool:
+        # an overlay fades out half a second after its end
+        return any(a - 0.05 <= t <= b + 0.6 for a, b in self._ov)
+
     def _scene_frame(self, idx: int, t: float) -> np.ndarray:
         s = self.plan.scenes[idx]
+        if s.motion:
+            return self.motion_client().scene(s.motion, t - s.start)
         a, b = self._window[idx]
         u = (t - a) / max(0.1, b - a)
         lp = self.look.p
@@ -236,6 +262,8 @@ class FrameRenderer:
             fade = min(fade, max(0.0, (end_t - t) / p.fade_out))
         if self.fx.active:
             frame = self.fx.apply(frame, t)
+        if self._ov and self.plan.motion_doc and self._overlay_on(t):
+            frame = self.motion_client().overlay(frame, t)
         if self.cards is not None:  # before the look: grain and grading lay over the title too
             frame = self.cards.apply(frame, t)
         if self.accents is not None:
@@ -300,6 +328,7 @@ def _render_segment(plan_dict: dict, first: int, last: int, out_path: str, threa
         proc.kill()
         raise
     finally:
+        fr.close()
         rc = proc.wait()
         reader.join(timeout=5)
     if rc != 0:

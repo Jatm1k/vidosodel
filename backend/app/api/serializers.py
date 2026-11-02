@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..cleanup import video_removed
 from ..jobs.common import scene_to_dict
 from ..jobs.runner import job_to_dict
+from ..motion import store as motion_store
 from ..models import Channel, Job, Project, Scene, Track
 from ..pipeline.languages import LANGUAGES
 from ..pipeline.llm_tasks import build_description, thumbnail_files
@@ -99,14 +100,18 @@ def track_summary(db: Session, track: Track) -> dict[str, Any]:
         return "done" if done else ("partial" if partial else "empty")
 
     total = stats["total"]
+    mo = track.motion or {}
+    motion_idxs = motion_store.motion_scene_idxs(mo)
+    pictured = total - len(motion_idxs)  # motion scenes need no prompt and no picture
     stages = {
         "script": stage(bool((track.script or "").strip())),
         "voice": stage(bool(track.audio_file)),
         "timings": stage(bool(track.timings_file) and track.timings_origin != "estimate",
                          track.timings_origin == "estimate"),
         "scenes": stage(total > 0),
-        "prompts": stage(shares and total > 0 or (total > 0 and stats["prompts"] == total), stats["prompts"] > 0),
-        "images": stage(total > 0 and (shares or stats["images"] == total), stats["images"] > 0),
+        "prompts": stage(shares and total > 0 or (total > 0 and stats["prompts"] >= pictured), stats["prompts"] > 0),
+        "images": stage(total > 0 and (shares or stats["images"] >= pictured), stats["images"] > 0),
+        "motion": stage(bool(motion_store.items(mo))),
         "video": stage(bool(track.video_file) or video_removed(track)),
         "publish": stage(bool(track.publish_meta), bool(track.thumbnails)),
     }
@@ -124,6 +129,9 @@ def track_summary(db: Session, track: Track) -> dict[str, Any]:
         "thumbnails": [media_url(t) for t in track.thumbnails or []],
         "publish_meta": _publish_meta(track),
         "scene_stats": stats,
+        "motion": {"scenes": len(motion_store.scene_items(mo)), "overlays": len(motion_store.overlay_items(mo)),
+                   "slots": len(motion_idxs), "planning": motion_store.planning(mo), "mode": mo.get("mode"),
+                   "stale": bool(mo.get("key")) and total > 0 and mo.get("key") != motion_store.timeline_key(track.scenes)},
         "stages": stages,
         "status": _status(track, stages),
         "approved_at": track.approved_at, "published_at": track.published_at,

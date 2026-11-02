@@ -269,6 +269,39 @@ class PublishSettings(_Base):
     thumbnail_operation: str = "nano_banana_pro_image_generate"
 
 
+class MotionSettings(_Base):
+    """Motion graphics and infographics drawn by Claude Code (see :mod:`app.motion`).
+
+    The app asks Claude itself (``claude -p`` on the user's subscription) to compose the graphics of a video;
+    the renderer (Node + Skia, ``backend/motion``) draws them into the frames.
+    """
+
+    #: ``off``; ``accents`` – graphics over the pictures (numbers, maps, captions); ``mixed`` – also some scenes
+    #: become full-screen motion scenes (no picture is generated for them); ``full`` – the whole video is motion.
+    mode: Literal["off", "accents", "mixed", "full"] = "off"
+    #: Overlays per minute over picture scenes (``accents`` / ``mixed``).
+    overlays_per_minute: float = 1.5
+    #: Share of the scenes that become motion scenes in ``mixed`` (Claude picks those that show data best).
+    scene_share: float = 0.25
+    #: Visual language (see backend/motion/lib/styles.mjs); ``auto`` – Claude picks and tunes one for the niche
+    #: on the first video and saves it to the channel, so every video of the channel looks related.
+    style: str = "auto"
+    #: Token overrides of the style: palette roles, fonts, background, motion character.
+    style_overrides: dict[str, Any] = Field(default_factory=dict)
+    #: How this channel shows things (recurring devices, motifs, what to avoid) – the motion bible of the channel.
+    direction: str = ""
+    #: Claude model alias: ``sonnet`` – fast and economical, ``opus`` – the best compositions.
+    model: str = "sonnet"
+    #: Thinking effort of the model (``low`` spends the fewest tokens).
+    effort: Literal["low", "medium", "high"] = "medium"
+    #: Claude sessions working at once on parts of a long video.
+    parallel: int = 2
+    #: Scenes per session: a long video is split into parts of this size.
+    chunk_scenes: int = 28
+    #: Claude looks at a contact sheet of what it submitted and fixes visible problems.
+    visual_check: bool = True
+
+
 class PipelineSettings(_Base):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     scenes: SceneSettings = Field(default_factory=SceneSettings)
@@ -280,6 +313,7 @@ class PipelineSettings(_Base):
     chapters: ChapterSettings = Field(default_factory=ChapterSettings)
     unique: UniqueSettings = Field(default_factory=UniqueSettings)
     publish: PublishSettings = Field(default_factory=PublishSettings)
+    motion: MotionSettings = Field(default_factory=MotionSettings)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any] | None) -> dict[str, Any]:

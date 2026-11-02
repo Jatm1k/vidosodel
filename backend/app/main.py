@@ -10,12 +10,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import cleanup
-from .api import channels, characters, jobs, previews, projects, series, storage, system
+from .api import channels, characters, jobs, motion as motion_api, previews, projects, series, storage, system
 from .config import get_settings
 from .db import init_db
 from .jobs import runner
 from .jobs.events import bus
 from .mcp import server as mcp_server
+from .motion import tools as motion_tools
 from .services.http import ApiError
 from .services.updates import updates
 from .version import __version__
@@ -55,7 +56,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Vidosodel", version=__version__, lifespan=lifespan)
 
 for r in (system.router, channels.router, projects.router, characters.router, jobs.router, previews.router,
-          storage.router, series.router, mcp_server.router):
+          storage.router, series.router, mcp_server.router, motion_tools.router, motion_api.router):
     app.include_router(r)
 
 

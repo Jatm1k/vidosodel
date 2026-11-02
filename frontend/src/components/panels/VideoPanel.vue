@@ -37,14 +37,18 @@ const imagesReady = computed(() => {
     const m = master.value?.scene_stats
     return m ? m.total > 0 && m.images === m.total : false
   }
-  return props.track.scene_stats.total > 0 && props.track.scene_stats.images === props.track.scene_stats.total
+  // motion scenes are drawn by the motion renderer and need no picture
+  const st = props.track.scene_stats
+  return st.total > 0 && st.images >= st.total - (props.track.motion?.slots ?? 0)
 })
 const checks = computed(() => [
   { ok: !!props.track.audio_url, label: 'Озвучка', note: props.track.audio_url ? duration(props.track.audio_duration) : 'нет аудио' },
   { ok: props.track.scene_stats.total > 0, label: 'Сцены', note: `${props.track.scene_stats.total}` },
   {
     ok: imagesReady.value, label: 'Картинки',
-    note: props.track.shares_images ? 'из основного языка' : `${props.track.scene_stats.images}/${props.track.scene_stats.total}`,
+    note: props.track.shares_images ? 'из основного языка'
+      : `${props.track.scene_stats.images}/${props.track.scene_stats.total - (props.track.motion?.slots ?? 0)}`
+        + (props.track.motion?.slots ? ` · моушн-сцен ${props.track.motion.scenes}` : ''),
   },
 ])
 const canRender = computed(() => checks.value[0].ok && checks.value[1].ok && (imagesReady.value || allowMissing.value))

@@ -14,6 +14,7 @@ import cv2
 from ..db import session_scope
 from sqlalchemy import select
 
+from ..motion import store as motion_store
 from ..models import Character, Job, Project, Scene, Track
 from ..pipeline import characters as chars
 from ..pipeline import llm_tasks, packaging
@@ -27,7 +28,7 @@ from ..settings_schema import ImageSettings, LlmSettings
 from ..storage import to_abs, to_rel, track_dir, unique_name
 from .common import load_track, scene_to_dict
 from .events import scene_changed, track_changed
-from .runner import JobCancelled, JobContext, JobError, register
+from .runner import JobCancelled, JobContext, JobError, register, runner
 
 log = logging.getLogger(__name__)
 
@@ -158,8 +159,9 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
         tc = load_track(db, ctx.track_id)
         if tc.shares_images:
             raise JobError("Этот язык использует картинки основного языка — генерируйте их там.")
+        motion_idxs = motion_store.motion_scene_idxs(tc.track.motion)  # motion scenes need no picture
         wanted = {s.id for s in tc.track.scenes if (s.id in only_ids) or
-                  (not only_ids and (force or s.image_status != "done" or not s.image_file))}
+                  (not only_ids and s.idx not in motion_idxs and (force or s.image_status != "done" or not s.image_file))}
         stale = ({s.id: s.prompt for s in tc.track.scenes
                   if s.id in wanted and s.prompt.strip() and not s.prompt_locked}
                  if follow and ctx.params.get("follow_overwrite") else {})
@@ -182,6 +184,8 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
     refs: list[str] = []
     by_op: dict[str, int] = {}
 
+    motion_hold = {"on": False}
+
     def take(final: bool) -> list[tuple[int, str, str]]:
         """Wanted scenes with a ready prompt not taken yet, marked as queued. ``final`` – no new prompts will come."""
         nonlocal refs
@@ -189,6 +193,13 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             track = db.get(Track, track_id)
             if track is None:
                 return []
+            # Claude is still choosing which scenes become motion graphics: no picture is drawn for nothing.
+            motion_hold["on"] = motion_store.planning(track.motion) and bool(runner.active_for_track(track_id, {"motion"}))
+            if motion_hold["on"]:
+                return []
+            skip = motion_store.motion_scene_idxs(track.motion)
+            if skip and not only_ids:
+                wanted.difference_update(s.id for s in track.scenes if s.idx in skip and s.id not in submitted)
             ready = [s for s in track.scenes if s.id in wanted and s.id not in submitted and s.prompt.strip()
                      and (final or s.id not in stale or s.prompt != stale[s.id])]
             if not ready:
@@ -355,7 +366,7 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             elif held:
                 reset_scenes([sid for sid, _, _ in held])
                 held = []
-            waiting_prompts = not final and not stopping
+            waiting_prompts = (not final or motion_hold["on"]) and not stopping
             # Only waiting for prompts: another project's images may use the lane meanwhile.
             ctx.set_idle(waiting_prompts and not pending)
             if not pending and not waiting_prompts and not held:
@@ -366,7 +377,9 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             else:
                 time.sleep(3)
             msg = f"Готово {done}/{len(wanted)}" + (f", ошибок {failed}" if failed else "")
-            if waiting_prompts and len(submitted) < len(wanted):
+            if motion_hold["on"]:
+                msg += " · жду, какие сцены станут моушн-графикой"
+            elif waiting_prompts and len(submitted) < len(wanted):
                 msg += f" · промптов пока {len(submitted)}, жду остальные"
             if wait_msg["text"] and limiter.waiting:
                 msg += f" · {wait_msg['text']}"

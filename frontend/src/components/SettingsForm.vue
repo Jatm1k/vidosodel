@@ -3,7 +3,7 @@
  * Pipeline settings editor shared by channels and projects.
  * Works on a full PipelineSettings object (v-model); the parent decides what to persist.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import ColorPicker from 'primevue/colorpicker'
 import MultiSelect from 'primevue/multiselect'
@@ -15,7 +15,7 @@ import Slider from 'primevue/slider'
 import Textarea from 'primevue/textarea'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { api } from '@/api/client'
-import type { LumeanTemplate, PipelineSettings } from '@/api/types'
+import type { LumeanTemplate, MotionStyles, PipelineSettings } from '@/api/types'
 import { useAppStore } from '@/stores/app'
 import { useNotify } from '@/composables/useNotify'
 import FormField from './FormField.vue'
@@ -43,10 +43,42 @@ const sections = [
   { id: 'atmosphere', label: 'Атмосфера', icon: 'pi-sun' },
   { id: 'subtitles', label: 'Субтитры', icon: 'pi-align-center' },
   { id: 'chapters', label: 'Заставки глав', icon: 'pi-bookmark' },
+  { id: 'motion', label: 'Моушн-графика', icon: 'pi-chart-bar' },
   { id: 'unique', label: 'Уникализация', icon: 'pi-shield' },
   { id: 'publish', label: 'Публикация', icon: 'pi-youtube' },
 ] as const
 const active = ref<(typeof sections)[number]['id']>('voice')
+
+// ----------------------------------------------------------------- motion graphics
+const motionStyles = ref<MotionStyles | null>(null)
+async function loadMotionStyles() {
+  if (motionStyles.value) return
+  try {
+    motionStyles.value = await api.get<MotionStyles>('/api/motion/styles')
+  } catch (e) {
+    notify.error(e)
+  }
+}
+const MOTION_MODES = [
+  { value: 'off', label: 'Выкл.' }, { value: 'accents', label: 'Акценты' },
+  { value: 'mixed', label: 'Смешанный' }, { value: 'full', label: 'Весь ролик' },
+]
+const MOTION_MODELS = [
+  { value: 'sonnet', label: 'Sonnet — быстро и экономно' }, { value: 'opus', label: 'Opus — лучшие композиции' },
+  { value: 'haiku', label: 'Haiku — самый дешёвый' },
+]
+/** The palette the channel ends up with: the style's own plus its overrides. */
+function motionPalette(name: string): string[] {
+  const base = motionStyles.value?.styles[name]?.palette ?? {}
+  const over = name === s.value.motion.style ? (s.value.motion.style_overrides?.palette ?? {}) : {}
+  const p = { ...base, ...over }
+  return ['bg', 'ink', 'accent', 'accent2', 'accent3'].map((k) => p[k]).filter(Boolean)
+}
+watch(active, (a) => a === 'motion' && loadMotionStyles())
+function pickMotionStyle(name: string) {
+  if (s.value.motion.style !== name) s.value.motion.style_overrides = {}
+  s.value.motion.style = name
+}
 
 // ----------------------------------------------------------------- effect previews
 const previewOpen = ref(false)
@@ -903,6 +935,63 @@ onMounted(async () => {
       </template>
 
       <!-- ============================== CHAPTER CARDS -->
+      <template v-else-if="active === 'motion'">
+        <p class="text-ink-3">
+          Инфографику и анимированные вставки сочиняет Claude: приложение само запускает Claude Code по вашей подписке
+          (нужен установленный и авторизованный <code>claude</code>), даёт ему сценарий с таймингами и стиль канала, а свой движок
+          рисует результат прямо в кадры видео. Графика синхронизирована со словами диктора.
+        </p>
+        <FormField label="Режим" hint="Акценты — поверх картинок (цифры, карты, подписи). Смешанный — ещё и часть сцен целиком инфографика, картинки для них не рисуются. Весь ролик — только моушн-графика">
+          <SelectButton v-model="s.motion.mode" :options="MOTION_MODES" option-label="label" option-value="value" :allow-empty="false" />
+        </FormField>
+        <template v-if="s.motion.mode !== 'off'">
+          <FormField v-if="s.motion.mode !== 'full'" label="Оверлеев в минуту" hint="Графика поверх картинок: 1–2 — ненавязчиво, 3+ — плотно">
+            <InputNumber v-model="s.motion.overlays_per_minute" :min="0" :max="6" :step="0.5" :min-fraction-digits="0" :max-fraction-digits="1" show-buttons class="w-32" />
+          </FormField>
+          <FormField v-if="s.motion.mode === 'mixed'" :label="`Доля моушн-сцен: ${Math.round(s.motion.scene_share * 100)}%`" hint="Claude выберет сцены, которые лучше всего показать графикой (цифры, сравнения, карты, процессы)">
+            <Slider v-model="s.motion.scene_share" :min="0.05" :max="0.8" :step="0.05" class="mt-3 w-72" />
+          </FormField>
+          <FormField label="Визуальный язык" hint="«Под нишу» — на первом ролике Claude подберёт и настроит стиль под тематику канала и сохранит его: все ролики канала будут в одном стиле">
+            <div class="grid w-full grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-2">
+              <button class="rounded-md border p-2.5 text-left" :class="s.motion.style === 'auto' ? 'border-tally/60 bg-tally/[0.05]' : 'border-line-soft'"
+                      @click="pickMotionStyle('auto')">
+                <span class="font-medium">Под нишу (Claude)</span>
+                <span class="mt-1 block text-[12px] leading-snug text-ink-3">подберёт и запомнит стиль канала</span>
+              </button>
+              <button v-for="(st, name) in motionStyles?.styles ?? {}" :key="name" class="rounded-md border p-2.5 text-left"
+                      :class="s.motion.style === name ? 'border-tally/60 bg-tally/[0.05]' : 'border-line-soft'" @click="pickMotionStyle(String(name))">
+                <span class="flex items-center gap-2">
+                  <span class="font-medium">{{ name }}</span>
+                  <span class="ml-auto flex">
+                    <span v-for="c in motionPalette(String(name))" :key="c" class="h-3.5 w-3.5 border border-black/20" :style="{ background: c }" />
+                  </span>
+                </span>
+                <span class="mt-1 block text-[12px] leading-snug text-ink-3">{{ st.about }}</span>
+              </button>
+            </div>
+          </FormField>
+          <FormField label="Как канал показывает вещи" hint="Повторяющиеся приёмы, метафоры, чего избегать. Claude заполнит сам при подборе стиля — можно править">
+            <Textarea v-model="s.motion.direction" rows="4" auto-resize class="w-full" />
+          </FormField>
+          <FormField label="Модель Claude">
+            <Select v-model="s.motion.model" :options="MOTION_MODELS" option-label="label" option-value="value" class="w-72" />
+          </FormField>
+          <FormField label="Глубина размышлений" hint="Низкая тратит меньше всего токенов лимита подписки">
+            <SelectButton v-model="s.motion.effort" :options="[{ v: 'low', l: 'Низкая' }, { v: 'medium', l: 'Средняя' }, { v: 'high', l: 'Высокая' }]"
+                          option-label="l" option-value="v" :allow-empty="false" />
+          </FormField>
+          <FormField label="Параллельно сессий" hint="Длинный ролик делится на части, их делают одновременно — быстрее, но расходует лимит быстрее">
+            <InputNumber v-model="s.motion.parallel" :min="1" :max="6" show-buttons class="w-32" />
+          </FormField>
+          <FormField label="Сцен в одной части">
+            <InputNumber v-model="s.motion.chunk_scenes" :min="8" :max="80" show-buttons class="w-32" />
+          </FormField>
+          <FormField label="Визуальная проверка" hint="Claude смотрит на кадры того, что сделал, и исправляет заметные проблемы (немного больше токенов)">
+            <ToggleSwitch v-model="s.motion.visual_check" class="mt-1.5" />
+          </FormField>
+        </template>
+      </template>
+
       <template v-else-if="active === 'chapters'">
         <p class="text-ink-3">
           Когда в ролике начинается новая глава, поверх кадра на несколько секунд появляется её название. Озвучка при этом не

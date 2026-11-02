@@ -23,6 +23,7 @@ import VoicePanel from '@/components/panels/VoicePanel.vue'
 import StoryboardPanel from '@/components/panels/StoryboardPanel.vue'
 import VideoPanel from '@/components/panels/VideoPanel.vue'
 import PublishPanel from '@/components/panels/PublishPanel.vue'
+import MotionPanel from '@/components/panels/MotionPanel.vue'
 
 const props = defineProps<{ id: number }>()
 const router = useRouter()
@@ -129,6 +130,7 @@ const STEPS = [
   { id: 'translate', label: 'Перевод сценария', hint: 'для языков без текста' },
   { id: 'voice', label: 'Озвучка' },
   { id: 'scenes', label: 'Разбивка на сцены' },
+  { id: 'motion', label: 'Моушн-графика (Claude)', hint: 'если включена в настройках' },
   { id: 'characters', label: 'Персонажи', hint: 'если включены референсы' },
   { id: 'prompts', label: 'Промпты' },
   { id: 'images', label: 'Картинки' },
@@ -366,7 +368,10 @@ const hasOverrides = computed(() => !!project.value && Object.keys(project.value
       <div class="mt-6">
         <ScriptPanel v-if="stage === 'script'" :key="`s${track.id}`" :track="track" :project="project" @changed="reload" />
         <VoicePanel v-else-if="stage === 'voice'" :key="`v${track.id}`" :track="track" :project="project" @changed="reload" />
-        <StoryboardPanel v-else-if="stage === 'storyboard'" :key="`b${track.id}`" :track="track" :project="project" @changed="reload" />
+        <template v-else-if="stage === 'storyboard'">
+          <MotionPanel :key="`m${track.id}`" :track="track" :project="project" class="mb-5" @changed="reload" />
+          <StoryboardPanel :key="`b${track.id}`" :track="track" :project="project" @changed="reload" />
+        </template>
         <VideoPanel v-else-if="stage === 'video'" :key="`r${track.id}`" :track="track" :project="project" @open-settings="openSettings" />
         <PublishPanel v-else :key="`p${track.id}`" :track="track" :project="project" />
       </div>

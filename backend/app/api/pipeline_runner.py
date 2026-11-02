@@ -3,6 +3,10 @@
 Steps run in this order per track, each depending on the previous one::
 
     translate → voice → scenes → characters → prompts → images → render → metadata → thumbnails
+                              ↘ motion ↗ (render waits for it)
+
+``motion`` (graphics composed by Claude, see app.motion) runs next to the picture steps; in the ``mixed`` mode the
+image job waits until Claude has marked the scenes that become motion scenes, in ``full`` there are no pictures.
 
 ``characters`` (reference portraits) runs only when it is enabled in the image
 settings, once per project – on the master track.
@@ -26,9 +30,10 @@ from sqlalchemy.orm import Session
 from ..cleanup import video_removed
 from ..jobs.runner import runner
 from ..models import Project, Track
+from ..motion import store as motion_store
 from ..settings_schema import effective_settings
 
-STEP_ORDER = ["translate", "voice", "scenes", "characters", "prompts", "images", "render", "metadata", "thumbnails"]
+STEP_ORDER = ["translate", "voice", "scenes", "motion", "characters", "prompts", "images", "render", "metadata", "thumbnails"]
 
 
 def _characters_done(project: Project) -> bool:
@@ -53,6 +58,8 @@ def _done(track: Track, step: str, shares: bool) -> bool:
         return bool(track.publish_meta)
     if step == "thumbnails":
         return bool(track.thumbnails)
+    if step == "motion":
+        return bool(motion_store.items(track.motion)) and (track.motion or {}).get("key") == motion_store.timeline_key(scenes)
     return False
 
 
@@ -66,7 +73,9 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
     # Master first: other languages may depend on it.
     tracks.sort(key=lambda t: (t.id != master_id, t.position))
     selected = [s for s in STEP_ORDER if s in steps]
-    use_characters = effective_settings(project.channel.settings, project.settings).images.character_refs
+    eff = effective_settings(project.channel.settings, project.settings)
+    use_characters = eff.images.character_refs
+    motion_mode = eff.motion.mode
     created: list[int] = []
     master_jobs: dict[str, int] = {}
 
@@ -79,6 +88,10 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
         for step in selected:
             if step == "translate" and (is_master or master is None):
                 continue
+            if step == "motion" and motion_mode == "off":
+                continue
+            if step in ("characters", "prompts", "images") and motion_mode == "full":
+                continue  # the whole video is motion graphics: no pictures
             if step in ("prompts", "images") and shares:
                 continue
             if step == "characters":
@@ -113,6 +126,13 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
                     params["follow_overwrite"] = True
             if step == "render" and "prompts" in step_jobs:
                 after.append(step_jobs["prompts"])  # images no longer depend on the prompts directly
+            if step == "render" and "motion" in step_jobs:
+                after.append(step_jobs["motion"])
+            if step == "motion" and shares and "motion" in master_jobs:
+                after.append(master_jobs["motion"])  # adapts the master's graphics
+            if step == "motion" and motion_mode == "mixed" and not shares:
+                # the image job holds until Claude marks the motion scenes (cleared by the motion job)
+                track.motion = {**(track.motion or {}), "planning": True}
             if step == "metadata":
                 params["_low"] = True
             if step == "render" and options.get("allow_missing"):
@@ -140,7 +160,7 @@ def run_pipeline(db: Session, project: Project, *, track_ids: list[int] | None, 
                 before_prompts = prev
             job = runner.enqueue(step, project_id=project.id, track_id=track.id, params=params, depends_on=depends)
             step_jobs[step] = job.id
-            if step not in ("metadata", "thumbnails"):
+            if step not in ("metadata", "thumbnails", "motion"):
                 prev = job.id
             created.append(job.id)
             if is_master:

@@ -24,6 +24,7 @@ from ..jobs.events import track_changed
 from ..jobs.runner import kind_title, runner
 from ..jobs.voice import voice_config_override, apply_timings
 from ..models import Channel, Job, Project, Scene, Track
+from ..motion import store as motion_store
 from ..pipeline.image_plan import plan_summary
 from ..pipeline.languages import LANGUAGES
 from ..pipeline.text import normalize_script
@@ -42,7 +43,7 @@ router = APIRouter(prefix="/api", tags=["projects"])
 AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 JOB_KINDS = {"voice", "voice_fix", "transcribe", "translate", "scenes", "prompts", "images", "render", "preview",
-             "metadata", "thumbnail_ideas", "thumbnails", "watermarks"}
+             "metadata", "thumbnail_ideas", "thumbnails", "watermarks", "motion"}
 
 
 # ============================================================== helpers
@@ -554,7 +555,8 @@ def reveal(track_id: int, what: str, db: Session = Depends(get_db)) -> dict[str,
 @router.get("/tracks/{track_id}/scenes")
 def list_scenes(track_id: int, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     t = _track(db, track_id)
-    return [scene_to_dict(s) for s in t.scenes]
+    owner = motion_store.slot_owner(t.motion)
+    return [{**scene_to_dict(s), "motion": owner.get(s.idx)} for s in t.scenes]
 
 
 class ScenePatch(BaseModel):

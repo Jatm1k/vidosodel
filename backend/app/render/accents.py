@@ -130,6 +130,8 @@ def subject_at(plan: RenderPlan, t: float, cache: dict[str, dict | None]) -> dic
     from . import depth as depth_mod
 
     scene = next((s for s in reversed(plan.scenes) if s.start <= t), None)
+    if scene is not None and scene.motion:
+        return None
     if scene is None:
         return None
     if scene.image not in cache:

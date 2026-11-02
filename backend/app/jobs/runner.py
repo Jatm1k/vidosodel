@@ -119,7 +119,7 @@ def kind_title(kind: str) -> str:
 def _lane_limits() -> dict[str, int]:
     cfg = load_config()
     return {"llm": 3, "prompts": 1, "voice": max(1, cfg.lumean_parallel_orders), "images": 1,
-            "images_few": 3, "characters": 1, "render": max(1, cfg.parallel_renders), "preview": 1, "misc": 4}
+            "images_few": 3, "characters": 1, "render": max(1, cfg.parallel_renders), "preview": 1, "misc": 4, "motion": 1}
 
 
 def _job_lane(kind: str, params: dict[str, Any] | None) -> str:

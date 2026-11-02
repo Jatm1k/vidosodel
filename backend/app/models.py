@@ -178,6 +178,9 @@ class Track(TimestampMixin, Base):
     publish_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     #: Relative paths of generated thumbnails.
     thumbnails: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: Motion graphics of this language version (see :mod:`app.motion.store`): style, full-screen motion scenes
+    #: (by scene index) and overlays (by time), written by Claude.
+    motion: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # --- production status (set by the user) ----------------------------------
     #: When the user checked the finished video; a new render resets it.

@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import delete
 
 from ..db import session_scope
+from ..motion import store as motion_store
 from ..models import Character, Project, Scene, Track
 from ..pipeline import llm_tasks
 from ..pipeline.align import align_scenes
@@ -122,9 +123,11 @@ def prompts_job(ctx: JobContext) -> dict[str, Any]:
         tc = load_track(db, ctx.track_id)
         if tc.shares_images:
             raise JobError("Этот язык использует картинки основного языка — промпты создаются там.")
+        motion_idxs = motion_store.motion_scene_idxs(tc.track.motion)  # motion scenes need no picture
         targets = [
             (s.id, s.text) for s in tc.track.scenes
-            if (s.id in only_ids) or (not only_ids and (not s.prompt.strip() or (overwrite and not s.prompt_locked)))
+            if (s.id in only_ids) or (not only_ids and s.idx not in motion_idxs
+                                      and (not s.prompt.strip() or (overwrite and not s.prompt_locked)))
         ]
         llm, project_id, track_id = tc.settings.llm, tc.project.id, tc.track.id
         use_characters = tc.settings.images.character_refs
