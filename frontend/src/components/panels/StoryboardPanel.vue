@@ -299,7 +299,7 @@ onUnmounted(() => {
     />
 
     <template v-if="scenes.length">
-      <SceneTimeline :scenes="scenes" :duration="track.audio_duration ?? scenes.at(-1)?.end ?? 0" :selected="selected" @select="select" />
+      <SceneTimeline :scenes="scenes" :duration="track.audio_duration ?? scenes.at(-1)?.end ?? 0" :selected="selected" :track-id="track.id" @select="select" />
 
       <div class="flex items-center justify-between">
         <SelectButton

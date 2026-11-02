@@ -109,7 +109,7 @@ const styleName = computed(() => (info.value?.style as any)?.base ?? null)
 </script>
 
 <template>
-  <section class="rounded-lg border border-line-soft bg-panel p-4">
+  <section>
     <header class="flex flex-wrap items-center gap-3">
       <h3 class="text-[15px] font-semibold">Моушн-графика</h3>
       <span class="text-[13px] text-ink-3">

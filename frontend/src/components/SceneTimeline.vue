@@ -7,7 +7,9 @@ import { computed, ref } from 'vue'
 import type { Scene } from '@/api/types'
 import { timecode } from '@/composables/useFormat'
 
-const props = defineProps<{ scenes: Scene[]; duration: number; selected: number | null }>()
+const props = defineProps<{ scenes: Scene[]; duration: number; selected: number | null; trackId?: number }>()
+/** Picture of a scene, or the frame of its motion graphics. */
+const thumb = (s: Scene) => s.image_url || (s.motion && props.trackId ? `/api/tracks/${props.trackId}/motion/${s.motion}/still` : null)
 const emit = defineEmits<{ select: [id: number] }>()
 
 const zoom = ref(14) // px per second
@@ -54,7 +56,7 @@ const ticks = computed(() => {
             :title="`${s.idx + 1}. ${timecode(s.start)}–${timecode(s.end)}\n${s.text}`"
             @click="emit('select', s.id)"
           >
-            <img v-if="s.image_url" :src="s.image_url" alt="" loading="lazy" class="h-full w-full object-cover" />
+            <img v-if="thumb(s)" :src="thumb(s)!" alt="" loading="lazy" class="h-full w-full object-cover" />
             <span
               v-else-if="s.image_status === 'generating' || s.image_status === 'queued'"
               class="stripes absolute inset-0"

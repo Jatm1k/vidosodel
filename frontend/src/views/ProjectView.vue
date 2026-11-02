@@ -94,6 +94,36 @@ onMounted(async () => {
 })
 onUnmounted(() => off?.())
 
+// ------------------------------------------------------------------ storyboard tabs
+type BoardTab = 'scenes' | 'motion'
+const boardTab = ref<BoardTab>(readBoardTab())
+function readBoardTab(): BoardTab {
+  try {
+    return localStorage.getItem('vidosodel.boardTab') === 'motion' ? 'motion' : 'scenes'
+  } catch {
+    return 'scenes'
+  }
+}
+function setBoardTab(t: BoardTab) {
+  boardTab.value = t
+  try {
+    localStorage.setItem('vidosodel.boardTab', t)
+  } catch {
+    /* private mode – the tab is just not remembered */
+  }
+}
+const boardTabs = computed(() => {
+  const t = track.value
+  const mo = t?.motion
+  const busy = (kinds: string[]) => store.activeJobs.some((j) => j.track_id === t?.id && kinds.includes(j.kind) && j.status === 'running')
+  return [
+    { id: 'scenes' as const, label: 'Сцены и картинки', icon: 'pi-images', count: t?.scene_stats.total || 0,
+      running: busy(['scenes', 'characters', 'prompts', 'images', 'watermarks']) },
+    { id: 'motion' as const, label: 'Моушн-графика', icon: 'pi-chart-bar', count: (mo?.scenes ?? 0) + (mo?.overlays ?? 0),
+      running: busy(['motion']) },
+  ]
+})
+
 // ------------------------------------------------------------------ project actions
 async function rename(name: string) {
   editingName.value = false
@@ -369,8 +399,23 @@ const hasOverrides = computed(() => !!project.value && Object.keys(project.value
         <ScriptPanel v-if="stage === 'script'" :key="`s${track.id}`" :track="track" :project="project" @changed="reload" />
         <VoicePanel v-else-if="stage === 'voice'" :key="`v${track.id}`" :track="track" :project="project" @changed="reload" />
         <template v-else-if="stage === 'storyboard'">
-          <MotionPanel :key="`m${track.id}`" :track="track" :project="project" class="mb-5" @changed="reload" />
-          <StoryboardPanel :key="`b${track.id}`" :track="track" :project="project" @changed="reload" />
+          <div class="mb-4 flex gap-1 border-b border-line-soft" role="tablist">
+            <button
+              v-for="tb in boardTabs"
+              :key="tb.id"
+              role="tab"
+              :aria-selected="boardTab === tb.id"
+              class="relative -mb-px flex items-center gap-2 border-b-2 px-3 pb-2 pt-1 text-[14px] transition-colors"
+              :class="boardTab === tb.id ? 'border-tally text-ink' : 'border-transparent text-ink-3 hover:text-ink-2'"
+              @click="setBoardTab(tb.id)"
+            >
+              <i :class="['pi', tb.icon, 'text-[13px]']" />{{ tb.label }}
+              <span v-if="tb.count" class="tnum text-[12px] text-ink-3">{{ tb.count }}</span>
+              <span v-if="tb.running" class="tally-live block h-1.5 w-1.5 rounded-full bg-tally" title="Выполняется" />
+            </button>
+          </div>
+          <StoryboardPanel v-if="boardTab === 'scenes'" :key="`b${track.id}`" :track="track" :project="project" @changed="reload" />
+          <MotionPanel v-else :key="`m${track.id}`" :track="track" :project="project" @changed="reload" />
         </template>
         <VideoPanel v-else-if="stage === 'video'" :key="`r${track.id}`" :track="track" :project="project" @open-settings="openSettings" />
         <PublishPanel v-else :key="`p${track.id}`" :track="track" :project="project" />
