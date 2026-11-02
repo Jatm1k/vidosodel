@@ -155,6 +155,7 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
     only_ids = set(ctx.params.get("scene_ids") or [])
     force = bool(ctx.params.get("force"))
     follow = ctx.params.get("follow")
+    missing_only = bool(ctx.params.get("missing_only"))
     with session_scope() as db:
         tc = load_track(db, ctx.track_id)
         if tc.shares_images:
@@ -201,7 +202,10 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             if skip and not only_ids:
                 wanted.difference_update(s.id for s in track.scenes if s.idx in skip and s.id not in submitted)
             ready = [s for s in track.scenes if s.id in wanted and s.id not in submitted and s.prompt.strip()
-                     and (final or s.id not in stale or s.prompt != stale[s.id])]
+                     and (final or s.id not in stale or s.prompt != stale[s.id])
+                     # «missing_only»: another job may have drawn it meanwhile – never pay for a picture twice
+                     and not ((missing_only or (not force and not only_ids))
+                              and (s.image_file or s.image_status in ("queued", "generating")))]
             if not ready:
                 return []
             plan = plan_project(track.project, images, limiter.hourly_budget())
@@ -406,6 +410,28 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             + (f", пропущено без промпта: {no_prompt}" if no_prompt else "")
             + (" (" + ", ".join(f"{IMAGE_OPS_BY_ID.get(op, {}).get('name', op)}: {n}" for op, n in by_op.items()) + ")"
                if len(by_op) > 1 else "")}
+
+
+def queue_missing_pictures(track_id: int, idxs: set[int] | None = None) -> int:
+    """Scenes that need a picture and have none (and are not motion graphics): prompts for those without one, then
+    their pictures. ``idxs`` – only these scene indices. Returns how many scenes were queued."""
+    with session_scope() as db:
+        t = db.get(Track, track_id)
+        if t is None or (t.project.image_mode == "shared" and t.project.master_track_id not in (None, t.id)):
+            return 0
+        motion = motion_store.motion_scene_idxs(t.motion)
+        need = [s for s in t.scenes if s.idx not in motion and not s.image_file and s.image_status not in ("queued", "generating")
+                and (idxs is None or s.idx in idxs)]
+        ids = [s.id for s in need]
+        no_prompt = [s.id for s in need if not s.prompt.strip()]
+        project_id = t.project_id
+    if not ids:
+        return 0
+    prompts = runner.enqueue("prompts", project_id=project_id, track_id=track_id,
+                             params={"scene_ids": no_prompt}) if no_prompt else None
+    runner.enqueue("images", project_id=project_id, track_id=track_id, params={"scene_ids": ids, "missing_only": True},
+                   depends_on=prompts.id if prompts else None)
+    return len(ids)
 
 
 def reset_scenes(scene_ids: list[int]) -> None:

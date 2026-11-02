@@ -71,6 +71,17 @@ const missingImages = computed(() => scenes.value.filter((s) => !s.image_url && 
 const missingPrompts = computed(() => scenes.value.filter((s) => !s.prompt.trim() && !isMotion(s)).length)
 const motionCount = computed(() => scenes.value.filter((s) => s.motion != null).length)
 
+/** Every scene without a picture (not motion): missing prompts are written first, then the pictures. */
+async function fillMissing() {
+  try {
+    const r = await api.post<{ queued: number }>(`/api/tracks/${props.track.id}/pictures/missing`)
+    void store.loadActiveJobs()
+    notify.info(r.queued ? `Сцен в работе: ${r.queued} — сначала промпты, потом картинки` : 'Все картинки уже есть')
+  } catch (e) {
+    notify.error(e)
+  }
+}
+
 /** A motion scene back to a picture: its graphics are removed, then a prompt and a picture are made. */
 function toPicture(scene: Scene) {
   confirm.require({
@@ -136,7 +147,7 @@ const promptItems = computed(() => [
   },
 ])
 const imageItems = computed(() => [
-  { label: `Сгенерировать недостающие (${missingImages.value})`, disabled: !missingImages.value, command: () => run('images', {}, 'Генерация картинок запущена') },
+  { label: `Сгенерировать недостающие (${missingImages.value})`, disabled: !missingImages.value, command: fillMissing },
   {
     label: 'Перегенерировать все',
     command: () =>

@@ -147,6 +147,15 @@ def to_picture(track_id: int, body: ToPicture, db: Session = Depends(get_db)) ->
     return {"ok": True, "scenes": len(slots), "jobs": job_ids}
 
 
+@router.post("/tracks/{track_id}/pictures/missing")
+def missing_pictures(track_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Every scene without a picture that is not motion graphics: prompts where missing, then pictures."""
+    _track(db, track_id)
+    from ..jobs.image_jobs import queue_missing_pictures  # noqa: PLC0415
+
+    return {"queued": queue_missing_pictures(track_id)}
+
+
 @router.delete("/tracks/{track_id}/motion")
 def clear_motion(track_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
     t = _track(db, track_id)

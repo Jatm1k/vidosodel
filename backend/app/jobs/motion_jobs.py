@@ -191,6 +191,8 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
         scenes = _light_scenes(track)
         duration = track.audio_duration or timings.duration
         key = store.timeline_key(track.scenes)
+        # scenes that are motion now: they have no pictures, so a new plan should keep them
+        had_motion = {i for i in store.motion_scene_idxs(track.motion) if i < len(scenes) and not scenes[i].image}
         adapt_from = None
         if tc.shares_images and not redo_ids:
             master = master_track(db, tc.project)
@@ -216,7 +218,7 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
         lo_r, hi_r = (max(0, int(rng[0])), min(len(scenes) - 1, int(rng[1]))) if rng else (0, len(scenes) - 1)
         if hi_r < lo_r:
             raise JobError("Пустой диапазон сцен")
-        tasks = _full_tasks(scenes, duration, mode, ms, adapt_from, lo_r, hi_r)
+        tasks = _full_tasks(scenes, duration, mode, ms, adapt_from, lo_r, hi_r, keep=had_motion)
     partial = bool(ctx.params.get("range")) and not redo_ids
 
     def init(m: dict[str, Any]) -> None:
@@ -306,6 +308,7 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
             done_parts["n"] += 1
             report()
     m, dropped = _finish(track_id, scenes)
+    dropped |= had_motion - store.motion_scene_idxs(m)  # were motion, are not any more: they need pictures
     track_changed(track_id, "motion")
     if ctx.should_stop() and not errors:
         raise JobCancelled()
@@ -357,26 +360,15 @@ def _finish(track_id: int, scenes: list[Any]) -> tuple[dict[str, Any], set[int]]
 
 
 def _pictures_needed(track_id: int, dropped: set[int]) -> int:
-    """Scenes the plan dropped need a picture after all. A running image job picks them up by itself
-    (it re-reads the plan); otherwise prompts and pictures are queued for them."""
-    if not dropped:
-        return 0
-    with session_scope() as db:
-        t = db.get(Track, track_id)
-        scenes = [sc for sc in t.scenes if sc.idx in dropped and not (sc.image_file or sc.source_scene_id)]
-        no_prompt = [sc.id for sc in scenes if not sc.prompt.strip()]
-        ids = [sc.id for sc in scenes]
-        project_id = t.project_id
-    if ids and not runner.active_for_track(track_id, {"images", "prompts"}):
-        prompts = runner.enqueue("prompts", project_id=project_id, track_id=track_id,
-                                 params={"scene_ids": no_prompt}) if no_prompt else None
-        runner.enqueue("images", project_id=project_id, track_id=track_id, params={"scene_ids": ids},
-                       depends_on=prompts.id if prompts else None)
-    return len(ids)
+    """Scenes that stopped being motion (dropped from the plan, or motion before this run) get prompts and pictures.
+    The image job never draws a picture twice, so a running pipeline image job is no problem."""
+    from .image_jobs import queue_missing_pictures  # noqa: PLC0415 – image_jobs imports the motion store
 
+    return queue_missing_pictures(track_id, dropped) if dropped else 0
 
 def _full_tasks(scenes: list[Any], duration: float, mode: str, ms: MotionSettings,
-                adapt_from: dict[str, Any] | None, first: int, last: int) -> list[tuple[int, int, str]]:
+                adapt_from: dict[str, Any] | None, first: int, last: int,
+                keep: set[int] | None = None) -> list[tuple[int, int, str]]:
     tasks = []
     for a, b in _parts(last - first + 1, ms.chunk_scenes):
         lo, hi = first + a, first + b
@@ -395,10 +387,14 @@ def _full_tasks(scenes: list[Any], duration: float, mode: str, ms: MotionSetting
                     f"YOUR PART: scenes #{lo}–#{hi} ({t0:.1f}–{t1:.1f} s).\n\nORIGINAL ITEMS:\n"
                     f"{json.dumps(src, ensure_ascii=False)}\n\nSCENES OF THIS LANGUAGE:\n{_scene_lines(scenes, lo, hi, duration)}")
         else:
-            k = max(1, round(n * ms.scene_share)) if mode == "mixed" else 0
+            kept = sorted(i for i in (keep or set()) if lo <= i <= hi) if mode == "mixed" else []
+            k = max(1, round(n * ms.scene_share), len(kept)) if mode == "mixed" else 0
             o = max(1, round((t1 - t0) / 60 * ms.overlays_per_minute)) if mode in ("mixed", "accents") else 0
-            body = (f"TASK: {MODE_TEXT[mode].format(k=k, o=o)}\n"
-                    f"YOUR PART: scenes #{lo}–#{hi} ({t0:.1f}–{t1:.1f} s)" + ("" if (lo, hi) == (first, last) else
+            keep_line = (f"KEEP: scenes {', '.join(f'#{i}' for i in kept)} are motion scenes already and have NO pictures — "
+                         "plan them as motion scenes again (make them better); choose other scenes only on top of them.\n"
+                         if kept else "")
+            body = (f"TASK: {MODE_TEXT[mode].format(k=k, o=o)}\n" + keep_line
+                    + f"YOUR PART: scenes #{lo}–#{hi} ({t0:.1f}–{t1:.1f} s)" + ("" if (lo, hi) == (first, last) else
                                                                            " — other parts are done by other sessions") + "\n"
                     + (_assets_line(scenes, lo, hi, mode) + "\n" if _assets_line(scenes, lo, hi, mode) else "")
                     + f"\nSCENES (#index [start–end in video seconds · duration] narration):\n{_scene_lines(scenes, lo, hi, duration)}")
