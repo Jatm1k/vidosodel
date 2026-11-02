@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Project, Track
 from ..pipeline import chapters as chapters_mod
-from ..pipeline import llm_tasks, packaging
+from ..pipeline import llm_tasks, packaging, research
 from ..render.engine import RESOLUTIONS, PlanScene, RenderPlan, render_video
 from ..render.atmosphere import make_params as atmosphere_params
 from ..render.look import random_look
@@ -282,7 +282,7 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
         old_meta = dict(track.publish_meta or {})
         old_files = list(track.thumbnails or [])
         project_name = tc.project.name
-        channel_used = _channel_thumbnails(db, tc.project)
+        channel_used, elsewhere = _channel_thumbnails(db, tc.project)
     # Ideas that already have images are the user's to manage (new ideas / redraw buttons);
     # plain "recreate metadata" must not throw them away. A forced pipeline run asks for new ones.
     kept = llm_tasks.thumbnail_files(old_meta, old_files)
@@ -290,6 +290,9 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
     with FastgenClient() as fg:
         ctx.progress(0.05, "Изучаю сценарий: о чём ролик и что в нём конкретного", force=True)
         brief = packaging.build_brief(fg, script, lang, llm, project_name)
+        _study_market(ctx, brief, lang, 0.15)
+        ctx.progress(0.2, "Стратегия: как продать ролик целиком", force=True)
+        brief["angles"] = packaging.make_angles(fg, brief, lang, llm)
         ctx.progress(0.3, "Подбираю названия: варианты, оценка, доработка лучших", force=True)
         ranked = packaging.make_titles(fg, brief, lang, llm, pub.title_variants,
                                        avoid=list(old_meta.get("titles") or []))
@@ -301,9 +304,9 @@ def metadata_job(ctx: JobContext) -> dict[str, Any]:
         meta.update({"titles": titles, "title_info": ranked, "brief": brief})
         if new_ideas and pub.thumbnail_count > 0:
             ctx.progress(0.85, "Обложки: текст, картинка и своё название к каждой", force=True)
-            meta["thumbnails"] = packaging.thumbnail_concepts(
-                fg, brief, script[:6000], lang, None, llm, pub, pub.thumbnail_count, title_ideas=titles,
-                channel_used=channel_used)
+            meta["thumbnails"] = _with_spare(packaging.thumbnail_concepts(
+                fg, brief, lang, None, llm, pub, pub.thumbnail_count + pub.thumbnail_spare, title_ideas=titles,
+                channel_used=channel_used, elsewhere=elsewhere), pub.thumbnail_count)
         else:
             meta["thumbnails"] = kept
     meta["description_full"] = llm_tasks.build_description(meta, pub, lang)
@@ -336,19 +339,43 @@ def _with_series_context(project: Project, script: str) -> str:
     return "\n".join(head) + "\n\nEPISODE SCRIPT:\n" + script
 
 
-def _channel_thumbnails(db: Session, project: Project, limit: int = 30) -> list[dict[str, Any]]:
-    """Thumbnail ideas of the channel's other projects, newest first: a new video must not look like them."""
-    metas = db.execute(
-        select(Track.publish_meta).join(Project, Track.project_id == Project.id)
-        .where(Project.channel_id == project.channel_id, Project.id != project.id)
-        .order_by(Track.updated_at.desc()).limit(40)
-    ).scalars()
-    out: list[dict[str, Any]] = []
-    for meta in metas:
+def _channel_thumbnails(db: Session, project: Project, limit: int = 30) -> tuple[list[dict[str, Any]],
+                                                                             list[dict[str, Any]]]:
+    """Thumbnail ideas a new video must not look like, newest first: ``(this channel's other videos, the
+    other channels)``. The author often makes one topic for several channels in different languages – without
+    the second list each of them got the same picture."""
+    rows = db.execute(
+        select(Project.channel_id, Track.publish_meta).join(Project, Track.project_id == Project.id)
+        .where(Project.id != project.id, Track.publish_meta.is_not(None))
+        .order_by(Track.updated_at.desc()).limit(120)
+    ).all()
+    own: list[dict[str, Any]] = []
+    other: list[dict[str, Any]] = []
+    for channel_id, meta in rows:
         for c in (meta or {}).get("thumbnails") or []:
             if isinstance(c, dict) and (c.get("headline") or c.get("subject")):
-                out.append({"headline": c.get("headline") or "", "subject": c.get("subject") or ""})
-    return out[:limit]
+                item = {"headline": c.get("headline") or "", "subject": c.get("subject") or "",
+                        "layout": c.get("layout") or ""}
+                (own if channel_id == project.channel_id else other).append(item)
+    return own[:limit], other[:limit]
+
+
+def _study_market(ctx: JobContext, brief: dict[str, Any], lang: str, at: float) -> None:
+    """Outliers of the niche into ``brief["market"]`` (skipped without a YouTube key)."""
+    if not research.available():
+        return
+    ctx.progress(at, "Изучаю нишу на YouTube: что там сейчас кликают", force=True)
+    queries = [brief.get("main_keyword") or "", *(brief.get("search_phrases") or [])[:1]]
+    brief["market"] = research.niche_outliers(queries, lang)
+
+
+def _with_spare(concepts: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
+    """Ideas made with spare ones: after all of them are drawn, a vision critic keeps the best ``keep``."""
+    if len(concepts) > keep:
+        batch = f"{time.time():.3f}"
+        for c in concepts:
+            c["batch"], c["keep"] = batch, keep
+    return concepts
 
 
 def _idea_title(project_name: str, generated: list[str]) -> str:
@@ -376,30 +403,39 @@ def thumbnail_ideas_job(ctx: JobContext) -> dict[str, Any]:
         script, lang, llm, pub, track_id = track.script, track.language, tc.settings.llm, tc.settings.publish, track.id
         script = _with_series_context(tc.project, script)
         project_id, project_name = tc.project.id, tc.project.name
-        channel_used = _channel_thumbnails(db, tc.project)
+        channel_used, elsewhere = _channel_thumbnails(db, tc.project)
     if index is not None and not 0 <= int(index) < len(concepts):
         raise JobError("Такой идеи уже нет")
     # ``None`` – a package: the thumbnail and its own title are made together.
     target: str | None
+    keep = max(1, pub.thumbnail_count)
     if append:
-        target, count = title, max(1, pub.thumbnail_count)
+        target, count = title, keep + pub.thumbnail_spare
     elif index is not None:
         idea = concepts[int(index)]
-        target, count = (idea.get("title") or None) if idea.get("title_fixed") else None, 1
+        target, count, keep = (idea.get("title") or None) if idea.get("title_fixed") else None, 1, 1
     else:
-        target, count = None, max(1, pub.thumbnail_count)
+        target, count = None, keep + pub.thumbnail_spare
     # Whatever was shown before (including the idea being replaced) must not come back.
     avoid = [c for c in concepts if c.get("prompt")]
     with FastgenClient() as fg:
         brief = meta.get("brief")
-        if not brief or "visual_material" not in brief:  # made before briefs (or their visual material) existed
+        if not brief or brief.get("v") != packaging.BRIEF_VERSION:  # an older brief fed packages with details
             ctx.progress(0.1, "Изучаю сценарий", force=True)
             brief = packaging.build_brief(fg, script, lang, llm, project_name)
+            _study_market(ctx, brief, lang, 0.2)
+        elif "market" not in brief:
+            _study_market(ctx, brief, lang, 0.2)
+        if "angles" not in brief:
+            ctx.progress(0.25, "Стратегия: как продать ролик целиком", force=True)
+            brief["angles"] = packaging.make_angles(fg, brief, lang, llm)
         ctx.progress(0.4, "Придумываю текст и картинку обложки", force=True)
-        fresh = packaging.thumbnail_concepts(fg, brief, script[:6000], lang, target, llm, pub, count, avoid=avoid,
-                                             title_ideas=list(meta.get("titles") or []), channel_used=channel_used)
+        fresh = packaging.thumbnail_concepts(fg, brief, lang, target, llm, pub, count, avoid=avoid,
+                                             title_ideas=list(meta.get("titles") or []), channel_used=channel_used,
+                                             elsewhere=elsewhere)
     if not fresh:
         raise JobError("Модель не предложила ни одной идеи — попробуйте ещё раз")
+    fresh = _with_spare(fresh, keep)
     removed: list[str | None] = []
     if append:
         new_indices = list(range(len(concepts), len(concepts) + len(fresh)))

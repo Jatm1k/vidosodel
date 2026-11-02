@@ -12,9 +12,11 @@ from typing import Any
 import cv2
 
 from ..db import session_scope
-from ..models import Character, Job, Scene, Track
+from sqlalchemy import select
+
+from ..models import Character, Job, Project, Scene, Track
 from ..pipeline import characters as chars
-from ..pipeline import llm_tasks
+from ..pipeline import llm_tasks, packaging
 from ..pipeline.image_plan import plan_project
 from ..render import thumb_text
 from ..render.media import imread, imwrite, make_thumbnail, remove_watermark, repair_overcorrected
@@ -335,7 +337,9 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             with lock:
                 finished.add(scene_id)
 
-    workers = max(1, limiter.status()["threads"])
+    # Sized for the whole plan: ``limiter.slot`` throttles to the threads free right now. Sizing by the free
+    # count would freeze a stale snapshot (e.g. the previous job's threads still in the cached server usage).
+    workers = limiter.max_threads()
     with ThreadPoolExecutor(max_workers=workers) as pool:
         pending: set = set()
         while True:
@@ -448,6 +452,8 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
         project_id, track_id = tc.project.id, tc.track.id
         # character id → (name, description, image, kind): an idea may name who is on the cover
         cast = {c.id: (c.name, c.description or "", c.image_file, c.kind) for c in tc.project.characters}
+        brief = dict(meta.get("brief") or {})
+        past = _channel_thumb_files(db, tc.project)
     todo = sorted({int(i) for i in only if 0 <= int(i) < len(concepts)}) if only is not None else list(range(len(concepts)))
     if not todo:
         raise JobError("Такой идеи уже нет")
@@ -455,6 +461,7 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
     base_avoid = ("watermark, logo, signature, blurry, low quality, clutter, many small objects, collage, "
                   "split screen, tiny text, small captions, extra text, misspelled letters")
     done = 0
+    drawn: list[int] = []
     with FastgenClient() as fg:
         for n, k in enumerate(todo):
             ctx.progress(n / len(todo), f"Обложка {k + 1}")
@@ -463,9 +470,11 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
             # The program sets the headline itself (right letters in any language); the image model
             # draws it only when asked to or when the font cannot cover the language.
             overlay = bool(headline) and pub.thumbnail_text_mode != "model" and thumb_text.can_render(headline)
+            layout = llm_tasks.thumb_layout(concept)
+            avoid = base_avoid if layout != "split" else base_avoid.replace("split screen, ", "")
             thumb_images = images.model_copy(update={
                 "style_prompt": "",  # the style is already at the start of the prompt
-                "avoid": base_avoid + (", text, letters, numbers, captions" if overlay or not headline else ""),
+                "avoid": avoid + (", text, letters, numbers, captions" if overlay or not headline else ""),
                 "upscale_2x": False,
             })
             prompt = llm_tasks.thumbnail_image_prompt(concept, pub, overlay=overlay or not headline)
@@ -475,7 +484,7 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
                                    operation=pub.thumbnail_operation, note=note)
             if overlay:
                 img = thumb_text.draw_headline(
-                    imread(path), headline, side="right" if concept.get("side") == "left" else "left",
+                    imread(path), headline, place=llm_tasks.THUMB_LAYOUTS[layout],
                     color=pub.thumbnail_text_color, accent_color=pub.thumbnail_accent_color,
                     accent=str(concept.get("accent") or ""))
                 imwrite(path, img, quality=95)
@@ -496,8 +505,91 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
             if p and p.exists() and old != to_rel(final):
                 p.unlink(missing_ok=True)
             done += 1
+            drawn.append(k)
             track_changed(track_id, "thumbnails")
+        dropped = 0
+        if drawn:
+            ctx.progress(0.97, "Смотрю на обложки в ленте рядом с конкурентами", force=True)
+            dropped = _judge_drawn(fg, track_id, drawn, brief, past, llm)
+    if dropped:
+        return {"message": f"Обложек: {done - dropped} (ещё {dropped} слабее — убраны)"}
     return {"message": f"Обложек: {done}"}
+
+
+def _channel_thumb_files(db: Any, project: Project, limit: int = 3) -> list[str]:
+    """Drawn thumbnails of the channel's latest other videos: the feed a new one must stand out in."""
+    rows = db.execute(
+        select(Track.thumbnails).join(Project, Track.project_id == Project.id)
+        .where(Project.channel_id == project.channel_id, Project.id != project.id)
+        .order_by(Track.updated_at.desc()).limit(10)
+    ).scalars()
+    out: list[str] = []
+    for files in rows:
+        if files:
+            out.append(files[0])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _judge_drawn(fg: FastgenClient, track_id: int, drawn: list[int], brief: dict[str, Any], past: list[str],
+                 llm: LlmSettings) -> int:
+    """A vision critic looks at the thumbnails drawn by this job in the feed; its verdict is saved on the
+    ideas, and of a set drawn with spare ideas (``batch``/``keep``) only the best ``keep`` stay.
+    Returns how many were removed."""
+    with session_scope() as db:
+        t = db.get(Track, track_id)
+        concepts = llm_tasks.thumbnail_files(t.publish_meta or {}, list(t.thumbnails or []))
+    items: list[dict[str, Any]] = []
+    order: list[int] = []
+    for k in drawn:
+        c = concepts[k] if k < len(concepts) else {}
+        uri = image_data_uri(c.get("file"), 400)
+        if uri:
+            items.append({"uri": uri, "headline": c.get("headline"), "title": c.get("title")})
+            order.append(k)
+    neighbours = packaging.market_uris(brief, 5) + [u for u in (image_data_uri(f, 400) for f in past) if u]
+    verdicts = packaging.judge_drawn_thumbnails(fg, brief, items, neighbours, llm)
+    if not verdicts:
+        return 0
+    judged = {order[j]: v for j, v in verdicts.items()}
+    removed: list[str] = []
+    with session_scope() as db:
+        t = db.get(Track, track_id)
+        fresh = llm_tasks.thumbnail_files(t.publish_meta or {}, list(t.thumbnails or []))
+        if [c.get("file") for c in fresh] != [c.get("file") for c in concepts]:
+            return 0  # the ideas changed while the critic looked
+        for k, v in judged.items():
+            note = v["note"] + (f" Недочёты: {', '.join(v['flaws'])}." if v["flaws"] else "")
+            fresh[k].update({"visual": v["visual"], "visual_verdict": v["verdict"], "visual_note": note.strip()})
+
+        def rank(k: int) -> float:
+            return float(fresh[k].get("visual") or 0) + 0.3 * float(fresh[k].get("score") or 0)
+        batches: dict[str, list[int]] = {}
+        for k, c in enumerate(fresh):
+            if c.get("batch"):
+                batches.setdefault(str(c["batch"]), []).append(k)
+        drop: set[int] = set()
+        for members in batches.values():
+            keep = int(fresh[members[0]].get("keep") or len(members))
+            # Only a set drawn and judged whole in this job is cut: the critic compared all of it.
+            if len(members) <= keep or not all(m in judged for m in members):
+                continue
+            best = sorted(members, key=lambda m: -rank(m))
+            drop |= set(best[keep:])
+            for m in best[:keep]:
+                fresh[m].pop("batch", None)
+                fresh[m].pop("keep", None)
+        removed = [fresh[k]["file"] for k in drop if fresh[k].get("file")]
+        fresh = [c for k, c in enumerate(fresh) if k not in drop]
+        t.publish_meta = {**(t.publish_meta or {}), "thumbnails": fresh}
+        t.thumbnails = [c["file"] for c in fresh if c.get("file")]
+    for rel in removed:
+        p = to_abs(rel)
+        if p and p.exists():
+            p.unlink(missing_ok=True)
+    track_changed(track_id, "thumbnails")
+    return len(drop)
 
 
 

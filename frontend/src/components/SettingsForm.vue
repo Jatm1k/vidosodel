@@ -232,6 +232,9 @@ async function loadModels() {
   } catch {
     chatModels.value = [{ id: s.value.llm.model, name: s.value.llm.model, context: 0 }]
   }
+  // the chosen packaging model stays selectable even when the list lacks it
+  const own = s.value.llm.packaging_model
+  if (own && !chatModels.value.some((m) => m.id === own)) chatModels.value.push({ id: own, name: own, context: 0 })
 }
 
 // ---------------------------------------------------------------- render
@@ -560,6 +563,12 @@ onMounted(async () => {
       <template v-else-if="active === 'llm'">
         <FormField label="Модель" hint="Для разбивки, промптов, перевода и метаданных. Gemini принимает весь сценарий целиком">
           <Select v-model="s.llm.model" :options="chatModels" option-value="id" option-label="name" filter class="w-80" />
+        </FormField>
+        <FormField
+          label="Модель упаковки"
+          hint="Названия, обложки и их критики. GPT-5.2 пишет сильнее и сама смотрит на нарисованные обложки; Gemini картинки не видит — без визуального отбора"
+        >
+          <Select v-model="s.llm.packaging_model" :options="chatModels" option-value="id" option-label="name" filter class="w-80" />
         </FormField>
         <FormField label="Тематика канала" hint="О чём канал и для кого — помогает точнее подбирать образы и названия">
           <Textarea v-model="s.llm.niche" auto-resize rows="2" class="w-full" placeholder="Например: психология отношений для женщин 30–50 лет" />
@@ -1034,6 +1043,12 @@ onMounted(async () => {
         </FormField>
         <FormField label="Обложек">
           <InputNumber v-model="s.publish.thumbnail_count" :min="1" :max="4" show-buttons class="w-32" />
+        </FormField>
+        <FormField
+          label="Запасных обложек"
+          hint="Рисуются сверх нужных; модель упаковки смотрит на все в ленте рядом с конкурентами и оставляет лучшие. Каждая запасная — лишняя генерация картинки"
+        >
+          <InputNumber v-model="s.publish.thumbnail_spare" :min="0" :max="4" show-buttons class="w-32" />
         </FormField>
         <FormField label="Модель для обложек">
           <Select v-model="s.publish.thumbnail_operation" :options="imageOps" option-value="id" option-label="name" class="w-72" />

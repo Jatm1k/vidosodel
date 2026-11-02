@@ -19,6 +19,7 @@ from ..services.limiter import limiter, token_limiter
 from ..services.llm_fallback import BackupLlm, backup_usage
 from ..services.lumean import LumeanClient
 from ..services.updates import updates
+from ..services.youtube import YoutubeClient
 from ..settings_schema import default_settings
 from ..settings_store import load_config, public_config, save_config
 
@@ -134,6 +135,9 @@ def check_key(body: KeyCheck) -> dict[str, Any]:
             if ok and not models:
                 return {"ok": False, "error": "ключи работают, но ни одна TTS-модель Gemini им недоступна"}
             return {"ok": ok, "error": None if ok else "; ".join(results), "details": results, "models": models}
+        elif body.service == "youtube":
+            with YoutubeClient() as yt:
+                yt.search("youtube", limit=1)
         elif body.service == "llm_fallback":
             cfg = load_config()
             if not (cfg.llm_fallback_url.strip() and cfg.llm_fallback_model.strip()):

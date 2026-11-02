@@ -780,7 +780,8 @@ def _publish_dict(p: Project, t: Track) -> dict[str, Any]:
         "made_by": meta.get("made_by") or ("app" if meta.get("titles") else None),
         "thumbnails": [{
             "index": i, "title": c.get("title") or "", "headline": c.get("headline") or "",
-            "accent": c.get("accent") or "", "side": c.get("side") or "", "prompt": c.get("prompt") or "",
+            "accent": c.get("accent") or "", "side": c.get("side") or "",
+            "layout": llm_tasks.thumb_layout(c), "critic": c.get("visual_note") or "", "prompt": c.get("prompt") or "",
             "characters": c.get("characters") or [], "location": c.get("location"),
             "image_path": str(to_abs(c["file"])) if c.get("file") else None,
         } for i, c in enumerate(concepts)],
@@ -942,6 +943,10 @@ class ThumbIn(BaseModel):
     headline: str = Field("", description="Крупная надпись на обложке: 1–4 слова на языке сериала; пусто — без неё")
     accent: str = Field("", description="Слово из надписи, выделяемое цветом")
     side: Literal["left", "right"] = Field("right", description="Сторона главного объекта; надпись — на другой")
+    layout: Literal["subject_left", "subject_right", "subject_low", "subject_high", "split"] | None = Field(
+        None, description="Композиция (вместо side): subject_left/right — объект на половине кадра, надпись "
+                          "на другой; subject_low — объект внизу, надпись сверху; subject_high — крупный план "
+                          "сверху, надпись снизу; split — две половины-контраста, надпись сверху")
     characters: list[str] = Field(default_factory=list, description="Герои на обложке (имена, до 3) — их "
                                                                      "референсы уйдут в модель")
     location: str | None = Field(None, description="Локация (имя) — её референс тоже уйдёт в модель")
@@ -980,7 +985,8 @@ job_id отрисовки; результат смотрите view_image(kind="
                 cast.append(lid)
             fresh.append({
                 "prompt": th.prompt.strip(), "headline": th.headline.strip(), "accent": th.accent.strip(),
-                "side": th.side, "title": th.title.strip(), "title_fixed": bool(th.title.strip()),
+                "side": th.side, "layout": th.layout or llm_tasks.thumb_layout({"side": th.side}),
+                "title": th.title.strip(), "title_fixed": bool(th.title.strip()),
                 "cast": cast, "characters": [by_id[i].name for i in cast if by_id[i].kind != "location"],
                 "location": next((by_id[i].name for i in cast if by_id[i].kind == "location"), None),
                 "made_by": "agent", "file": None,
@@ -991,10 +997,15 @@ job_id отрисовки; результат смотрите view_image(kind="
             removed, concepts = [c.get("file") for c in concepts], []
         indices = list(range(len(concepts), len(concepts) + len(fresh)))
         _save_concepts(t, concepts + fresh)
-        db.flush()
-        job_id = ops.start_episode_job(db, p, "thumbnails", {"indices": indices}) if a.draw and fresh else None
         track_changed(t.id, "metadata")
     _unlink(removed)
+    job_id = None
+    if a.draw and fresh:
+        # The job is queued in its own session: with the concepts still uncommitted, SQLite
+        # would refuse that write ("database is locked").
+        with session_scope() as db:
+            job_id = ops.start_episode_job(db, ops.get_episode(db, a.episode_id), "thumbnails",
+                                           {"indices": indices})
     return {"indices": indices, "job_id": job_id}
 
 

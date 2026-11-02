@@ -35,6 +35,15 @@ function ideaTitle(c: { title?: string; title_index?: number }): string {
 
 /** How the thumbnail raises its question (``angle`` of a package). */
 const SCHEMES: Record<string, string> = {
+  // angles of a package (how the whole video is sold)
+  pain: 'Боль зрителя',
+  paradox: 'Парадокс ролика',
+  stakes: 'Что теряет зритель',
+  result: 'Результат',
+  recognition: 'Узнавание себя',
+  value: 'Ценность всего ролика',
+  hero: 'Герой ролика',
+  // schemes of ideas made before angles existed
   confession_result: 'Признание и результат',
   hidden_warning: 'Скрытое предупреждение',
   contrast: 'Контраст текста и картинки',
@@ -175,6 +184,13 @@ async function copy(text: string, what: string) {
             </div>
             <div class="flex flex-col gap-1 text-[13px]">
               <span v-if="c.headline" class="font-medium">«{{ c.headline }}»</span>
+              <span
+                v-if="c.visual_note"
+                :class="c.visual_verdict === 'reject' ? 'text-bad' : 'text-ink-3'"
+                v-tooltip.top="'Что увидел критик, посмотрев на обложку в ленте'"
+              >
+                <i class="pi pi-eye text-[11px]" /> {{ c.visual_note }}
+              </span>
               <span v-if="c.question" class="text-ink-3" v-tooltip.top="'Вопрос, который возникает у зрителя при виде обложки'">
                 <i class="pi pi-question-circle text-[11px]" /> {{ c.question }}
               </span>
@@ -187,7 +203,7 @@ async function copy(text: string, what: string) {
                   <i class="pi pi-copy text-sm" />
                 </button>
               </div>
-              <span v-if="c.angle" class="text-ink-3">
+              <span v-if="c.angle" class="text-ink-3" v-tooltip.top="c.thought || undefined">
                 {{ SCHEMES[c.angle] ?? c.angle }}<template v-if="c.score != null"> · {{ c.score.toFixed(1) }}/10</template>
               </span>
             </div>

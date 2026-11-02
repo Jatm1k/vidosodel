@@ -61,7 +61,13 @@ async function save() {
   }
 }
 
-async function check(service: 'lumean' | 'fastgen' | 'llm_fallback' | 'gemini') {
+const KEY_LABELS = {
+  lumean: 'Lumean — озвучка',
+  fastgen: 'FastGen — изображения, тексты, распознавание речи',
+  youtube: 'YouTube Data API — исследование ниши для упаковки',
+} as const
+
+async function check(service: 'lumean' | 'fastgen' | 'llm_fallback' | 'gemini' | 'youtube') {
   await save()
   checks.value[service] = 'pending'
   const result = await api.post<{ ok: boolean; error?: string; details?: string[]; models?: string[] }>(
@@ -85,9 +91,9 @@ async function check(service: 'lumean' | 'fastgen' | 'llm_fallback' | 'gemini') 
         <h2 class="text-base font-semibold">Ключи API</h2>
         <p class="mt-1 text-[13px] text-ink-3">Хранятся локально в базе приложения. Ключи из файла .env используются, если здесь пусто.</p>
         <div class="mt-4 flex flex-col gap-5">
-          <div v-for="svc in (['lumean', 'fastgen'] as const)" :key="svc" class="flex flex-col gap-1.5">
+          <div v-for="svc in (['lumean', 'fastgen', 'youtube'] as const)" :key="svc" class="flex flex-col gap-1.5">
             <label :for="`key-${svc}`" class="text-ink-2">
-              {{ svc === 'lumean' ? 'Lumean — озвучка' : 'FastGen — изображения, тексты, распознавание речи' }}
+              {{ KEY_LABELS[svc] }}
             </label>
             <div class="flex gap-2">
               <InputText
@@ -111,6 +117,12 @@ async function check(service: 'lumean' | 'fastgen' | 'llm_fallback' | 'gemini') 
               :class="(checks[svc] as any).ok ? 'text-ok' : 'text-bad'"
             >
               {{ (checks[svc] as any).ok ? 'Ключ работает' : (checks[svc] as any).error }}
+            </span>
+            <span v-if="svc === 'youtube'" class="text-[13px] text-ink-3">
+              Необязательно. Перед упаковкой приложение находит ролики по теме, которые набрали в разы больше
+              просмотров, чем обычно на их канале, и учится на их названиях и обложках. Ключ бесплатный:
+              console.cloud.google.com → создать проект → «APIs &amp; Services» → включить «YouTube Data API v3» →
+              «Credentials» → «Create credentials» → «API key». Квоты хватает примерно на 40–50 роликов в день.
             </span>
           </div>
         </div>

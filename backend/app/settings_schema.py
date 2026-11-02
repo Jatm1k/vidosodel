@@ -101,6 +101,9 @@ class LlmSettings(_Base):
     """Text LLM (FastGen chat completions) used for scenes, prompts, translation, metadata."""
 
     model: str = "google/gemini-3.6-flash"
+    #: Model of the packaging (angles, titles, thumbnails and their critics); empty – ``model``. It also looks
+    #: at the drawn thumbnails, so a model that accepts images is best.
+    packaging_model: str = "openai/gpt-5-2"
     #: Niche/topic of the channel – gives the LLM context for every task.
     niche: str = ""
     #: Extra instructions for image prompt writing (characters look, setting...).
@@ -251,6 +254,9 @@ class PublishSettings(_Base):
     description_footer: str = ""
     with_chapters: bool = True
     thumbnail_count: int = 3
+    #: Extra thumbnails drawn on top of ``thumbnail_count``; a vision critic looks at all of them in the feed
+    #: and the weakest are dropped.
+    thumbnail_spare: int = 2
     #: Put a short headline on the thumbnail.
     thumbnail_text: bool = True
     #: "overlay" – the program sets the headline itself (always spelled right, any language);

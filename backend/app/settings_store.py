@@ -47,9 +47,11 @@ class AppConfig(BaseModel):
     gemini_tts_model: str = ""
     #: Requests per key per day (free tier); the counter resets at midnight Pacific time.
     gemini_tts_daily_limit: int = 20
+    #: YouTube Data API v3 key: research of the niche before packaging (what clicks there now).
+    youtube_api_key: str = ""
 
 
-_SECRET_KEYS = ("lumean_api_key", "fastgen_api_key", "llm_fallback_api_key")
+_SECRET_KEYS = ("lumean_api_key", "fastgen_api_key", "llm_fallback_api_key", "youtube_api_key")
 
 
 def load_config() -> AppConfig:

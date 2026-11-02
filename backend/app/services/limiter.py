@@ -371,6 +371,11 @@ class ImageLimiter(BudgetLimiter):
         others = max(0, usage_sync.image_threads - self._active)
         return max(1, min(threads, plan - others))
 
+    def max_threads(self) -> int:
+        """Upper bound of concurrent generations; ``slot`` lowers it while other apps use the key."""
+        threads = self._limits()[0]
+        return max(1, min(threads, int(usage_sync.limits.get("img_generation_threads_allowed") or threads)))
+
     def _can_start(self) -> bool:
         return self._active < self._threads_allowed()
 
@@ -417,8 +422,18 @@ class TokenLimiter(BudgetLimiter):
 
 def estimate_tokens(messages: list[dict[str, Any]], max_tokens: int | None = None) -> int:
     """Rough cost of a chat request before sending it (≈3.5 characters per token + the answer)."""
-    chars = sum(len(str(m.get("content", ""))) for m in messages)
-    return int(chars / 3.5) + (max_tokens or 3000)
+    chars, images = 0, 0
+    for m in messages:
+        content = m.get("content", "")
+        if isinstance(content, list):  # text and image parts: an image costs tokens, not its base64 length
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    images += 1
+                else:
+                    chars += len(str(part.get("text", "") if isinstance(part, dict) else part))
+        else:
+            chars += len(str(content))
+    return int(chars / 3.5) + images * 800 + (max_tokens or 3000)
 
 
 limiter = ImageLimiter()

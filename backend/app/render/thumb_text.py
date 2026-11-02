@@ -79,10 +79,10 @@ def _splits(words: list[str], lines: int) -> list[list[list[str]]]:
     return out
 
 
-def _layout(words: list[str], font_path: str, box_w: int, box_h: int, max_size: int):
+def _layout(words: list[str], font_path: str, box_w: int, box_h: int, max_size: int, max_lines: int = 3):
     """Biggest font size and the line breaks that fit the box: ``(size, lines)``."""
     best: tuple[float, int, list[list[str]]] | None = None
-    for n in range(1, min(3, len(words)) + 1):
+    for n in range(1, min(max_lines, len(words)) + 1):
         for lines in _splits(words, n):
             lo, hi = 24, max_size
             fit = 0
@@ -98,17 +98,22 @@ def _layout(words: list[str], font_path: str, box_w: int, box_h: int, max_size: 
             # Larger text wins, but a lone number/particle on its own line looks like a mistake.
             lone = n > 1 and any(len(" ".join(ln)) <= 2 for ln in lines)
             value = fit * (0.82 if lone else 1.0)
+            if fit and n > 1:  # of equal sizes, even lines win over one short and one long
+                font = ImageFont.truetype(font_path, fit)
+                widths = [font.getlength(" ".join(ln)) for ln in lines]
+                value -= (max(widths) - min(widths)) / box_w
             if fit and (best is None or value > best[0]):
                 best = (value, fit, lines)
     return best[1:] if best else None
 
 
 def draw_headline(
-    img: np.ndarray, text: str, *, side: str = "left", color: str = "#FFFFFF", accent_color: str = "#FFD400",
+    img: np.ndarray, text: str, *, place: str = "left", color: str = "#FFFFFF", accent_color: str = "#FFD400",
     accent: str = "",
 ) -> np.ndarray:
-    """Set ``text`` big on the ``side`` ("left"/"right") half of a BGR image; returns a new BGR image.
+    """Set ``text`` big on the calm part of a BGR image; returns a new BGR image.
 
+    ``place`` – "left"/"right" (a block on that half) or "top"/"bottom" (a centred band of at most 2 lines).
     ``accent`` – the word that gets ``accent_color`` (the whole last line when it is not found).
     """
     font_path = find_font()
@@ -122,25 +127,40 @@ def draw_headline(
         return img
     h, w = img.shape[:2]
     margin = int(w * 0.045)
-    box_w, box_h = int(w * 0.46), int(h * 0.80)
-    laid = _layout(words, font_path, box_w, box_h, int(h * 0.34))
+    band = place in ("top", "bottom")
+    # YouTube puts the duration badge into the bottom-right corner: no text may end up under it.
+    if band:
+        box_w, box_h = int(w * (0.92 if place == "top" else 0.72)), int(h * 0.34)
+        laid = _layout(words, font_path, box_w, box_h, int(h * 0.26), max_lines=2)
+    else:
+        box_w, box_h = int(w * 0.46), int(h * (0.80 if place == "left" else 0.70))
+        laid = _layout(words, font_path, box_w, box_h, int(h * 0.34))
     if not laid:
         return img
     size, lines = laid
     font = ImageFont.truetype(font_path, size)
     line_h = int(size * 1.08)
     block_h = line_h * len(lines)
-    x0 = margin if side == "left" else w - margin - box_w
-    y0 = (h - block_h) // 2
+    x0 = margin if place == "left" else w - margin - box_w
+    y0 = {"top": int(h * 0.04), "bottom": h - int(h * 0.08) - block_h,
+          "right": int(h * 0.05) + (int(h * 0.77) - block_h) // 2}.get(place, (h - block_h) // 2)
 
-    # Soft dark gradient behind the text side keeps the caption readable on any picture.
-    ramp = np.linspace(1.0, 0.0, int(w * 0.62), dtype=np.float32)
+    # Soft dark gradient behind the text keeps the caption readable on any picture.
     mask = np.zeros((h, w), np.float32)
-    if side == "left":
-        mask[:, : ramp.size] = ramp
+    if band:
+        ramp = np.linspace(1.0, 0.0, int(h * 0.55), dtype=np.float32)
+        if place == "top":
+            mask[: ramp.size, :] = ramp[:, None]
+        else:
+            mask[h - ramp.size:, :] = ramp[::-1, None]
+        region = img[: h // 2] if place == "top" else img[h // 2:]
     else:
-        mask[:, w - ramp.size:] = ramp[::-1]
-    region = img[:, : w // 2] if side == "left" else img[:, w // 2:]
+        ramp = np.linspace(1.0, 0.0, int(w * 0.62), dtype=np.float32)
+        if place == "left":
+            mask[:, : ramp.size] = ramp
+        else:
+            mask[:, w - ramp.size:] = ramp[::-1]
+        region = img[:, : w // 2] if place == "left" else img[:, w // 2:]
     luma = float(cv2.cvtColor(region, cv2.COLOR_BGR2GRAY).mean())
     strength = 0.50 if luma > 120 else 0.30
     base = img.astype(np.float32) * (1.0 - strength * mask[..., None])
@@ -159,7 +179,10 @@ def draw_headline(
         hi_set = {next((i for i, wd in enumerate(flat) if any(c.isdigit() for c in wd)), len(flat) - 1)}
     k = 0
     for row, ln in enumerate(lines):
-        x, y = x0, y0 + row * line_h
+        # A band is centred line by line; a side block keeps a straight left edge.
+        centre = w // 2 if place == "top" else int(w * 0.43)  # a bottom band keeps clear of the badge
+        x = centre - int(font.getlength(" ".join(ln))) // 2 if band else x0
+        y = y0 + row * line_h
         for wd in ln:
             part = wd + " "
             col = hi if k in hi_set else fill

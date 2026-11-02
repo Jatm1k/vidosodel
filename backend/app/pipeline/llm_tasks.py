@@ -553,38 +553,58 @@ def text_accents(fg: FastgenClient, script: str, language: str, count: int, llm:
 # Titles, description and thumbnail ideas live in pipeline/packaging.py.
 
 
-def thumbnail_image_prompt(concept: dict[str, Any], publish: PublishSettings, *, overlay: bool = False) -> str:
-    """Final image prompt: style first (models weigh early words most), idea, layout rules, headline.
+#: Thumbnail compositions: layout → where the headline goes (the calm part of the frame).
+THUMB_LAYOUTS = {"subject_left": "right", "subject_right": "left", "subject_low": "top", "subject_high": "bottom",
+                 "split": "top"}
 
-    ``overlay``: the headline is drawn by the program afterwards, so the picture gets a clean empty side
+_COMPOSITION = {
+    "subject_left": "the one dominant subject fills the left half of the frame, large and clear; the right 45% "
+                    "of the frame is a calm, simple, empty background with no objects",
+    "subject_right": "the one dominant subject fills the right half of the frame, large and clear; the left 45% "
+                     "of the frame is a calm, simple, empty background with no objects",
+    "subject_low": "the one dominant subject is centred and fills the lower two thirds of the frame, large and "
+                   "clear; the top third of the frame is a calm, simple, empty background with no objects",
+    "subject_high": "an extreme close-up: the face or the object fills the upper two thirds of the frame, cropped "
+                    "tight; the bottom third of the frame is a calm, simple, darker background with no objects",
+    "split": "the frame is divided down the middle into two halves showing two contrasting states of the same "
+             "subject side by side, one clear focal point in each half; the top quarter of both halves is a "
+             "calm, simple, empty background with no objects",
+}
+
+
+def thumb_layout(concept: dict[str, Any]) -> str:
+    """The composition of a thumbnail idea; ideas made before layouts existed have only a subject side."""
+    layout = str(concept.get("layout") or "")
+    if layout in THUMB_LAYOUTS:
+        return layout
+    return "subject_left" if str(concept.get("side") or "").lower().startswith("l") else "subject_right"
+
+
+def thumbnail_image_prompt(concept: dict[str, Any], publish: PublishSettings, *, overlay: bool = False) -> str:
+    """Final image prompt: style first (models weigh early words most), idea, composition, headline.
+
+    ``overlay``: the headline is drawn by the program afterwards, so the picture gets a clean empty part
     for it and no text at all (image models misspell non-English letters).
     """
     parts = [publish.thumbnail_style.strip().rstrip("."), strip_style_words(str(concept.get("prompt", "")))]
     headline = str(concept.get("headline") or "").strip()
+    composition = _COMPOSITION[thumb_layout(concept)]
+    readable = ("very few elements, instantly readable meaning, clear silhouette that stays readable at a tiny "
+                "phone size; close framing, the subject is big; the character's state from the idea (be it calm "
+                "joy or despair) is clear and pronounced, readable from far away")
     if overlay:
-        side = "left" if str(concept.get("side")) == "left" else "right"
-        free = "right" if side == "left" else "left"
         parts.append(
-            f"YouTube thumbnail composition: the one dominant subject fills the {side} half of the frame, large "
-            f"and clear, very few elements; the {free} 45% of the frame is a calm, simple, empty background with "
-            "no objects, reserved for a caption added later. Instantly readable meaning, clear silhouette that "
-            "stays readable at a tiny phone size; close framing, the subject is big; the character's state from "
-            "the idea (be it calm joy or despair) is clear and pronounced, readable from far away. "
+            f"YouTube thumbnail composition: {composition}, reserved for a caption added later; {readable}. "
             "No text, letters, numbers, captions, signs or logos anywhere in the image"
         )
     else:
-        parts.append(
-            "YouTube thumbnail composition: one dominant focal subject filling about half of the frame, placed "
-            "on one side, very few elements, simple uncluttered background, instantly readable meaning, clear "
-            "silhouette that stays readable at a tiny phone size; close framing, the subject is big; the "
-            "character's state from the idea (be it calm joy or despair) is clear and pronounced, readable from far away"
-        )
+        parts.append(f"YouTube thumbnail composition: {composition}; {readable}")
         if publish.thumbnail_text and headline:
             parts.append(
                 f'Headline text «{headline}» spelled exactly letter for letter, huge ultra-bold sans-serif '
-                "capitals in at most 2 lines, each line at least a sixth of the image height, filling the empty "
-                "side of the frame and never over the subject's face; text colours exactly as the style says, "
-                "otherwise high contrast with the background"
+                "capitals in at most 2 lines, each line at least a sixth of the image height, set on the calm "
+                "empty part of the frame and never over the subject's face; text colours exactly as the style "
+                "says, otherwise high contrast with the background"
             )
     # Said again at the end: the channel's colours and look win over anything above.
     parts.append("MANDATORY STYLE, its colours and background override everything else: "

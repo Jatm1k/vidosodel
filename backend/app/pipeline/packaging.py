@@ -1,27 +1,33 @@
 """Packaging of a video for YouTube: title, thumbnail (headline + picture) and description.
 
-A click is decided by the title and the thumbnail, and the viewer reads them as ONE message. One request
-"write me everything" gives an average everything, so the work is split like a human packaging editor does it:
+A click is decided by the title and the thumbnail, and the viewer reads them as ONE message. The package
+sells the WHOLE video: the costliest failure is a title or a thumbnail built on one example, story or person
+that the video uses in a single part – the viewer clicks for it and gets something else, or does not click
+because a side detail says nothing about what the video gives. So the work goes like a packaging editor's:
 
-1. :func:`build_brief` – what the video really promises: viewer, pain, hard facts, numbers, search phrases.
-2. :func:`make_titles` – many candidates over proven formulas → harsh critic → the best are sharpened →
-   critic again. Hard rules (length, caps, duplicates, figurative language) are enforced in code.
-3. :func:`make_description` – hook, what the viewer gets, tags, chapters; the layout is assembled by code so
+1. :func:`build_brief` – the WHOLE video (premise, viewer, pain, core tension, the visual world of the topic)
+   kept apart from its PARTS (single-part examples and facts, used only by the description and the critics).
+2. :func:`make_angles` – the strategy: a few different ways to sell the whole video, each one thought.
+3. :func:`make_titles` – candidates over the angles and proven formulas → harsh critic → the best are
+   sharpened → critic again. Hard rules (length, caps, duplicates) are enforced in code.
+4. :func:`make_description` – hook, what the viewer gets, tags, chapters; the layout is assembled by code so
    no stray English headings appear and the first lines carry the keyword.
-4. :func:`thumbnail_concepts` – packages: the thumbnail (headline + picture) raises a question, its own title
-   answers «what is it, why me» → a critic plays the viewer in these two steps → best ones.
+5. :func:`thumbnail_concepts` – packages, one angle each: the thumbnail (headline + picture in one of several
+   compositions) raises a question, its own title answers «what is it, why me» → a critic plays the viewer.
+   A package resting on a single-part example is pushed down in code as well as by the critic.
 """
 from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from typing import Any
 
 from ..services.fastgen import FastgenClient
 from ..services.http import ApiError
 from ..settings_schema import LlmSettings, PublishSettings
 from .languages import language_name
-from .llm_tasks import _niche, strip_timestamps
+from .llm_tasks import THUMB_LAYOUTS, _niche, strip_timestamps, thumb_layout
 
 log = logging.getLogger(__name__)
 
@@ -32,142 +38,269 @@ TITLE_MIN = 12
 #: Headline on a thumbnail: readable at 170 px only when it is this short.
 HEADLINE_MAX_WORDS = 5
 HEADLINE_MAX_CHARS = 32
+#: Briefs of another version are made again (their fields fed the old, detail-driven packaging).
+BRIEF_VERSION = 2
 
 
-def _chat(fg: FastgenClient, system: str, user: str, llm: LlmSettings, temperature: float) -> Any:
+def packaging_model(llm: LlmSettings) -> str:
+    return llm.packaging_model.strip() or llm.model
+
+
+def sees_images(model: str) -> bool:
+    """FastGen passes images to its OpenAI models; Gemini needs a licence capability most keys lack."""
+    return model.startswith("openai/")
+
+
+def _chat(fg: FastgenClient, system: str, user: str, llm: LlmSettings, temperature: float, *,
+          creative: bool = True, images: list[str] | None = None) -> Any:
+    """``creative`` – packaging work (the packaging model), else reading/description (the channel's model).
+    ``images`` – data URIs shown after the text when the model sees images; without them on failure."""
+    model = packaging_model(llm) if creative else llm.model
+    if images and sees_images(model):
+        content = [{"type": "text", "text": user}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
+        try:
+            return fg.chat_json([{"role": "system", "content": system}, {"role": "user", "content": content}],
+                                model=model, temperature=temperature, attempts=2)
+        except ApiError as exc:
+            log.warning("packaging with images failed, text only: %s", exc)
     return fg.chat_json([{"role": "system", "content": system}, {"role": "user", "content": user}],
-                        model=llm.model, temperature=temperature)
+                        model=model, temperature=temperature)
 
 
 def _clean_line(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
+def _clean_list(items: Any, limit: int) -> list[str]:
+    return [_clean_line(x) for x in items if _clean_line(x)][:limit] if isinstance(items, list) else []
+
+
 # ------------------------------------------------------------------------------ brief
 _BRIEF_SYSTEM = """You are a YouTube packaging editor. Before titles and thumbnails are made you read the \
-whole video script and write a BRIEF: what this video really gives the viewer, in hard facts.
-Write all text values in {language} (the language of the video). Use ONLY what is in the script – never \
-invent facts, numbers or names.
+whole video script and write a BRIEF of the WHOLE video.
+Write all text values in {language} (the language of the video) unless a field asks for English. Use ONLY \
+what is in the script – never invent facts, numbers or names.
 The AUTHOR'S TITLE (if given) is the idea the whole script was written from: it defines the video's \
-subject and promise. Everything is derived from it; the script only shows how it is covered. A video is \
-about its WHOLE idea – never about one chapter, example, quote or episode of it.
+subject and promise. The script only shows how it is covered.
+A package sells the WHOLE video. The typical failure is a title or a thumbnail built on one example, case, \
+experiment, historical story, named person, number or object that the video uses in only one of its parts: \
+the viewer clicks for that and gets a video about something larger, or does not click because a side \
+detail says nothing about what the video gives. So this brief keeps the WHOLE (what every part of the \
+video serves) apart from the PARTS (the material of single sections).
 Answer ONLY with JSON:
 {{"premise": "the one umbrella idea/promise of the WHOLE video, one sentence – the author's title restated \
 plainly (or, without an author's title, what the whole script is about)",
-"scope": ["3-8 short items: the parts / questions / aspects the video covers, in order – so a title can be \
-checked against the whole"],
+"scope": ["3-8 short items: the parts / questions / aspects the video covers, in order"],
 "topic": "what exactly the video is about, one plain sentence",
-"viewer": "who watches it and in which concrete situation they are, one sentence",
-"pain": "what bothers this viewer, in their own words, one sentence",
-"promise": "the concrete thing the viewer gets / understands / can do after watching, one sentence",
-"main_claim": "the central, ideally counter-intuitive statement of the video, one sentence",
-"misconception": "the common belief the video overturns, or an empty string",
-"stakes": "what happens if the viewer ignores it, or an empty string",
-"hidden_cause": "the non-obvious real reason behind the viewer's problem that the video names, or an empty string",
-"viewer_mistake": "what the viewer is doing wrong right now without knowing it, or an empty string",
-"emotion": "the strongest emotion this topic touches in the viewer (fear, regret, shame, hope, anger, relief...) \
-and why, one sentence",
-"curiosity_hooks": ["3-6 things the video reveals that the viewer does NOT expect or cannot guess – surprising, \
-counter-intuitive or little-known; each one short sentence, about the main idea, not a side detail"],
-"hard_facts": ["5-8 concrete facts: numbers, names, named effects, specific actions – only SUPPORTING \
-details of single parts, not the subject of the video"],
+"viewer": "who watches it and in which concrete situation of their life they are, one sentence",
+"pain": "what bothers this viewer in this topic, in their own words, one sentence",
+"desire": "what this viewer wants for themselves in this topic, in their own words, one sentence",
+"promise": "what the viewer gets / understands / can do after the WHOLE video, one sentence",
+"main_claim": "the central statement the WHOLE video argues – true for all of its parts, one sentence",
+"core_tension": "the contradiction or surprise of the WHOLE video: what the viewer believes or does versus \
+what the video shows, one sentence",
+"misconception": "the common belief the whole video overturns, or an empty string",
+"stakes": "what the viewer loses if nothing changes, or an empty string",
+"viewer_mistake": "what the viewer does wrong in this topic without knowing it (the whole video's answer, \
+not one item), or an empty string",
+"emotion": "the strongest emotion this topic touches in the viewer (fear, regret, shame, hope, anger, \
+relief...) and why, one sentence",
 "format": "list|story|explanation|other – how the video is built: list = it goes through N separate items \
 (things, habits, mistakes, rules, signs...)",
 "item_count": "the number of items when format is list, else 0 – digits only",
-"after_state": "what concretely changes in the viewer's life or understanding AFTER the video, in the terms \
-of THIS video, one sentence",
-"confession": "one first-person sentence a character of this video could say about its core change or \
-discovery, in the video's own concrete terms",
-"visual_material": ["6-10 concrete VISUAL things that only THIS video has and a picture can show: real \
-people it is about (with their recognisable look), places, objects, scenes, situations, numbers made \
-visible – taken from the script, each a short English phrase. Not generic «a person feeling X»"],
+"after_state": "what concretely changes in the viewer's life or understanding after the WHOLE video, one \
+sentence",
+"hero": "only when the WHOLE video is about one person, thing or place (a biography, the story of one \
+event, a review of one object): its name; else an empty string",
+"world": ["4-6 English phrases: the visual world of the WHOLE topic – the settings, kinds of people and \
+everyday situations a stranger connects with this subject and with the viewer's life in it. Never an example \
+from one part"],
+"parts": ["every example, case, experiment, historical story, named person, object, place or number that \
+the video uses in only ONE of its parts – each 1-4 English words naming it. The hero is not a part"],
+"hard_facts": ["5-8 concrete facts of single parts: numbers, names, named effects, specific actions – for \
+the description only"],
 "search_phrases": ["6-10 phrases a person would really type into YouTube search to find this video"],
 "main_keyword": "the single most important search phrase, 2-4 words"}}"""
 
 
 def build_brief(fg: FastgenClient, script: str, language: str, llm: LlmSettings,
                 working_title: str = "") -> dict[str, Any]:
-    """Facts that titles, thumbnails and the description are built from (one read of the whole script).
+    """What titles, thumbnails and the description are built from (one read of the whole script).
 
     ``working_title`` – the title the author typed for the project; the script was written from it.
     """
     system = _BRIEF_SYSTEM.format(language=language_name(language))
     own = f"AUTHOR'S TITLE: {working_title.strip()}\n\n" if working_title.strip() else ""
     user = f"{_niche(llm)}{own}SCRIPT:\n{script[:100_000]}"
-    data = _chat(fg, system, user, llm, 0.3)
+    data = _chat(fg, system, user, llm, 0.3, creative=False)
     if not isinstance(data, dict):
         raise ValueError("LLM вернул бриф в неверном формате")
-    brief: dict[str, Any] = {"working_title": working_title.strip()}
-    brief["premise"] = _clean_line(data.get("premise"))
-    scope = data.get("scope")
-    brief["scope"] = [_clean_line(x) for x in scope if _clean_line(x)][:8] if isinstance(scope, list) else []
-    for key in ("topic", "viewer", "pain", "promise", "main_claim", "misconception", "stakes", "hidden_cause",
-                "viewer_mistake", "emotion", "main_keyword", "format", "after_state", "confession"):
+    brief: dict[str, Any] = {"v": BRIEF_VERSION, "working_title": working_title.strip()}
+    for key in ("premise", "topic", "viewer", "pain", "desire", "promise", "main_claim", "core_tension",
+                "misconception", "stakes", "viewer_mistake", "emotion", "main_keyword", "format", "after_state",
+                "hero"):
         brief[key] = _clean_line(data.get(key))
     count = re.search(r"\d+", str(data.get("item_count") or ""))
     brief["item_count"] = int(count.group()) if count and brief["format"].lower() == "list" else 0
-    for key in ("curiosity_hooks", "hard_facts", "search_phrases", "visual_material"):
-        items = data.get(key)
-        brief[key] = [_clean_line(x) for x in items if _clean_line(x)][:10] if isinstance(items, list) else []
+    brief["scope"] = _clean_list(data.get("scope"), 8)
+    brief["world"] = _clean_list(data.get("world"), 6)
+    brief["parts"] = [p for p in _clean_list(data.get("parts"), 30)
+                      if not (brief["hero"] and _similar(p, brief["hero"], 0.5))]
+    for key in ("hard_facts", "search_phrases"):
+        brief[key] = _clean_list(data.get(key), 10)
     return brief
 
 
-def _brief_text(brief: dict[str, Any]) -> str:
+def _brief_text(brief: dict[str, Any], parts: bool = False) -> str:
+    """The brief for a prompt. Generators get the WHOLE only – a list of details in front of a model is a
+    menu it picks from; ``parts`` adds them for the critics and the description."""
     lines = []
     if brief.get("working_title"):
         lines.append(f"AUTHOR'S TITLE (the idea of the whole video): {brief['working_title']}")
     if brief.get("premise"):
         lines.append(f"Premise of the WHOLE video: {brief['premise']}")
+    if brief.get("hero"):
+        lines.append(f"The whole video is about: {brief['hero']}")
     if brief.get("scope"):
         lines.append("The video covers: " + "; ".join(brief["scope"]))
-    lines += [
-        f"Topic: {brief.get('topic', '')}",
-        f"Viewer: {brief.get('viewer', '')}",
-        f"Viewer's pain: {brief.get('pain', '')}",
-        f"Promise: {brief.get('promise', '')}",
-        f"Main claim: {brief.get('main_claim', '')}",
-    ]
-    if brief.get("misconception"):
-        lines.append(f"Common misconception it overturns: {brief['misconception']}")
-    if brief.get("stakes"):
-        lines.append(f"Stakes: {brief['stakes']}")
-    if brief.get("hidden_cause"):
-        lines.append(f"Hidden real cause: {brief['hidden_cause']}")
-    if brief.get("viewer_mistake"):
-        lines.append(f"Mistake the viewer makes without knowing: {brief['viewer_mistake']}")
-    if brief.get("emotion"):
-        lines.append(f"Viewer's emotion: {brief['emotion']}")
     if brief.get("item_count"):
         lines.append(f"Format: a list of {brief['item_count']} items (the scope above)")
     elif brief.get("format"):
         lines.append(f"Format: {brief['format']}")
-    if brief.get("after_state"):
-        lines.append(f"Viewer's state after the video: {brief['after_state']}")
-    if brief.get("confession"):
-        lines.append(f"First-person confession of the core change: {brief['confession']}")
-    if brief.get("curiosity_hooks"):
-        lines.append("What the viewer does not expect (curiosity hooks):\n" + "\n".join(f"- {f}" for f in brief["curiosity_hooks"]))
-    if brief.get("hard_facts"):
-        lines.append("Supporting facts of single parts (details, NOT the subject of a title):\n" + "\n".join(f"- {f}" for f in brief["hard_facts"]))
-    if brief.get("visual_material"):
-        lines.append("Visual material only this video has:\n" + "\n".join(f"- {f}" for f in brief["visual_material"]))
+    for key, label in (("topic", "Topic"), ("viewer", "Viewer"), ("pain", "Viewer's pain"),
+                       ("desire", "Viewer's desire"), ("promise", "Promise"), ("main_claim", "Main claim"),
+                       ("core_tension", "Core tension"), ("misconception", "Common misconception it overturns"),
+                       ("stakes", "Stakes"), ("viewer_mistake", "Mistake the viewer makes without knowing"),
+                       ("emotion", "Viewer's emotion"), ("after_state", "Viewer's state after the video")):
+        if brief.get(key):
+            lines.append(f"{label}: {brief[key]}")
+    if brief.get("world"):
+        lines.append("Visual world of the whole topic: " + "; ".join(brief["world"]))
     if brief.get("search_phrases"):
         lines.append("Search phrases: " + "; ".join(brief["search_phrases"]))
     if brief.get("main_keyword"):
         lines.append(f"Main keyword: {brief['main_keyword']}")
+    if parts:
+        if brief.get("parts"):
+            lines.append("PARTS – examples used in a single part of the video, never what a package is about: "
+                         + "; ".join(brief["parts"]))
+        if brief.get("hard_facts"):
+            lines.append("Facts of single parts:\n" + "\n".join(f"- {f}" for f in brief["hard_facts"]))
     return "\n".join(lines)
+
+
+_GENERIC_STEMS = {"perso", "peopl", "young", "older", "woman", "women", "their", "with", "from", "into", "over",
+                  "under", "small", "large", "giant", "close", "scene", "image", "shows", "showi", "front",
+                  "behin", "besid", "next", "table", "hands", "face", "chara", "figur", "looki", "holdi", "stand"}
+
+
+def part_hit(text: str, parts: list[str]) -> str:
+    """The single-part example an English picture description is built on ("" when none)."""
+    words = _norm_words(text)
+    for part in parts:
+        own = {w for w in _norm_words(part) if len(w) >= 4} - _GENERIC_STEMS
+        if own and len(own & words) >= max(1, (len(own) + 1) // 2):
+            return part
+    return ""
+
+
+# ------------------------------------------------------------------------------ angles
+#: Ways to sell the whole video; a package and its title take one of them.
+ANGLE_KINDS = ("pain", "paradox", "stakes", "result", "recognition", "value", "hero")
+
+_ANGLES_SYSTEM = """You are the packaging strategist of a YouTube channel. Before any title or thumbnail is \
+written you decide HOW to sell the WHOLE video: its ANGLES.
+An angle is one thought that makes the viewer of the brief want this video. It is said about the WHOLE \
+video – its premise, main claim or core tension – never about one of its parts. Different angles sell the \
+same video through different doors («kind»):
+- pain: the viewer's own situation in this topic and what it costs them now
+- paradox: the core tension – what the viewer believes or does versus what the video shows
+- stakes: what the viewer keeps losing if nothing changes
+- result: the after-state the whole video leads to
+- recognition: the viewer sees themselves – their own behaviour in this topic
+- value: what the whole video gives as one thing – the full list, the method, the map of the topic
+- hero: only when the brief names who or what the whole video is about – that hero and the idea of the \
+whole video
+THE WHOLE-VIDEO TEST, for every angle: it stays true and relevant if any one part of the scope is cut out \
+of the video. An angle resting on one example, story, person, experiment, number or one item of the scope \
+fails.
+Every angle speaks the viewer's own words about their own life – not the vocabulary of a textbook.
+Write {count} angles, each of a different kind, in {language}. Answer ONLY with JSON:
+{{"angles": [{{"kind": "{kinds}", "thought": "the angle in one plain sentence, in the viewer's words", \
+"question": "the question it makes the viewer ask themselves", "emotion": "the feeling it hits, one word", \
+"covers": "three different scope items it is equally true for, comma-separated"}}]}}"""
+
+
+def make_angles(fg: FastgenClient, brief: dict[str, Any], language: str, llm: LlmSettings,
+                count: int = 6) -> list[dict[str, Any]]:
+    """Different ways to sell the whole video: ``[{"kind", "thought", "question", "emotion"}]`` (may be empty)."""
+    kinds = [k for k in ANGLE_KINDS if k != "hero" or brief.get("hero")]
+    system = _ANGLES_SYSTEM.format(language=language_name(language), count=min(count, len(kinds)),
+                                   kinds="|".join(kinds))
+    try:
+        data = _chat(fg, system, f"{_niche(llm)}BRIEF:\n{_brief_text(brief)}{_market_text(brief)}", llm, 0.7)
+    except (ApiError, ValueError) as exc:  # the packages find their angles themselves then
+        log.warning("packaging angles failed: %s", exc)
+        return []
+    out: list[dict[str, Any]] = []
+    for it in (data.get("angles") if isinstance(data, dict) else data) or []:
+        if not isinstance(it, dict):
+            continue
+        thought = _clean_line(it.get("thought"))
+        kind = _clean_line(it.get("kind")).lower()
+        if not thought or kind not in kinds or any(_similar(thought, a["thought"], 0.7) for a in out):
+            continue
+        out.append({"kind": kind, "thought": thought[:240], "question": _clean_line(it.get("question"))[:200],
+                    "emotion": _clean_line(it.get("emotion"))[:40]})
+    return out[:count]
+
+
+def _angles_text(brief: dict[str, Any]) -> str:
+    angles = brief.get("angles") or []
+    if not angles:
+        return ""
+    return "ANGLES – the ways to sell this whole video:\n" + "\n".join(
+        f"{i}: [{a['kind']}] {a['thought']} (viewer asks: {a.get('question') or '–'}; feeling: "
+        f"{a.get('emotion') or '–'})" for i, a in enumerate(angles))
+
+
+def _market_text(brief: dict[str, Any], with_images: int = 0) -> str:
+    """Outliers of the niche (see :mod:`.research`) for a prompt; ``with_images`` – that many thumbnails follow."""
+    market = brief.get("market") or []
+    if not market:
+        return ""
+    lines = [f"- «{m['title']}» – {m['views']:,} views, ×{m['ratio']} of the channel's usual".replace(",", " ")
+             for m in market]
+    note = f" The first {with_images} images attached are their thumbnails, in this order." if with_images else ""
+    return ("\n\nMARKET – videos on this topic that got many times more views than usual on their channels: "
+            "proof of what this audience clicks now, and the feed the new video will stand in." + note + "\n"
+            + "\n".join(lines) + "\nLearn WHY they are clicked (the promise, the emotion, the tension, how text "
+            "and picture work together) and beat them. Never reuse their wording, scene or composition: next to "
+            "them the new package must look different and stronger.\n")
+
+
+def market_uris(brief: dict[str, Any], limit: int) -> list[str]:
+    """Thumbnails of the niche outliers as data URIs (fetched once per process)."""
+    from .research import thumb_uri  # noqa: PLC0415 – network only when there is a market
+    out = []
+    for m in (brief.get("market") or [])[:limit]:
+        uri = thumb_uri(m.get("thumb") or "")
+        if uri:
+            out.append(uri)
+    return out
 
 
 # ----------------------------------------------------------------------------- titles
 _TITLE_RULES = """HARD RULES
 0. THE TITLE'S JOB. The viewer meets the title together with a thumbnail that already raised a question. \
 The title tells in one second what the video is AND makes the viewer think «это мне надо»: it names a \
-concrete gain or pain of THEIR life (peace, strength, money, health, sleep, relationships, years...) and \
-what the video gives about it. A slogan or an abstract topic name gives no reason to click. Never repeat \
-the author's title word for word.
-1. THE WHOLE VIDEO, NOT A DETAIL. The title is about the whole video, never about one side example, quote \
-or episode of it. When the video is a list of N items, the honest count of the whole list is a strong frame: \
-the number, what the items do, what the viewer cares about.
+concrete gain or pain of THEIR life and what the video gives about it. A slogan or an abstract topic name \
+gives no reason to click. Never repeat the author's title word for word.
+1. THE WHOLE VIDEO, NOT A PART. The title sells the whole video. It is never built on one example, case, \
+experiment, story, person, number or object that the video uses in one part, and never on one item of a \
+list: the viewer who clicks must get what the title promised from the first minute to the last. Test: if \
+any one part were cut out of the video, would the title stay true? When the video is a list of N items, the \
+honest count of the whole list is a strong frame: the number, what the items do, what the viewer cares about.
 2. A REASON TO CLICK. Either a concrete value the viewer wants (the list, the way, the cause of THEIR \
 problem) or a sharp open question – one of them is enough. Hold back the details (which things, which \
 mistake): the title promises them, the video gives them.
@@ -175,8 +308,8 @@ mistake): the title promises them, the video gives them.
 regret, hope, the «that's exactly me» recognition, the slight sting of being told they do it wrong. A \
 neutral, informative title loses.
 4. Plain, concrete speech. NO poetic or philosophical wording, no metaphors. Abstract nouns (secret, mystery, \
-journey, path, power, magic, essence, world of...) must not do the work – name the real thing: the real \
-symptom, behaviour, number, situation, consequence.
+journey, path, power, magic, essence, world of...) must not do the work – name the real thing of the \
+viewer's life: the real symptom, behaviour, situation, consequence.
 5. Provocative is good, lying is not: everything the title claims or promises is really in the brief.
 6. Speak the viewer's own words and situation; address them directly («you») when it sounds natural.
 7. Length 35–60 characters, hard max 65. The strongest words are in the first 40 characters.
@@ -187,8 +320,8 @@ colon or dash.
 9. Natural {language}, as a native top YouTuber says it – not a translation from English."""
 
 _TITLE_FORMULAS = """FORMULAS – every candidate uses a different one, at least 7 different formulas overall. \
-The patterns only show the SHAPE: <…> is filled with the concrete words of THIS video, and the wording \
-around it is yours in {language} – never copy a pattern word for word:
+The patterns only show the SHAPE: <…> is filled with the words of THIS video, and the wording around it is \
+yours in {language} – never copy a pattern word for word:
 - hidden_cause: the real reason the viewer does not know – «<the real reason> behind <the viewer's problem>»
 - mistake: what the viewer does wrong – «the mistake that makes you <consequence>»
 - contrarian: the opposite of the common belief – «the more you <common action>, the <worse result>»
@@ -203,7 +336,8 @@ around it is yours in {language} – never copy a pattern word for word:
 that <harm or give> your <gain>»
 When the video is a list, at least 3 candidates use its exact count.
 BAD – an abstract topic, a slogan or a table of contents without the viewer's gain or pain. BAD – poetic \
-or philosophical wording that tells nothing concrete."""
+or philosophical wording that tells nothing concrete. BAD – one example or one item of the video as the \
+subject of the title."""
 
 _TITLES_SYSTEM = """You are the best YouTube packaging editor in the {language}-speaking segment, the one \
 channels hire when their click-through rate is low. Your titles get clicked because in ONE second the \
@@ -216,8 +350,12 @@ table of contents.
 
 {formulas}
 
+{angles_rule}
 Write {count} candidates. Answer ONLY with JSON:
-{{"candidates": [{{"title": "...", "formula": "hidden_cause|mistake|contrarian|signs|warning|question|consequence|recognition|number_gap|myth|list_value"}}]}}"""
+{{"candidates": [{{"angle": <index of the angle>, "title": "...", "formula": "hidden_cause|mistake|contrarian|signs|warning|question|consequence|recognition|number_gap|myth|list_value"}}]}}"""
+
+_ANGLES_RULE = """Every candidate expresses one of the ANGLES of the user message («angle» = its index), \
+at least 2 candidates per angle. The angle gives the thought; the formula gives the shape."""
 
 _JUDGE_SYSTEM = """You are a ruthless YouTube title critic who knows real click-through data. Score every \
 candidate title for the video described in the BRIEF. Be strict: an average decent title gets 5–6, 8+ is rare.
@@ -229,25 +367,27 @@ promises something concrete about it (0 if it is an abstract topic, a slogan or 
 - curiosity: the viewer wants the details the title holds back – which things, which cause, what happens \
 (0 if vague or if the title already gives everything away)
 - pull: emotional hit for THIS viewer – fear, regret, hope, surprise, «that's me»
-- specificity: names a concrete thing, behaviour or situation (0 if it could fit 10 other videos)
+- specificity: names a concrete thing, behaviour or situation of the viewer's life (0 if it could fit 10 \
+other videos)
 - clarity: the topic is understood in one second by a stranger
 - honest: 10 if every claim and promise is really in the brief, 0 if it is invented or exaggerated
-- coverage: 10 if the title is about the video's main idea; 0 if it is built on a side example or detail \
-that the video only touches
+- coverage: 10 if the title sells the whole video – its premise, main claim or core tension; 0 if it is \
+built on one example, story, person, number or one list item that the video only touches (see PARTS)
 and booleans/text:
+- part: true if the title rests on an item of PARTS or on one item of the scope
 - boring: true if it reads like an abstract topic name, a slogan, a textbook chapter or a plain restatement \
 of the author's title – no gain or pain of the viewer in it. A concrete list of N things with the viewer's \
 gain or pain is NOT boring
 - figurative: true if it uses a metaphor, poetry, a philosophical or abstract word instead of the real thing
 - weakness: the single most important thing that keeps a viewer from clicking, up to 12 words
 Answer ONLY with JSON: {"scores": [{"i": <index>, "click": 0, "for_me": 0, "curiosity": 0, "pull": 0, "specificity": 0, \
-"clarity": 0, "honest": 0, "coverage": 0, "boring": false, "figurative": false, "weakness": "..."}]}"""
+"clarity": 0, "honest": 0, "coverage": 0, "part": false, "boring": false, "figurative": false, "weakness": "..."}]}"""
 
 _REFINE_SYSTEM = """You sharpen YouTube titles to raise their click-through rate. You get titles with the \
 weakness a critic found in each. For every title write 2 improved versions that remove the weakness and \
 make the viewer want to click more – a more concrete gain or pain of the viewer, a stronger emotion, a \
-sharper hook – \
-keeping the claim true and obeying the rules.
+sharper hook – keeping the claim true, keeping it about the WHOLE video (never narrowing it to one example \
+or item) and obeying the rules.
 
 {rules}
 
@@ -287,14 +427,14 @@ def _flag(item: dict[str, Any], key: str) -> bool:
 
 
 def _clean_title(raw: Any) -> str:
-    t = _clean_line(raw).strip('«»"“” ').rstrip(".")
-    return t
+    t = _clean_line(str(raw or "").replace("**", "")).strip('«»"“” ').rstrip(".")
+    return t[:1].upper() + t[1:]  # models sometimes start a title in lower case
 
 
 def _judge_titles(fg: FastgenClient, brief: dict[str, Any], titles: list[str], llm: LlmSettings) -> list[dict[str, Any]]:
     """Critic pass: ``[{"title", "total", "figurative", "weakness", ...}]`` in the order of ``titles``."""
     listing = "\n".join(f"{i}: {t}" for i, t in enumerate(titles))
-    data = _chat(fg, _JUDGE_SYSTEM, f"BRIEF:\n{_brief_text(brief)}\n\nCANDIDATES:\n{listing}", llm, 0.2)
+    data = _chat(fg, _JUDGE_SYSTEM, f"BRIEF:\n{_brief_text(brief, parts=True)}\n\nCANDIDATES:\n{listing}", llm, 0.2)
     items = data.get("scores") if isinstance(data, dict) else data
     by_index: dict[int, dict[str, Any]] = {}
     for it in items or []:
@@ -317,8 +457,10 @@ def _judge_titles(fg: FastgenClient, brief: dict[str, Any], titles: list[str], l
         # The wish to click leads, then «это мне надо»; clarity and facts keep a title from being a riddle.
         total = (0.25 * num("click") + 0.20 * num("for_me") + 0.14 * num("curiosity") + 0.12 * num("pull")
                  + 0.10 * num("specificity") + 0.09 * num("clarity") + 0.10 * num("honest"))
-        if num("coverage") < 5:  # built on a side detail – the viewer would expect something else
-            total -= 0.4 * (5 - num("coverage"))
+        if num("coverage") < 6:  # sells a part – the viewer would expect another video
+            total -= 0.6 * (6 - num("coverage"))
+        if _flag(it, "part"):
+            total -= 3
         figurative = _flag(it, "figurative")
         if figurative:
             total -= 3
@@ -337,27 +479,33 @@ def make_titles(
     fg: FastgenClient, brief: dict[str, Any], language: str, llm: LlmSettings, count: int,
     avoid: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """The best ``count`` titles, strongest first: ``[{"text", "score", "formula"}]``.
+    """The best ``count`` titles, strongest first: ``[{"text", "score", "formula", "angle"}]``.
 
-    Candidates → critic → the top ones are sharpened by their critique → critic again.
-    ``avoid``: titles that were already shown (they are not repeated).
+    Candidates over the angles of the brief → critic → the top ones are sharpened by their critique → critic
+    again. ``avoid``: titles that were already shown (they are not repeated).
     """
     name = language_name(language)
+    angles = brief.get("angles") or []
     system = _TITLES_SYSTEM.format(
-        language=name, count=max(14, count * 3), rules=_TITLE_RULES.format(language=name),
-        formulas=_TITLE_FORMULAS.format(language=name))
+        language=name, count=max(14, count * 3, len(angles) * 2), rules=_TITLE_RULES.format(language=name),
+        formulas=_TITLE_FORMULAS.format(language=name), angles_rule=_ANGLES_RULE if angles else "")
     user = f"{_niche(llm)}BRIEF:\n{_brief_text(brief)}\n"
+    if angles:
+        user += f"\n{_angles_text(brief)}\n"
+    user += _market_text(brief)
     if avoid:
         user += "\nALREADY SHOWN – do not repeat or paraphrase:\n" + "\n".join(f"- {t}" for t in avoid[:12])
     data = _chat(fg, system, user, llm, 0.9)
     raw = data.get("candidates") if isinstance(data, dict) else data
     formulas: dict[str, str] = {}
+    kinds: dict[str, str] = {}
     seen_titles = [t.lower() for t in avoid or []]
     for it in raw or []:
         title = _clean_title(it.get("title") if isinstance(it, dict) else it)
         if not title or title_problem(title) or title.lower() in seen_titles or title in formulas:
             continue
         formulas[title] = _clean_line(it.get("formula") if isinstance(it, dict) else "")[:20]
+        kinds[title] = _angle_kind(angles, it.get("angle") if isinstance(it, dict) else None)
     if not formulas:
         raise ValueError("Модель не предложила ни одного названия")
 
@@ -384,9 +532,10 @@ def make_titles(
                         known.add(t.lower())
                         fresh.append(t)
                         try:
-                            formulas[t] = formulas.get(top[int(it.get("from", 0))]["title"], "")
+                            source = top[int(it.get("from", 0))]["title"]
                         except (IndexError, TypeError, ValueError):
-                            formulas[t] = ""
+                            source = ""
+                        formulas[t], kinds[t] = formulas.get(source, ""), kinds.get(source, "")
                 if fresh:
                     scored += _judge_titles(fg, brief, fresh, llm)
         except (ApiError, ValueError) as exc:
@@ -398,18 +547,25 @@ def make_titles(
     pool = [s for s in scored if not s["figurative"] and s["honest"] >= 6] or scored
     pool.sort(key=lambda s: -s["total"])
     picked: list[dict[str, Any]] = []
-    # Strongest first, but no near-duplicates; the first pass also wants a different formula each time.
-    for distinct_formula in (True, False):
+    # Strongest first, but no near-duplicates; the first pass also wants a different angle and formula.
+    for distinct in (True, False):
         for s in pool:
-            formula = formulas.get(s["title"], "")
+            formula, kind = formulas.get(s["title"], ""), kinds.get(s["title"], "")
             if len(picked) >= count or any(p["text"] == s["title"] for p in picked):
                 continue
-            if any(_similar(s["title"], p["text"]) or (distinct_formula and formula and formula == p["formula"])
-                   for p in picked):
+            if any(_similar(s["title"], p["text"]) or (distinct and (
+                    (formula and formula == p["formula"]) or (kind and kind == p["angle"]))) for p in picked):
                 continue
-            picked.append({"text": s["title"], "score": s["total"], "formula": formula})
+            picked.append({"text": s["title"], "score": s["total"], "formula": formula, "angle": kind})
     picked.sort(key=lambda p: -p["score"])
     return picked
+
+
+def _angle_kind(angles: list[dict[str, Any]], index: Any) -> str:
+    try:
+        return str(angles[int(index)]["kind"])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return ""
 
 
 # -------------------------------------------------------------------------- description
@@ -486,14 +642,14 @@ def make_description(
     name = language_name(language)
     system = _DESCRIPTION_SYSTEM.format(language=name, tags=publish.tags_count)
     chapter_lines = "\n".join(f"{int(t)}s: {text[:160]}" for t, text in chapters)
-    user = (f"{_niche(llm)}VIDEO TITLE: {title}\n\nBRIEF:\n{_brief_text(brief)}\n\n"
+    user = (f"{_niche(llm)}VIDEO TITLE: {title}\n\nBRIEF:\n{_brief_text(brief, parts=True)}\n\n"
             f"CHAPTER CANDIDATES (seconds: paragraph start):\n{chapter_lines}\n\n"
             f"SCRIPT BEGINNING:\n{script_head[:3_000]}")
-    data = _chat(fg, system, user, llm, 0.6)
+    data = _chat(fg, system, user, llm, 0.6, creative=False)
     if not isinstance(data, dict):
         raise ValueError("LLM вернул описание в неверном формате")
 
-    known = f"{script_head} {title} {_brief_text(brief)}"
+    known = f"{script_head} {title} {_brief_text(brief, parts=True)}"
 
     def collect(d: dict[str, Any]) -> dict[str, Any]:
         bullets = d.get("bullets")
@@ -510,7 +666,7 @@ def make_description(
         fixed = _chat(
             fg, system,
             user + f"\n\nYour previous answer contained foreign words ({', '.join(bad[:8])}). Rewrite hook, "
-                   f"about and bullets entirely in {name}, translating every such word.", llm, 0.4)
+                   f"about and bullets entirely in {name}, translating every such word.", llm, 0.4, creative=False)
         if isinstance(fixed, dict):
             again = collect(fixed)
             flat2 = " ".join([again["hook"], again["about"], *again["bullets"]])
@@ -555,63 +711,68 @@ def make_description(
 
 
 # ----------------------------------------------------------------------------- thumbnails
-#: Schemes of a package: how the thumbnail raises the question and the title answers «what is it, why me».
-PACKAGE_SCHEMES = ("confession_result", "hidden_warning", "contrast", "pain_question", "number_hook",
-                   "before_after")
+_LAYOUT_HELP = """  subject_left / subject_right: one big subject on that side fills about half of the frame, the other \
+side is calm empty background for the text – the default, strong for one person or object;
+  subject_low: the subject is centred and fills the lower two thirds, the top third is calm for the text – \
+for a scene, a figure in its surroundings, something small in something huge;
+  subject_high: an extreme close-up – a face or an object fills the upper two thirds, cropped tight, the \
+bottom third is calm for the text – for a strong emotion or one telling detail of the viewer's situation;
+  split: the frame is divided down the middle into two contrasting states of the same subject (before / \
+after, what one believes / what is real), the top quarter is calm for the text – for the paradox and the \
+result."""
 
 _PACKAGE_SYSTEM = """You are a senior YouTube packaging director, the one channels hire when their \
 click-through rate is low. You make PACKAGES: a thumbnail (ONE short text + ONE picture) and the title \
 that goes with it. The viewer sees them for half a second at 170 px among 20 other videos.
 
 HOW A PACKAGE WORKS – two roles, two steps
-1. The THUMBNAIL raises a question. The viewer sees the text and the picture and at once asks something \
-they cannot answer themselves – about THIS video's subject. The question comes from the text AND the \
-picture together, often from the gap between them.
+1. The THUMBNAIL raises a question about the WHOLE video. The viewer sees the text and the picture and at \
+once asks something they cannot answer themselves; the question comes from the text AND the picture \
+together, often from the gap between them.
 2. The TITLE finishes the job. The viewer glances at it and thinks «о, это мне надо»: it says what the \
 video is and names a concrete gain or pain of the viewer's own life, promising the answer to the \
 thumbnail's question without giving it away.
 
-NO TEMPLATES. Every channel dies of look-alike thumbnails. Everything – the text, the scene, the pose, the \
-props – is invented for THIS video from its BRIEF and its visual material. There are no model packages to \
-imitate here; a thumbnail that could be put on another video of the channel is a failure.
-
-SCHEMES – the mechanism of the question; each candidate uses one, at least 5 different schemes overall:
-- confession_result: a first-person confession or discovery about the video's core change, the decisive \
-part held back; the picture shows the result in this video's own terms.
-- hidden_warning: a warning or a verdict about something from the video, its object held back or shocking.
-- contrast: text and picture contradict each other, the brain stops at the mismatch.
-- pain_question: the question the viewer secretly asks themselves about the video's problem; the picture \
-shows that problem in its concrete form from the video.
-- number_hook: a striking number or fact from the video, its meaning held back.
-- before_after: two states of the same subject of the video side by side, the reason held back.
-Text forms must vary too: first person, an address to the viewer, a quoted line of a person of the video, a \
-bare number with a word, a verdict. A held-back object («это», «так») is ONE tool – at most one package \
-of the set uses it.
+ONE PACKAGE = ONE ANGLE. {angles_rule} Text, picture and title of a package express the thought of ITS \
+angle, and the package sells the WHOLE video: whoever clicks must get what it promised from the first \
+minute to the last.
+The most common and the most costly mistake is a package built on one example, case, experiment, \
+historical story, person, number or object that the video uses in a single part – the click is lost, or \
+the viewer leaves disappointed. Test every package: if any one part of the video were cut out, would the \
+package stay true and fitting? If not, redo it.
 
 THE TEXT («headline», in {language})
 - 2–5 words, at most {max_chars} characters, written in normal case (capitals are applied later), no \
 emoji, no trailing period. Native, spoken {language}.
-- It raises the question; it never answers it and never names the topic plainly. No truisms, no empty \
-words («shock», «the whole truth»).
-- It is about the core of the WHOLE video, not a side detail. Provocative is good, false is not: \
-everything it says or implies is really in the BRIEF.
+- It turns the angle's thought into a hook: it raises the question, never answers it and never names the \
+topic plainly. A hook carries tension inside itself: a claim that goes against what the viewer believes \
+about themselves, a verdict aimed at the viewer, the inner voice of someone caught in the problem, a fact \
+that does not fit. WEAK: a noun phrase naming the topic, an instruction, a short summary of the angle, the \
+question the video's title already asks. No truisms, no empty words («shock», «the whole truth»). \
+Provocative is good, false is not.
+- Text forms vary across the set: first person, an address to the viewer, a verdict, a question, a bare \
+number with a word. A held-back object («это», «так») is ONE tool – at most one package of the set uses it.
 - «accent»: the ONE word of the headline that carries the hook (it is highlighted); a number if there is one.
 
 THE PICTURE («prompt», in English, 40–80 words)
-- It is built from the VISUAL MATERIAL of the brief («material» = the item you use; every package uses a \
-different item): the real person the video is about with their recognisable look, the video's own object, \
-place, scene or number made visible – shown at its most striking: exaggerated, broken, piled up, at an odd \
-scale, at the tense moment. A stranger should guess the subject area of the video from the picture alone.
-- A person in it acts or reacts within the concrete situation of the video – never a generic person just \
-showing a feeling. BANNED stock scenes: a person holding a cup or mug, sitting in an armchair or at a \
-window, holding their head or resting it on a desk, raising a hand in a «stop» gesture, staring at a phone, \
-smiling with closed eyes. No clichés: no gears or circuits in brains, light bulbs, glowing orbs, \
-hourglasses, surreal collages, floating symbols.
-- The emotion or state is clear and fits the scheme – it can be calm, fear, joy, shock or anything else \
-the idea needs; it is readable at 170 px.
-- One focal point, at most 3 elements, the subject is BIG, close framing, simple background. The subject \
-sits on ONE side and fills about half of the frame; the other ~45% is calm empty background for the \
-headline. «side» = the side where the SUBJECT is: "left" or "right".
+- It shows the thought of the angle in one image that the eye reads in a second. Its subject is taken \
+from the visual world of the whole topic (see the brief) or is the one the whole video is about: the \
+viewer's own situation at its most telling moment, the core tension made visible inside one scene, the \
+state before or after, the hero of the whole video at a telling moment – shown at its most striking: \
+exaggerated, at an odd scale, at the tense moment. Never an example from one part of the video.
+- It is a visual IDEA, not an illustration: a concrete situation with a twist that makes the eye stop – an exaggeration, an absurd scale, a contradiction inside the scene, a consequence shown before its cause, the person doing the opposite of what the situation needs. A person just looking at something with a feeling is not an idea.
+- A stranger should guess the subject area of the video from the picture alone.
+- A person in it acts or reacts within a concrete situation – never a generic person just showing a \
+feeling. BANNED stock scenes: a person holding a cup or mug, sitting in an armchair or at a window, holding \
+their head or resting it on a desk, raising a hand in a «stop» gesture, staring at a phone, smiling with \
+closed eyes, looking at papers, notes, charts or a screen. No clichés: no gears or circuits in brains, light bulbs, glowing orbs, hourglasses, mazes, \
+chess pieces, puppets on strings, surreal collages, floating symbols.
+- The emotion or state is clear and fits the idea – calm, fear, joy, shock or anything else; it is \
+readable at 170 px. One focal point (two for split), at most 3 elements, the subject is BIG, close \
+framing, simple background.
+- «layout» – the composition; choose the one that serves the idea, the set uses at least {layouts_min} \
+different ones, and the scene in «prompt» is described to fit it:
+{layout_help}
 - The art style is FIXED, MANDATORY and added to the prompt automatically: «{style}». The prompt describes \
 ONLY the scene – never copy the style into it, never name colours, lighting, style, medium or camera words \
 and never contradict the style: for a cartoon style describe cartoon characters, not real people. No \
@@ -621,22 +782,28 @@ THE TITLE («title», in {language})
 {title_task}
 
 FINAL CHECK for every package: a stranger sees ONLY the thumbnail – which question pops into their head, \
-and do they need the answer? Could this thumbnail be put on another video of the channel? Then they read \
-the title – do they think «это мне надо»? If anything fails, redo it.
-Packages must differ from each other in scheme, text form, material, scene and pose.
+and do they need the answer? Is it about the whole video, not one of its parts? Then they read the title – \
+do they think «это мне надо»? If anything fails, redo it.
+Packages must differ from each other in angle, text form, scene, layout and pose.
 
 Write {count} packages. Answer ONLY with JSON, fields in this order (the chain of thought):
-{{"packages": [{{"scheme": "{schemes}", "headline": "...", "accent": "...", "material": "the item of the \
-visual material the picture is built from", "subject": "what the picture shows, 2–8 English words", \
-"question": "the question the viewer asks at the sight of the thumbnail alone, in {language}", \
-"title": "...", "side": "left|right", "prompt": "..."}}]}}"""
+{{"packages": [{{"angle": <index of the angle>, "question": "the question the viewer must ask at the sight \
+of the thumbnail alone, in {language}", "headline": "...", "accent": "...", "twist": "what in the picture \
+makes the eye stop – its exaggeration or contradiction, one English phrase", "subject": "what the picture \
+shows, 2–8 English words", "layout": "{layouts}", "prompt": "...", "title": "..."}}]}}"""
 
-_PACKAGE_TITLE_FREE = """Write the title for THIS thumbnail. {title_rules}
+_PACKAGE_ANGLES = """The ANGLES of the user message are the ways to sell this video, already chosen: every \
+package takes one («angle» = its index), every angle is used, and two packages of the same angle differ in \
+everything else."""
+
+_PACKAGE_NO_ANGLES = """First find the angles yourself: different thoughts about the WHOLE video (the \
+viewer's pain, the core tension, the stakes, the result, the viewer recognising themselves, the value of the \
+whole video); every package takes a different one («angle» = its number, from 0)."""
+
+_PACKAGE_TITLE_FREE = """Write the title for THIS thumbnail, of the same angle. {title_rules}
 - The title does not repeat the words of the headline and does not reveal what the headline holds back \
 (it may name the category and the count, not the things themselves).
 - It promises exactly what the video is: a list of N things is never «the main reason» or «one simple way».
-- The picture may show ONE concrete episode of the video; the title is still about the WHOLE video (its \
-premise), never about that episode only.
 - Grammatically correct, every part of it agrees with the rest.{ideas}"""
 
 _PACKAGE_TITLE_FIXED = """The title is FIXED: «{title}». Copy it into «title» exactly; build the thumbnail \
@@ -649,29 +816,33 @@ STEP 1 – the viewer sees ONLY the thumbnail at 170 px (text + picture, no titl
 - question: the question that really pops into their head, in {language}, max 12 words; an empty string \
 if none does (a truism, a topic name, a statement that explains itself)
 - gap: 0–10, how badly they need the answer to that question (0 if there is none)
+- hook: 0–10, the headline alone has tension – it goes against a belief, accuses, confesses or does not fit; 3 or less for a noun phrase naming the topic, an instruction or a summary
 - stop: 0–10, does it stand out among 20 thumbnails – a clearly readable state of the character, a \
 striking mismatch of text and picture, one focal point (calm is not a minus by itself; a vague, \
 nothing-to-read picture is)
 - picture_instant: 0–10, the picture is understood in one second at 170 px
-- only_this: 0–10, the picture and the text could belong ONLY to this video – its own person, object, place \
-or fact (0 if they would fit any video of the channel: a generic person showing a feeling, a stock pose)
+- idea: 0–10, the picture has a visual idea – a twist, an exaggeration, a contradiction inside the scene; 3 or less for a plain illustration (a person looking at something with a feeling)
+- topic: 0–10, a stranger guesses the subject area of the video from the text and the picture (0 if they \
+would fit any video of the channel: a generic person showing a feeling, a stock pose)
+- whole: 0–10, the text and the picture are about the WHOLE video – its premise, core tension, its hero or \
+the viewer's situation in it; 0 if they rest on one example, case, story, person, number or object that the \
+video uses in a single part (see PARTS)
 STEP 2 – the viewer reads the title:
 - for_me: 0–10, they think «это мне надо» – a concrete gain or pain of their own life (0 for an abstract \
 topic or a slogan)
 - closes: 0–10, the title promises the answer to the thumbnail's question without giving it away and \
 without repeating the headline
 - clarity: 0–10, it is clear in one second what the video is
-- covers: 0–10, the title is about the WHOLE video (its premise); 0 if it is about one episode or item that \
-the picture happens to show
-- honest: 0–10, every claim of the headline, the picture and the title is really in the BRIEF and about \
-the whole video, not a side detail
-and booleans: "repeats" (the title repeats the headline's words or idea), "abstract" (the picture relies \
-on a cliché symbol or an abstraction that is not understood at once), "stock" (the picture is a stock \
-scene: a person with a cup or mug, in an armchair or at a window, holding their head, raising a «stop» \
-hand, staring at a phone – or anything else that would fit any video).
+- covers: 0–10, the title sells the WHOLE video; 0 if it is about one part, example or item
+- honest: 0–10, every claim of the headline, the picture and the title is really in the BRIEF
+and booleans: "part" (the headline, the picture or the title rests on an item of PARTS or on one item of \
+the scope), "repeats" (the title repeats the headline's words or idea), "abstract" (the picture relies on \
+a cliché symbol or an abstraction that is not understood at once), "stock" (the picture is a stock scene: \
+a person with a cup or mug, in an armchair or at a window, holding their head, raising a «stop» hand, \
+staring at a phone – or anything else that would fit any video).
 Answer ONLY with JSON: {{"scores": [{{"i": <index>, "question": "...", "gap": 0, "stop": 0, \
-"picture_instant": 0, "only_this": 0, "for_me": 0, "closes": 0, "clarity": 0, "covers": 0, "honest": 0, \
-"repeats": false, "abstract": false, "stock": false}}]}}"""
+"hook": 0, "idea": 0, "picture_instant": 0, "topic": 0, "whole": 0, "for_me": 0, "closes": 0, "clarity": 0, "covers": 0, \
+"honest": 0, "part": false, "repeats": false, "abstract": false, "stock": false}}]}}"""
 
 
 #: Stock scenes a model falls back to on any topic; they made every thumbnail of a channel look alike.
@@ -686,21 +857,40 @@ def _thumb_headline_ok(headline: str) -> bool:
     return bool(headline) and len(headline.split()) <= HEADLINE_MAX_WORDS and len(headline) <= HEADLINE_MAX_CHARS
 
 
+def _common_stems(items: list[dict[str, Any]]) -> set[str]:
+    """Words most pictures of a channel share (its mascot, its kind of hero): they tell nothing about likeness."""
+    subjects = [_norm_words(str(a.get("subject") or "")) for a in items if a.get("subject")]
+    counts = Counter(w for words in subjects for w in words)
+    return {w for w, k in counts.items() if len(subjects) >= 4 and k / len(subjects) >= 0.3}
+
+
+def _looks_like(c: dict[str, Any], other: dict[str, Any], ignore: set[str]) -> bool:
+    """The picture repeats another one: the same subject (English, so comparable across languages)."""
+    skip = _GENERIC_STEMS | ignore
+    a = _norm_words(str(c.get("subject") or "")) - skip
+    b = _norm_words(str(other.get("subject") or "")) - skip
+    return bool(a and b) and len(a & b) / min(len(a), len(b)) >= 0.4
+
+
 def thumbnail_concepts(
-    fg: FastgenClient, brief: dict[str, Any], script_head: str, language: str, title: str | None,
+    fg: FastgenClient, brief: dict[str, Any], language: str, title: str | None,
     llm: LlmSettings, publish: PublishSettings, count: int, avoid: list[dict[str, Any]] | None = None,
     title_ideas: list[str] | None = None, channel_used: list[dict[str, Any]] | None = None,
+    elsewhere: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The best ``count`` packages: a thumbnail (headline + picture) and the title that goes with it.
 
-    Each one is ``{"prompt", "headline", "accent", "side", "subject", "material", "angle", "question", "title",
-    "title_fixed", "score"}``. ``title`` – make thumbnails for this fixed title; ``None`` – every package gets
-    its own title. ``avoid`` are ideas that were already shown: new ones differ in headline, picture and title.
-    ``title_ideas`` – the strongest titles of :func:`make_titles`, a package may take or adapt one of them.
-    ``channel_used`` – thumbnail ideas of the channel's other videos: a new one must not look like them.
+    Each one is ``{"prompt", "headline", "accent", "layout", "side", "subject", "angle", "thought", "question",
+    "title", "title_fixed", "score"}``. ``title`` – make thumbnails for this fixed title; ``None`` – every
+    package gets its own title. ``avoid`` are ideas that were already shown: new ones differ in headline,
+    picture and title. ``title_ideas`` – the strongest titles of :func:`make_titles`, a package may take or
+    adapt one of them. ``channel_used`` – thumbnails of the channel's other videos, ``elsewhere`` – recent
+    thumbnails of the other channels (often the same topic in another language): a new one must not look
+    like them.
     """
     name = language_name(language)
-    wanted = max(count * 3, 8)
+    angles = brief.get("angles") or []
+    wanted = max(count * 3, 8, len(angles))
     fixed = (title or "").strip()
     ideas = ("\n- Strong titles already written for this video – take one that fits the thumbnail, adapt it or "
              "write a better one:\n" + "\n".join(f"  «{t}»" for t in title_ideas[:8])) if title_ideas else ""
@@ -708,8 +898,14 @@ def thumbnail_concepts(
                   else _PACKAGE_TITLE_FREE.format(title_rules=_TITLE_RULES.format(language=name), ideas=ideas))
     system = _PACKAGE_SYSTEM.format(language=name, max_chars=HEADLINE_MAX_CHARS, count=wanted,
                                     style=publish.thumbnail_style.strip(), title_task=title_task,
-                                    schemes="|".join(PACKAGE_SCHEMES))
+                                    angles_rule=_PACKAGE_ANGLES if angles else _PACKAGE_NO_ANGLES,
+                                    layouts="|".join(THUMB_LAYOUTS), layouts_min=min(3, max(1, count)),
+                                    layout_help=_LAYOUT_HELP)
     user = f"{_niche(llm)}BRIEF:\n{_brief_text(brief)}\n"
+    if angles:
+        user += f"\n{_angles_text(brief)}\n"
+    market_images = market_uris(brief, 6) if sees_images(packaging_model(llm)) else []
+    user += _market_text(brief, len(market_images))
     shown = [a for a in avoid or [] if a.get("headline") or a.get("prompt")]
     if shown:
         user += ("\nALREADY MADE – a new package must not repeat or paraphrase their headline, picture or title:\n"
@@ -720,52 +916,43 @@ def thumbnail_concepts(
         user += ("\nUSED ON OTHER VIDEOS OF THIS CHANNEL – new thumbnails must not look like any of them: no same "
                  "scene, pose, prop or text structure:\n"
                  + "\n".join(f"- «{a.get('headline', '')}» / {a.get('subject', '')}" for a in used[:30]) + "\n")
-    if script_head.strip():
-        user += f"\nSCRIPT BEGINNING (only a source of accurate details, not a menu of scenes):\n{script_head[:4_000]}"
-    data = _chat(fg, system, user, llm, 0.9)
-    items = data.get("packages") if isinstance(data, dict) else data
-
+    other = [a for a in elsewhere or [] if a.get("subject")]
+    if other:
+        user += ("\nUSED RECENTLY ON THE AUTHOR'S OTHER CHANNELS (often on the same topic in another language) – "
+                 "this channel's thumbnails must look different: another subject, scene and layout:\n"
+                 + "\n".join(f"- {a.get('subject', '')} ({a.get('layout') or 'side'})" for a in other[:20]) + "\n")
     avoid_heads = {_clean_line(a.get("headline")).lower() for a in shown}
     style = publish.thumbnail_style.strip().rstrip(".")
+    parts = list(brief.get("parts") or [])
     cands: list[dict[str, Any]] = []
-    for it in items or []:
-        if not isinstance(it, dict) or not str(it.get("prompt", "")).strip():
-            continue
-        headline = re.sub(r"[«»“”\"]", "", re.sub(r"\s+", " ", str(it.get("headline") or ""))).strip().rstrip(".")
-        if not _thumb_headline_ok(headline) or headline.lower() in avoid_heads:
-            continue
-        own_title = fixed or _clean_title(it.get("title"))
-        if not own_title or (not fixed and title_problem(own_title)):
-            continue
-        if _similar(headline, own_title, 0.8) and len(headline.split()) > 1:
-            continue  # the thumbnail only repeats the title
-        accent = _clean_line(it.get("accent")).strip('"«»“” .')
-        side = "left" if str(it.get("side", "")).strip().lower().startswith("l") else "right"
-        prompt = str(it["prompt"]).strip()
-        if style:  # the model likes to echo the style, which the drawing adds once more
-            prompt = re.sub(re.escape(style) + r"\.?\s*", "", prompt, flags=re.I).strip() or prompt
-        cands.append({
-            "prompt": prompt,
-            "headline": headline,
-            "accent": accent if accent and accent.lower() in headline.lower() else "",
-            "side": side,
-            "subject": _clean_line(it.get("subject"))[:80],
-            "material": _clean_line(it.get("material"))[:120],
-            "angle": _clean_line(it.get("scheme"))[:30],
-            "question": _clean_line(it.get("question"))[:200],
-            "title": own_title,
-            "title_fixed": bool(fixed),
-            "title_index": 0,
-        })
+    # Models often write fewer packages than asked; a second round adds new ones to choose from.
+    for _round in range(2):
+        if len(cands) >= max(count * 2, 6):
+            break
+        more = ("" if not cands else "\nALREADY WRITTEN in this session – write NEW packages, different from "
+                "these in headline, scene and layout:\n"
+                + "\n".join(f"- «{c['headline']}» / {c['subject']} ({c['layout']})" for c in cands) + "\n")
+        data = _chat(fg, system, user + more, llm, 0.9, images=market_images)
+        cands += _parse_packages(data.get("packages") if isinstance(data, dict) else data, angles, fixed,
+                                 avoid_heads | {c["headline"].lower() for c in cands}, style)
     if not cands:
         return []
 
+    own_common, other_common = _common_stems(used), _common_stems(other)
     for c in cands:
-        # The critic does not see the channel: a look-alike of another video is pushed down here.
-        c["penalty"] = 2.5 if any(
-            (c["subject"] and a.get("subject") and _similar(c["subject"], str(a["subject"]), 0.5))
-            or (a.get("headline") and _similar(c["headline"], str(a["headline"]), 0.6)) for a in used) else 0.0
+        c["penalty"] = 0.0
+        # Code checks what the critic may miss: a single-part example in the picture, a stock scene, a picture
+        # of another video of this channel or of the other channels.
+        hit = part_hit(f"{c['subject']} {c['prompt']}", parts)
+        if hit:
+            c["penalty"] += 4
+            log.info("thumbnail idea rests on a part (%s): %s", hit, c["subject"])
         if _STOCK_SCENE.search(c["prompt"]):
+            c["penalty"] += 2
+        if any(_looks_like(c, a, own_common) or (a.get("headline") and _similar(c["headline"], str(a["headline"]), 0.6))
+               for a in used):
+            c["penalty"] += 2.5
+        if any(_looks_like(c, a, other_common) for a in other):
             c["penalty"] += 2
     scores = _judge_packages(fg, brief, cands, llm, name)
     for i, c in enumerate(cands):
@@ -775,21 +962,23 @@ def thumbnail_concepts(
             c["question"] = question[:200]
 
     picked: list[dict[str, Any]] = []
-    # Variants for YouTube's A/B test are worth something only when they differ, so the first pass also
-    # wants a different scheme; the second pass fills up if there are not enough of them.
-    for distinct_scheme in (True, False):
+    # Variants for YouTube's A/B test are worth something only when they differ: the first pass wants a
+    # different angle AND composition, the second a different angle, the third fills up.
+    for strict in (2, 1, 0):
         for c in sorted(cands, key=lambda c: -c["score"]):
             if c in picked or len(picked) >= count:
                 continue
-            # a different text, picture and title from the already chosen ones
             if any(_similar(c["headline"], p["headline"], 0.5)
-                   or (c["subject"] and p["subject"] and _similar(c["subject"], p["subject"], 0.7))
-                   or (c["material"] and c["material"].lower() == p["material"].lower())
+                   or (c["subject"] and p["subject"] and _similar(c["subject"], p["subject"], 0.6))
                    or (not fixed and _similar(c["title"], p["title"], 0.7))
-                   or (distinct_scheme and c["angle"] and c["angle"] == p["angle"])
+                   or (strict >= 1 and c["angle"] and c["angle"] == p["angle"])
+                   or (strict >= 2 and c["layout"] == p["layout"])
                    for p in picked):
                 continue
             picked.append(c)
+    if picked:  # a failed idea is worse than one variant less: the user asks for more with a click
+        floor = min(4.0, picked[0]["score"] - 3)
+        picked = [c for c in picked if c["score"] >= floor] or picked[:1]
     if picked and not fixed:
         try:
             _sharpen_package_titles(fg, brief, picked, llm, name, ideas)
@@ -801,15 +990,58 @@ def thumbnail_concepts(
     return picked
 
 
+def _parse_packages(items: Any, angles: list[dict[str, Any]], fixed: str, avoid_heads: set[str],
+                    style: str) -> list[dict[str, Any]]:
+    """Candidate packages of the model's answer that pass the hard rules (not judged yet)."""
+    cands: list[dict[str, Any]] = []
+    for n, it in enumerate(items or []):
+        if not isinstance(it, dict) or not str(it.get("prompt", "")).strip():
+            continue
+        headline = re.sub(r"[«»“”\"*_]", "", re.sub(r"\s+", " ", str(it.get("headline") or ""))).strip().rstrip(".")
+        if not _thumb_headline_ok(headline) or headline.lower() in avoid_heads:
+            continue
+        own_title = fixed or _clean_title(it.get("title"))
+        if not own_title or (not fixed and title_problem(own_title)):
+            continue
+        if _similar(headline, own_title, 0.8) and len(headline.split()) > 1:
+            continue  # the thumbnail only repeats the title
+        accent = _clean_line(it.get("accent")).strip('"«»“” .*_')
+        prompt = str(it["prompt"]).strip()
+        if style:  # the model likes to echo the style, which the drawing adds once more
+            prompt = re.sub(re.escape(style) + r"\.?\s*", "", prompt, flags=re.I).strip() or prompt
+        layout = thumb_layout({"layout": _clean_line(it.get("layout")).lower(), "side": it.get("side")})
+        try:
+            k = int(it.get("angle"))
+        except (TypeError, ValueError):
+            k = -1
+        # Without angles of the brief the model numbers its own; their numbers still keep the set diverse.
+        angle = (angles[k] if 0 <= k < len(angles) else {}) if angles else {"kind": f"own{k if k >= 0 else n}"}
+        cands.append({
+            "prompt": prompt,
+            "headline": headline,
+            "accent": accent if accent and accent.lower() in headline.lower() else "",
+            "layout": layout,
+            "side": "left" if layout == "subject_left" else "right",
+            "subject": _clean_line(it.get("subject"))[:80],
+            "angle": str(angle.get("kind") or ""),
+            "thought": str(angle.get("thought") or ""),
+            "question": _clean_line(it.get("question"))[:200],
+            "title": own_title,
+            "title_fixed": bool(fixed),
+            "title_index": 0,
+        })
+    return cands
+
+
 def _judge_packages(fg: FastgenClient, brief: dict[str, Any], packs: list[dict[str, Any]], llm: LlmSettings,
                     language_label: str) -> dict[int, dict[str, Any]]:
     """The critic's scores by index of ``packs`` (empty when the critic failed)."""
     scores: dict[int, dict[str, Any]] = {}
     try:
-        listing = "\n".join(f"{i}: thumbnail text «{c['headline']}» / picture: {c['prompt']} / title: {c['title']}"
-                            for i, c in enumerate(packs))
+        listing = "\n".join(f"{i}: thumbnail text «{c['headline']}» / picture ({c.get('layout', '')}): {c['prompt']}"
+                            f" / title: {c['title']}" for i, c in enumerate(packs))
         judged = _chat(fg, _PACKAGE_JUDGE_SYSTEM.format(language=language_label),
-                       f"BRIEF:\n{_brief_text(brief)}\n\nPACKAGES:\n{listing}", llm, 0.2)
+                       f"BRIEF:\n{_brief_text(brief, parts=True)}\n\nPACKAGES:\n{listing}", llm, 0.2)
         for s in (judged.get("scores") if isinstance(judged, dict) else judged) or []:
             try:
                 scores[int(s["i"])] = s
@@ -826,12 +1058,17 @@ def _package_score(s: dict[str, Any], pack: dict[str, Any]) -> float:
             return max(0.0, min(10.0, float(s.get(k, 0))))
         except (TypeError, ValueError):
             return 0.0
-    # The question of the thumbnail leads, then «это мне надо» of the title and a picture of THIS video.
-    value = (0.22 * num("gap") + 0.10 * num("stop") + 0.06 * num("picture_instant") + 0.14 * num("only_this")
-             + 0.18 * num("for_me") + 0.12 * num("closes") + 0.06 * num("clarity") + 0.12 * num("honest"))
+    # The question of the thumbnail leads, then «это мне надо» of the title; both about the whole video.
+    value = (0.15 * num("gap") + 0.11 * num("hook") + 0.10 * num("idea") + 0.05 * num("stop")
+             + 0.04 * num("picture_instant") + 0.06 * num("topic") + 0.12 * num("whole") + 0.14 * num("for_me")
+             + 0.08 * num("closes") + 0.05 * num("clarity") + 0.10 * num("honest"))
     value -= float(pack.get("penalty") or 0)
-    if num("covers") < 5:  # a title about one episode – the viewer would expect another video
-        value -= 0.5 * (5 - num("covers"))
+    if num("whole") < 6:  # the thumbnail sells one part of the video
+        value -= 0.6 * (6 - num("whole"))
+    if num("covers") < 6:  # so does the title
+        value -= 0.5 * (6 - num("covers"))
+    if _flag(s, "part"):
+        value -= 3
     if num("honest") < 5:  # invented claim – never wins over a grounded idea
         value -= 4
     if not _clean_line(s.get("question")):
@@ -847,14 +1084,13 @@ def _package_score(s: dict[str, Any], pack: dict[str, Any]) -> float:
 
 
 _PACKAGE_TITLES_SYSTEM = """You write titles for YouTube thumbnails that are already made. For every \
-package you get the thumbnail text, the picture, the question the viewer asks at the sight of it and the \
-current title. Write 3 different, better titles for each. The viewer reads the title right after the \
-thumbnail and must think «это мне надо»: it says what the video is, names a concrete gain or pain of the \
-viewer's own life and promises the answer to the thumbnail's question without giving it away and without \
-repeating the headline. It promises exactly what the video is: a list of N things is never «the main \
-reason» or «one simple way», and one item of the list is never the title. The picture often shows one \
-episode of the video – the title is still about the WHOLE video (its premise), never about that episode. \
-When the video is a list, at least one of the 3 uses its exact count.
+package you get the thumbnail text, the picture, the thought it sells, the question the viewer asks at the \
+sight of it and the current title. Write 3 different, better titles for each. The viewer reads the title \
+right after the thumbnail and must think «это мне надо»: it says what the video is, names a concrete gain \
+or pain of the viewer's own life and promises the answer to the thumbnail's question without giving it away \
+and without repeating the headline. It sells the WHOLE video: never one example, story, person or one item \
+of a list, and it promises exactly what the video is – a list of N things is never «the main reason» or \
+«one simple way». When the video is a list, at least one of the 3 uses its exact count.
 
 {rules}{ideas}
 
@@ -864,8 +1100,9 @@ Answer ONLY with JSON: {{"titles": [{{"i": <package index>, "title": "..."}}]}}"
 def _sharpen_package_titles(fg: FastgenClient, brief: dict[str, Any], picked: list[dict[str, Any]],
                             llm: LlmSettings, language_label: str, ideas: str) -> None:
     """New titles for the chosen thumbnails; each package keeps the title the critic likes best with it."""
-    listing = "\n".join(f"{i}: thumbnail text «{p['headline']}» / picture: {p['subject']} / viewer's question: "
-                        f"{p['question']} / title now: {p['title']}" for i, p in enumerate(picked))
+    listing = "\n".join(f"{i}: thumbnail text «{p['headline']}» / picture: {p['subject']} / sells: "
+                        f"{p.get('thought') or '–'} / viewer's question: {p['question']} / title now: {p['title']}"
+                        for i, p in enumerate(picked))
     data = _chat(fg, _PACKAGE_TITLES_SYSTEM.format(rules=_TITLE_RULES.format(language=language_label),
                                                    ideas=ideas),
                  f"BRIEF:\n{_brief_text(brief)}\n\nPACKAGES:\n{listing}", llm, 0.7)
@@ -898,3 +1135,73 @@ def _sharpen_package_titles(fg: FastgenClient, brief: dict[str, Any], picked: li
         if i in best and all(not _similar(best[i][1], u, 0.7) for u in used):
             p["score"], p["title"] = round(best[i][0], 2), best[i][1]
         used.append(p["title"])
+
+
+# ------------------------------------------------------------------------- drawn thumbnails
+_VISUAL_JUDGE_SYSTEM = """You are a ruthless YouTube packaging critic. You look at REAL rendered thumbnails as \
+they appear in the home feed on a phone – small. The first {count} images are CANDIDATES for one video \
+(their headlines and titles are listed in the text, in the same order). The images after them are \
+NEIGHBOURS: other videos the viewer sees in the same feed – strong videos of this niche and earlier videos \
+of this channel. Be strict: average = 5–6, 8+ is rare.
+For every candidate, judging at THIS small size:
+- read: 0–10, the headline is read in a glance: big, high contrast, not covered, not cut off
+- focus: 0–10, one clear focal point; the subject and its emotion or action are understood in a second; no \
+clutter, no muddy contrast
+- stop: 0–10, it stands out among the neighbours – the eye would stop on it in this feed
+- click: 0–10, together with its title, how badly the viewer of this niche wants to click
+- flaws: the concrete visual defects, each a few words in Russian (distorted face or hands, stray letters or \
+words drawn in the picture, text over the face, the subject cut off, the picture contradicts the headline, \
+looks like the neighbours…); an empty list if none
+- verdict: "keep", "weak" or "reject" (reject – a defect a viewer would notice, or it does not work at all)
+- note: one sentence in Russian for the author: what works or what to fix
+Answer ONLY with JSON: {{"images": [{{"n": <candidate number from 1>, "read": 0, "focus": 0, "stop": 0, \
+"click": 0, "flaws": [], "verdict": "keep", "note": "..."}}]}}"""
+
+
+def judge_drawn_thumbnails(
+    fg: FastgenClient, brief: dict[str, Any], items: list[dict[str, Any]], neighbours: list[str],
+    llm: LlmSettings,
+) -> dict[int, dict[str, Any]]:
+    """A vision critic on drawn thumbnails: ``{index in items: {"visual", "verdict", "note", "flaws"}}``.
+
+    ``items`` – ``{"uri", "headline", "title"}``; ``neighbours`` – data URIs of other thumbnails of the feed.
+    Empty when the packaging model does not see images or the call failed.
+    """
+    model = packaging_model(llm)
+    if not items or not sees_images(model):
+        return {}
+    listing = "\n".join(f"{i + 1}: headline «{it.get('headline') or '–'}» / title: {it.get('title') or '–'}"
+                        for i, it in enumerate(items))
+    text = (f"VIDEO: {brief.get('premise') or brief.get('working_title') or ''}\n\nCANDIDATES:\n{listing}\n\n"
+            f"{len(neighbours)} neighbour images follow the candidates.")
+    content = [{"type": "text", "text": text}] + [
+        {"type": "image_url", "image_url": {"url": u}} for u in [it["uri"] for it in items] + neighbours]
+    try:
+        data = fg.chat_json([{"role": "system", "content": _VISUAL_JUDGE_SYSTEM.format(count=len(items))},
+                             {"role": "user", "content": content}], model=model, temperature=0.2, attempts=2)
+    except ApiError as exc:
+        log.warning("visual thumbnail critic failed: %s", exc)
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    for s in (data.get("images") if isinstance(data, dict) else data) or []:
+        try:
+            i = int(s["n"]) - 1
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= i < len(items):
+            continue
+
+        def num(k: str, s: dict[str, Any] = s) -> float:
+            try:
+                return max(0.0, min(10.0, float(s.get(k, 0))))
+            except (TypeError, ValueError):
+                return 0.0
+        verdict = _clean_line(s.get("verdict")).lower()
+        visual = 0.2 * num("read") + 0.2 * num("focus") + 0.25 * num("stop") + 0.35 * num("click")
+        if verdict == "reject":
+            visual -= 4
+        flaws = [_clean_line(f) for f in s.get("flaws") or [] if _clean_line(f)][:5] \
+            if isinstance(s.get("flaws"), list) else []
+        out[i] = {"visual": round(visual, 2), "verdict": verdict or "keep", "note": _clean_line(s.get("note"))[:300],
+                  "flaws": flaws}
+    return out

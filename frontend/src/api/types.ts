@@ -71,7 +71,7 @@ export interface PipelineSettings {
     character_refs: boolean; character_operation: string; scene_continuity: boolean
     watermark_fix: 'auto' | 'inpaint' | 'crop' | 'none'; auto_fix_rejected: boolean; max_attempts: number
   }
-  llm: { model: string; niche: string; prompt_instructions: string; temperature: number }
+  llm: { model: string; packaging_model: string; niche: string; prompt_instructions: string; temperature: number }
   render: {
     resolution: '1080p' | '1440p' | '2160p'; fps: number; motion_effects: string[]; motion_intensity: number
     phrase_cuts: boolean; shot_moves: boolean; depth_of_field: boolean
@@ -103,7 +103,7 @@ export interface PipelineSettings {
   }
   publish: {
     enabled: boolean; title_variants: number; tags_count: number; description_footer: string; with_chapters: boolean
-    thumbnail_count: number; thumbnail_text: boolean; thumbnail_style: string; thumbnail_operation: string
+    thumbnail_count: number; thumbnail_spare: number; thumbnail_text: boolean; thumbnail_style: string; thumbnail_operation: string
     thumbnail_text_mode: 'overlay' | 'model'; thumbnail_text_color: string; thumbnail_accent_color: string
   }
 }
@@ -180,7 +180,7 @@ export interface PublishMeta {
   description_full?: string
   tags?: string[]
   chapters?: { t: number; title: string }[]
-  thumbnails?: { prompt: string; headline?: string; accent?: string; side?: string; score?: number; subject?: string; angle?: string; question?: string; title?: string; title_fixed?: boolean; title_index?: number; image?: string | null }[]
+  thumbnails?: { prompt: string; headline?: string; accent?: string; side?: string; score?: number; subject?: string; angle?: string; thought?: string; layout?: string; visual?: number; visual_verdict?: string; visual_note?: string; question?: string; title?: string; title_fixed?: boolean; title_index?: number; image?: string | null }[]
 }
 
 export interface TrackSummary {
@@ -310,6 +310,7 @@ export interface AppConfig {
   gemini_api_keys: string[]
   gemini_tts_model: string
   gemini_tts_daily_limit: number
+  youtube_api_key: string
 }
 
 export type CleanupKind = 'published_videos' | 'depth' | 'previews' | 'work' | 'orphans'
