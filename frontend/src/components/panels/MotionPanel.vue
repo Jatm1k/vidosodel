@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * Motion graphics of a language version: what Claude composed (full-screen motion scenes and overlays),
- * a frame of each, «redo with a comment», delete, and starting the generation for the whole video or a range.
+ * a frame of each, «redo with a comment», delete, and starting the generation for the whole video or a range;
+ * the art direction of this video (its brief, editable) and the cut-outs drawn for it.
  */
 import { computed, ref, watch } from 'vue'
 import Button from 'primevue/button'
@@ -104,6 +105,42 @@ function clearAll() {
   })
 }
 
+// ---- the brief of this video
+const brief = computed(() => info.value?.brief ?? null)
+const briefOpen = ref(false)
+const briefDraft = ref('')
+const briefEditing = ref(false)
+watch(() => brief.value?.text, (t) => { if (!briefEditing.value) briefDraft.value = t ?? '' }, { immediate: true })
+async function saveBrief() {
+  try {
+    await api.put(`/api/tracks/${props.track.id}/motion/brief`, { text: briefDraft.value })
+    briefEditing.value = false
+    notify.ok('Арт-дирекция сохранена', 'Claude будет следовать ей при каждой генерации этого ролика')
+    await load()
+  } catch (e) {
+    notify.error(e)
+  }
+}
+async function resetBrief() {
+  try {
+    await api.del(`/api/tracks/${props.track.id}/motion/brief`)
+    briefEditing.value = false
+    notify.info('При следующей генерации Claude напишет арт-дирекцию заново')
+    await load()
+  } catch (e) {
+    notify.error(e)
+  }
+}
+async function removeCutout(id: string) {
+  try {
+    await api.del(`/api/tracks/${props.track.id}/motion/cutouts/${id}`)
+    await load()
+  } catch (e) {
+    notify.error(e)
+  }
+}
+const CUT_STATUS: Record<string, string> = { pending: 'ждёт', generating: 'рисуется', failed: 'не вышла' }
+
 const big = ref<MotionItem | null>(null)
 const styleName = computed(() => (info.value?.style as any)?.base ?? null)
 </script>
@@ -154,6 +191,47 @@ const styleName = computed(() => (info.value?.style as any)?.base ?? null)
       </span>
     </div>
 
+    <div v-if="brief" class="mt-4 rounded-md border border-line-soft">
+      <button class="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left text-[13px]" @click="briefOpen = !briefOpen">
+        <i class="pi text-[11px] text-ink-3" :class="briefOpen ? 'pi-chevron-down' : 'pi-chevron-right'" />
+        <span class="font-medium text-ink">Арт-дирекция этого ролика</span>
+        <span class="text-ink-3">
+          {{ brief.by === 'user' ? 'ваша' : 'написал Claude' }}
+          <template v-if="brief.cutouts.length"> · вырезок {{ brief.cutouts.filter((c) => c.status === 'done').length }}/{{ brief.cutouts.length }}</template>
+        </span>
+        <span v-if="brief.stale" class="text-[12px] text-tally">сценарий изменился — при генерации будет написана заново</span>
+      </button>
+      <div v-if="briefOpen" class="border-t border-line-soft p-3">
+        <p class="mb-2 text-[12px] text-ink-3">
+          Сквозные образы, приёмы для разных частей сценария и чего избегать — общий план для всех частей ролика. Claude пишет
+          её под каждый сценарий; если поправите — ваша версия сохранится для всех следующих генераций этого ролика.
+        </p>
+        <Textarea v-model="briefDraft" rows="6" auto-resize class="w-full font-mono text-[12px]" @input="briefEditing = true" />
+        <div class="mt-2 flex gap-2">
+          <Button label="Сохранить" size="small" :disabled="!briefEditing" @click="saveBrief" />
+          <Button label="Написать заново" size="small" severity="secondary" text @click="resetBrief" />
+        </div>
+        <template v-if="brief.cutouts.length">
+          <h4 class="mt-4 text-[13px] font-medium">Вырезки</h4>
+          <p class="mb-2 text-[12px] text-ink-3">Персонажи и предметы в стиле картинок канала без фона — Claude ставит их в моушн-сцены</p>
+          <div class="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-2">
+            <figure v-for="c in brief.cutouts" :key="c.id" class="group relative overflow-hidden rounded border border-line-soft"
+                    :title="[c.what, c.use, c.error].filter(Boolean).join('\n\n')">
+              <div class="checker flex aspect-square items-center justify-center p-2">
+                <img v-if="c.url" :src="c.url" alt="" loading="lazy" class="max-h-full max-w-full object-contain" />
+                <span v-else class="text-[12px]" :class="c.status === 'failed' ? 'text-red-500' : 'text-ink-3'">
+                  <i v-if="c.status === 'generating'" class="pi pi-spin pi-spinner mr-1 text-[11px]" />{{ CUT_STATUS[c.status] }}
+                </span>
+              </div>
+              <figcaption class="truncate px-2 py-1 text-[12px] text-ink-2">{{ c.id }}</figcaption>
+              <button class="absolute right-1 top-1 hidden rounded bg-black/60 px-1.5 leading-6 text-white group-hover:block"
+                      aria-label="Удалить вырезку" @click="removeCutout(c.id)"><i class="pi pi-trash text-[11px]" /></button>
+            </figure>
+          </div>
+        </template>
+      </div>
+    </div>
+
     <div v-if="info?.items.length" class="mt-4">
       <div class="mb-2 flex gap-1 text-[13px]">
         <button v-for="f in (['all', 'scene', 'overlay'] as const)" :key="f" class="rounded px-2 py-0.5"
@@ -200,3 +278,13 @@ const styleName = computed(() => (info.value?.style as any)?.base ?? null)
     </Dialog>
   </section>
 </template>
+
+<style scoped>
+.checker {
+  background-color: #d8dade;
+  background-image: linear-gradient(45deg, #c4c7cc 25%, transparent 25%), linear-gradient(-45deg, #c4c7cc 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #c4c7cc 75%), linear-gradient(-45deg, transparent 75%, #c4c7cc 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+</style>

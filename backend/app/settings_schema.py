@@ -288,8 +288,12 @@ class MotionSettings(_Base):
     style: str = "auto"
     #: Token overrides of the style: palette roles, fonts, background, motion character.
     style_overrides: dict[str, Any] = Field(default_factory=dict)
-    #: How this channel shows things (recurring devices, motifs, what to avoid) – the motion bible of the channel.
+    #: Rules of the channel for every video's graphics (always / never), written by the editor; optional.
+    #: The art direction of each video is written anew for its script (``Track.motion["brief"]``).
     direction: str = ""
+    #: Cut-outs per video: characters and objects drawn in the channel's picture style, background removed, that
+    #: the graphics place into their scenes (FastGen credits of the main model each); 0 – none.
+    cutouts: int = 6
     #: Claude model alias: ``opus`` – the best compositions (uses photos, metaphors, develops scenes),
     #: ``sonnet`` – faster and ~3× cheaper on the subscription limits, but leans on plain text.
     model: str = "opus"

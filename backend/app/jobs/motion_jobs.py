@@ -2,6 +2,8 @@
 
 * the channel's look – picked once for the niche (``style: auto``) by a short structured call and saved to
   the channel, so every video of the channel shares it;
+* the brief of the video – its own art direction and cut-outs, written for its script (see :mod:`app.motion.brief`);
+  the cut-outs are drawn while the sessions compose;
 * a long video is cut into parts of ``chunk_scenes`` scenes; ``parallel`` Claude sessions work on them at once,
   each with only its part of the script in the prompt;
 * ``mixed``: each session first marks the scenes it turns into motion (``plan``) – the image job skips them
@@ -22,8 +24,8 @@ from typing import Any
 
 from ..config import get_settings
 from ..db import session_scope
-from ..models import Channel, Track
-from ..motion import store
+from ..models import Channel, Character, Track
+from ..motion import brief, store
 from ..motion.agent import GUIDE, ClaudeError, run_claude, tool_events, usage_of
 from ..motion.node import MotionUnavailable, ensure_installed, run_cli
 from ..motion.tools import SESSIONS, WRITE_LOCK, Session
@@ -73,14 +75,12 @@ def ensure_style(ctx: JobContext, tc: TrackCtx, ms: MotionSettings) -> dict[str,
               f"{', '.join(cat['families'])}.\n\nChoose the base style that fits this niche and audience, and tune it "
               "into the channel's own look: palette overrides (keep contrast: ink on bg must be very readable; the "
               "accent must pop on bg), optionally fonts overrides ({role: {family, weight}} from the list, roles "
-              "display/body/label), and a short direction: how this channel visualises things (recurring devices and "
-              "metaphors that suit the niche, what to avoid). Keep it coherent with the picture style.")
-    schema = {"type": "object", "required": ["base", "direction"], "properties": {
+              "display/body/label). Keep it coherent with the picture style.")
+    schema = {"type": "object", "required": ["base"], "properties": {
         "base": {"type": "string", "enum": list(cat["styles"])},
         "palette": {"type": "object", "additionalProperties": {"type": "string"}},
         "fonts": {"type": "object", "additionalProperties": {"type": "object", "properties": {
-            "family": {"type": "string"}, "weight": {"type": "integer"}}}},
-        "direction": {"type": "string"}}}
+            "family": {"type": "string"}, "weight": {"type": "integer"}}}}}}
     try:
         res = run_claude(prompt, model=ms.model, effort="low", system="You are an art director of motion graphics. "
                          "Answer only with the structured output.", json_schema=schema, timeout=300,
@@ -95,10 +95,7 @@ def ensure_style(ctx: JobContext, tc: TrackCtx, ms: MotionSettings) -> dict[str,
         st = json.loads(json.dumps(ch.settings or {}))
         mo = st.setdefault("motion", {})
         mo.update({"style": base, "style_overrides": overrides})
-        if not (mo.get("direction") or "").strip():
-            mo["direction"] = str(out.get("direction") or "")[:1500]
         ch.settings = st
-    ms.direction = ms.direction or str(out.get("direction") or "")
     return {"base": base, **overrides}
 
 
@@ -143,16 +140,49 @@ def _assets_line(scenes: list[Any], lo: int, hi: int, mode: str) -> str:
             "picture of a scene you turn into motion. Pictures not drawn yet show as grey stand-ins.")
 
 
-def _head(tc: TrackCtx, style: dict[str, Any], ms: MotionSettings, duration: float, subs_bottom: bool) -> str:
+def _head(tc: TrackCtx, style: dict[str, Any], ms: MotionSettings, duration: float, subs_bottom: bool,
+          brief_m: dict[str, Any] | None = None) -> str:
     title = ((tc.track.publish_meta or {}).get("titles") or [tc.project.name])[0]
     lines = [f"VIDEO: «{title}» · language: {tc.track.language} · {int(duration // 60)}:{int(duration % 60):02d}"
              + (f" · niche: {tc.settings.llm.niche}" if tc.settings.llm.niche else ""),
              f"STYLE: {json.dumps(style, ensure_ascii=False)}"]
     if ms.direction.strip():
-        lines.append(f"CHANNEL DIRECTION: {ms.direction.strip()}")
+        lines.append(f"CHANNEL RULES: {ms.direction.strip()}")
     if subs_bottom:
         lines.append("SUBTITLES: burned in at the bottom — overlays stay above y=860.")
-    return "\n".join(lines)
+    extra = brief.prompt_lines(brief_m)
+    return "\n".join(lines) + (f"\n\n{extra}" if extra else "")
+
+
+def _ensure_brief(ctx: JobContext, tc: TrackCtx, ms: MotionSettings, scenes: list[Any], style: dict[str, Any],
+                  mode: str, old: dict[str, Any], adapt_brief: dict[str, Any] | None) -> dict[str, Any]:
+    """The brief for this run: the master's (a translation), the editor's, the current one while the script is the
+    same, or a new one. Cut-outs already drawn with the same id and description are kept."""
+    if adapt_brief:
+        return json.loads(json.dumps(adapt_brief))
+    if old.get("by") == "user" or (old.get("text") and old.get("key") == brief.script_key(scenes)):
+        return old
+    characters = []
+    with session_scope() as db:
+        title = ((db.get(Track, tc.track.id).publish_meta or {}).get("titles") or [tc.project.name])[0]
+        for c in db.query(Character).filter(Character.project_id == tc.project.id):
+            if (c.kind or "character") == "character":
+                characters.append((c.name, c.description or ""))
+    ctx.progress(0.03, "Claude пишет арт-дирекцию этого ролика", force=True)
+    try:
+        new = brief.make_brief(title=title, lang=tc.track.language, niche=tc.settings.llm.niche,
+                               picture_style=tc.settings.images.style_prompt, style=style, rules=ms.direction, mode=mode,
+                               scenes=scenes, characters=characters, max_cutouts=max(0, ms.cutouts), model=ms.model,
+                               should_stop=ctx.should_stop)
+    except ClaudeError as e:
+        if ctx.should_stop():
+            raise JobCancelled() from e
+        log.warning("brief failed: %s", e)
+        return old or {}
+    drawn = {c["id"]: c for c in old.get("cutouts") or [] if c.get("status") == "done" and c.get("file")}
+    new["cutouts"] = [drawn[c["id"]] if c["id"] in drawn and drawn[c["id"]].get("what") == c["what"] else c
+                      for c in new["cutouts"]]
+    return new
 
 
 # ------------------------------------------------------------------ the job
@@ -198,13 +228,17 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
             master = master_track(db, tc.project)
             if master is not None and store.items(master.motion):
                 adapt_from = {"lang": master.language, "items": store.items(master.motion), "style": (master.motion or {}).get("style"),
+                              "brief": brief.brief_of(master.motion),
                               "master_scenes": [(sc.idx, sc.start) for sc in master.scenes]}
                 mode = "adapt"
         subs = tc.settings.subtitles
         subs_bottom = subs.enabled and subs.position == "bottom"
         render = tc.settings.render
         track_id, lang = track.id, track.language
+        old_brief = brief.brief_of(track.motion)
     style = (adapt_from or {}).get("style") or ensure_style(ctx, tc, ms)
+    the_brief = old_brief if redo_ids else _ensure_brief(ctx, tc, ms, scenes, style, mode, old_brief,
+                                                         (adapt_from or {}).get("brief"))
     width, height = RESOLUTIONS[render.resolution]
     words = timings.words
     work = track_dir(tc.project.id, track_id, "motion")
@@ -243,10 +277,24 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
                 m["plan_slots"] = sorted(store.motion_scene_idxs({"items": adapt_from["items"]}))
         m["style"] = style
         m["key"] = key
-    _save(track_id, init)
+        if the_brief:
+            m["brief"] = the_brief
+    m_now = _save(track_id, init)
     track_changed(track_id, "motion")
 
-    head = _head(tc, style, ms, duration, subs_bottom)
+    # cut-outs are drawn while Claude composes; every session sees each one as soon as it is ready
+    assets = {f"img{sc.idx}": sc.image for sc in scenes if sc.image}
+    assets.update(brief.cutout_assets(m_now))
+    cut_info = brief.cutout_info(m_now)
+    maker = None
+    pending = [c for c in brief.cutout_list(m_now) if f"cut:{c['id']}" not in assets and c.get("status") != "failed"]
+    if pending and not redo_ids and mode != "adapt":
+        maker = brief.CutoutMaker(ctx, tc.project.id, track_id, tc, lambda fn: _save(track_id, fn),
+                                  lambda cid, path: assets.__setitem__(f"cut:{cid}", path),
+                                  lambda cid: cut_info.pop(cid, None))  # a failed one is not offered any more
+        maker.start(pending)
+
+    head = _head(tc, style, ms, duration, subs_bottom, m_now)
     port = get_settings().port
     sessions: list[Session] = []
     for lo, hi, body, want_k, want_o in tasks:
@@ -256,7 +304,7 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
         s = Session(token=token, track_id=track_id, mode=mode if not redo_ids else "redo", lo=lo, hi=hi, t0=t0, t1=t1,
                     scenes=scenes, words=words, duration=duration, lang=lang, width=width, height=height,
                     fonts_dir=str(get_settings().fonts_dir),
-                    assets={f"img{sc.idx}": sc.image for sc in scenes if sc.image}, safe_bottom=0.8 if subs_bottom else 0.0,
+                    assets=assets, cutouts=cut_info, safe_bottom=0.8 if subs_bottom else 0.0,
                     visual_check=ms.visual_check, work=work, seed=track_id * 7919 + lo,
                     want_scenes=want_k, want_overlays=want_o)
         s.prompt = f"{head}\n\n{body}"  # type: ignore[attr-defined]
@@ -307,6 +355,11 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
                     halt["on"] = True
             done_parts["n"] += 1
             report()
+    cut_errors: list[str] = []
+    if maker is not None:
+        ctx.progress(0.97, "Дорисовываются вырезки для графики", force=True)
+        maker.wait()
+        cut_errors = maker.errors
     m, dropped = _finish(track_id, scenes)
     dropped |= had_motion - store.motion_scene_idxs(m)  # were motion, are not any more: they need pictures
     track_changed(track_id, "motion")
@@ -319,6 +372,11 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
         raise JobError("; ".join(errors)[:900])
     msg = (f"Моушн-сцен: {len(store.scene_items(m))}, оверлеев: {len(store.overlay_items(m))} · {tokens}"
            + (f" · сцен вернулось к картинкам: {missing_pictures}" if missing_pictures else ""))
+    cuts = brief.cutout_list(m)
+    if cuts:
+        msg += f" · вырезок: {sum(1 for c in cuts if c.get('status') == 'done')}/{len(cuts)}"
+    if cut_errors:
+        msg += " · не вышли вырезки: " + "; ".join(cut_errors)[:300]
     if errors:
         msg += " · ошибки: " + "; ".join(errors)[:400]
     return {"message": msg, "usage": usage}

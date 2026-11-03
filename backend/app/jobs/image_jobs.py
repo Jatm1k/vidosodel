@@ -77,7 +77,7 @@ def _watermark_method(images: ImageSettings) -> str:
 def generate_one(
     fg: FastgenClient, prompt: str, dest_dir: Path, stem: str, images: ImageSettings, llm: LlmSettings,
     refs: list[Any], ctx: JobContext, on_wait=None, operation: str | None = None,
-    on_prompt_fixed=None, note: str = "",
+    on_prompt_fixed=None, note: str = "", aspect_ratio: str = "16:9",
 ) -> tuple[Path, dict[str, Any]]:
     """Generate a single image with retries, budget control and prompt auto-fixing.
 
@@ -101,7 +101,7 @@ def generate_one(
                         note + llm_tasks.compose_prompt(current, images), raw, operation=operation,
                         references=refs if IMAGE_OPS_BY_ID.get(operation, {}).get("refs") else None,
                         upscale=images.upscale_2x, should_stop=ctx.should_stop,
-                        on_started=started.update,
+                        on_started=started.update, aspect_ratio=aspect_ratio,
                     )
                     commit(meta.get("credits") or credits, meta.get("generation_id"))
                 except GenerationFailed as exc:

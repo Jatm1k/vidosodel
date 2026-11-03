@@ -4,7 +4,7 @@ import { fontCss, fontSpec, layoutText } from '../fonts.mjs'
 import { panel, panelText, drawText, rr } from './util.mjs'
 import { drawLabel } from './text.mjs'
 import { iconPath } from './shapes.mjs'
-import { Path2D } from '@napi-rs/canvas'
+import { Path2D, createCanvas } from '@napi-rs/canvas'
 import { flatten, tracePartial, pointAt } from '../paths.mjs'
 
 const lay = (ctx, env, role, text, size, maxw) => {
@@ -259,4 +259,57 @@ export const scribble = {
     }
     void css; void withAlpha
   },
+}
+
+// ------------------------------------------------------------------ cutout (a character / object without background)
+/** Cut-outs are pictures drawn for this video in the channel's picture style with the background removed:
+ *  a character next to a number, an object as the hero, a figure walking along a timeline. */
+export const cutout = {
+  defaultIn: 'rise',
+  prep(el, env) {
+    const key = String(el.src || '')
+    if (!key.startsWith('cut:')) throw new Error(`cutout: src «${key}» — нужно cut:<id> из списка CUTOUTS`)
+    const img = env.image(key)
+    if (!img && env.placeholders) throw new Error(`cutout: нет вырезки «${key.slice(4)}» (есть: ${Object.keys(env.cutouts).join(', ') || 'никаких'})`)
+    const sprite = img && el.sticker ? stickerOf(img, env.color(el.sticker === true ? '#ffffff' : el.sticker)) : img
+    const ar = sprite ? sprite.width / sprite.height : 0.62
+    let w = el.w !== undefined ? +el.w : undefined, h = el.h !== undefined ? +el.h : undefined
+    if (w === undefined && h === undefined) h = 760
+    if (w !== undefined && h !== undefined) { // fit inside the box
+      if (w / h > ar) w = h * ar
+      else h = w / ar
+    } else if (w === undefined) w = h * ar
+    else h = w / ar
+    return { img: sprite, w, h }
+  },
+  draw(ctx, el, st, k, env) {
+    const { img, w, h } = st
+    if (!img) return // not drawn (generation failed): the cut-out is left out
+    ctx.save()
+    if (el.flip) { ctx.translate(w, 0); ctx.scale(-1, 1) }
+    if (el.shadow !== false && !env.overlay) {
+      ctx.shadowColor = 'rgba(0,0,0,0.28)'; ctx.shadowBlur = 36; ctx.shadowOffsetY = 18
+    }
+    // a slight settle on landing keeps it from looking pasted
+    const p = ease('expo-out', k.local / 0.7)
+    const s = lerp(0.96, 1, p)
+    ctx.translate(w / 2, h); ctx.scale(s, s); ctx.translate(-w / 2, -h)
+    ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, w, h)
+    ctx.restore()
+  },
+}
+
+const stickers = new WeakMap()
+/** The cut-out with a solid outline around it (a paper sticker), rendered once. */
+function stickerOf(img, color) {
+  const cached = stickers.get(img)
+  if (cached && cached.color === color) return cached.canvas
+  const r = Math.max(4, Math.round(img.width * 0.035))
+  const c = createCanvas(img.width + r * 2, img.height + r * 2), x = c.getContext('2d')
+  const tint = createCanvas(img.width, img.height), tx = tint.getContext('2d')
+  tx.drawImage(img, 0, 0); tx.globalCompositeOperation = 'source-in'; tx.fillStyle = color; tx.fillRect(0, 0, img.width, img.height)
+  for (let a = 0; a < 16; a++) x.drawImage(tint, r + Math.cos(a / 16 * Math.PI * 2) * r, r + Math.sin(a / 16 * Math.PI * 2) * r)
+  x.drawImage(img, r, r)
+  stickers.set(img, { color, canvas: c })
+  return c
 }

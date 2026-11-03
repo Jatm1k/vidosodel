@@ -17,6 +17,7 @@ from ..jobs.common import scene_image
 from ..jobs.events import track_changed
 from ..jobs.runner import runner
 from ..models import Track
+from ..motion import brief as motion_brief
 from ..motion import store
 from ..motion.node import MotionUnavailable, run_cli
 from ..storage import to_abs, track_dir
@@ -52,7 +53,15 @@ def get_motion(track_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
         else:
             row["start"], row["end"] = it.get("start"), it.get("end")
         out.append(row)
-    return {"mode": mo.get("mode"), "style": mo.get("style"), "planning": store.planning(mo), "items": out,
+    b = motion_brief.brief_of(mo)
+    cuts = [{"id": c["id"], "what": c.get("what") or "", "use": c.get("use") or "", "shape": c.get("shape") or "tall",
+             "status": c.get("status") or "pending", "error": c.get("error"),
+             "url": f"/api/tracks/{track_id}/motion/cutouts/{c['id']}.png?v={c.get('file', '')[-24:]}" if c.get("file") else None}
+            for c in motion_brief.cutout_list(mo)]
+    brief_out = {"text": b.get("text") or "", "by": b.get("by") or "auto",
+                 "stale": bool(b.get("key")) and b.get("by") != "user" and bool(scenes) and b.get("key") != motion_brief.script_key(scenes),
+                 "cutouts": cuts} if b else None
+    return {"mode": mo.get("mode"), "style": mo.get("style"), "planning": store.planning(mo), "items": out, "brief": brief_out,
             "stale": bool(mo.get("key")) and bool(scenes) and mo.get("key") != store.timeline_key(scenes),
             "updated": mo.get("updated")}
 
@@ -156,10 +165,73 @@ def missing_pictures(track_id: int, db: Session = Depends(get_db)) -> dict[str, 
     return {"queued": queue_missing_pictures(track_id)}
 
 
+class BriefIn(BaseModel):
+    text: str
+
+
+@router.put("/tracks/{track_id}/motion/brief")
+def save_brief(track_id: int, body: BriefIn, db: Session = Depends(get_db)) -> dict[str, bool]:
+    """The editor's own art direction of the video: kept for every next generation."""
+    t = _track(db, track_id)
+    mo = json.loads(json.dumps(t.motion or {}))
+    b = mo.setdefault("brief", {})
+    b.update(text=body.text.strip()[:6000], by="user", key=motion_brief.script_key(list(t.scenes)))
+    t.motion = mo
+    db.commit()
+    track_changed(track_id, "motion")
+    return {"ok": True}
+
+
+@router.delete("/tracks/{track_id}/motion/brief")
+def reset_brief(track_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
+    """The next generation writes the art direction anew (drawn cut-outs it asks for again are reused)."""
+    t = _track(db, track_id)
+    mo = json.loads(json.dumps(t.motion or {}))
+    b = motion_brief.brief_of(mo)
+    if b:
+        mo["brief"] = {"cutouts": [c for c in b.get("cutouts") or [] if c.get("status") == "done"]}
+        t.motion = mo
+        db.commit()
+        track_changed(track_id, "motion")
+    return {"ok": True}
+
+
+@router.get("/tracks/{track_id}/motion/cutouts/{cid}.png")
+def cutout_png(track_id: int, cid: str, db: Session = Depends(get_db)) -> FileResponse:
+    t = _track(db, track_id)
+    c = next((x for x in motion_brief.cutout_list(t.motion) if x["id"] == cid), None)
+    path = to_abs(c.get("file")) if c and c.get("file") else None
+    if path is None or not path.exists():
+        raise HTTPException(404, "Вырезки нет")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "max-age=86400"})
+
+
+@router.delete("/tracks/{track_id}/motion/cutouts/{cid}")
+def delete_cutout(track_id: int, cid: str, db: Session = Depends(get_db)) -> dict[str, bool]:
+    """Removes a cut-out (the graphics that show it leave it out); the next generation may draw it again."""
+    t = _track(db, track_id)
+    mo = json.loads(json.dumps(t.motion or {}))
+    b = motion_brief.brief_of(mo)
+    gone = [c for c in b.get("cutouts") or [] if c.get("id") == cid]
+    if not gone:
+        raise HTTPException(404, "Вырезки нет")
+    b["cutouts"] = [c for c in b.get("cutouts") or [] if c.get("id") != cid]
+    b.pop("key", None)  # the brief asked for it: let the next run think again
+    t.motion = mo
+    db.commit()
+    own = track_dir(t.project_id, t.id)
+    for c in gone:  # a translation shares the master's cut-outs: only this track's own files are deleted
+        if c.get("file") and (p := to_abs(c["file"])) is not None and own in p.parents:
+            p.unlink(missing_ok=True)
+    track_changed(track_id, "motion")
+    return {"ok": True}
+
+
 @router.delete("/tracks/{track_id}/motion")
 def clear_motion(track_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
     t = _track(db, track_id)
-    t.motion = {}
+    b = motion_brief.brief_of(t.motion)
+    t.motion = {"brief": b} if b else {}  # the art direction and the drawn cut-outs stay
     db.commit()
     track_changed(track_id, "motion")
     return {"ok": True}

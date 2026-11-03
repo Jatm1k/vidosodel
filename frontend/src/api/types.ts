@@ -109,7 +109,7 @@ export interface PipelineSettings {
   motion: {
     mode: 'off' | 'accents' | 'mixed' | 'full'; overlays_per_minute: number; scene_share: number
     style: string; style_overrides: Record<string, any>; direction: string
-    model: string; effort: 'low' | 'medium' | 'high'; parallel: number; chunk_scenes: number; visual_check: boolean
+    model: string; effort: 'low' | 'medium' | 'high'; parallel: number; chunk_scenes: number; visual_check: boolean; cutouts: number
   }
 }
 
@@ -274,6 +274,26 @@ export interface MotionInfo {
   stale: boolean
   updated: number | null
   items: MotionItem[]
+  brief: MotionBrief | null
+}
+
+export interface MotionCutout {
+  id: string
+  what: string
+  use: string
+  shape: 'tall' | 'square' | 'wide'
+  status: 'pending' | 'generating' | 'done' | 'failed'
+  error: string | null
+  url: string | null
+}
+
+export interface MotionBrief {
+  text: string
+  /** ``auto`` – written by Claude for this script; ``user`` – the editor's, kept for every next run. */
+  by: 'auto' | 'user'
+  /** The script changed since Claude wrote it: the next run writes a new one. */
+  stale: boolean
+  cutouts: MotionCutout[]
 }
 
 export interface MotionStyles {

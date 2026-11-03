@@ -1,6 +1,7 @@
 // A motion document: style + full-screen scenes + overlays of one video, as written by the app.
 //   {width, height, lang, seed, fontsDir, style: {base, ...overrides},
-//    assets: {key: absolute image path}, safeBottom?: 0..1,
+//    assets: {key: absolute image path} (img<N> scene pictures, cut:<id> cut-outs), safeBottom?: 0..1,
+//    cutouts?: {id: {shape, what}} – cut-outs planned for the video (stand-ins while they are drawn),
 //    scenes: [{id, dur, bg?, cam?, els}], overlays: [{id, start, end, shade?, els, previewBg?}]}
 import { readFileSync } from 'node:fs'
 import { loadImage } from '@napi-rs/canvas'
@@ -32,7 +33,7 @@ export class Motion {
   }
   env(overlay) {
     return new Env({ style: this.style, lang: this.doc.lang || 'ru', images: this.images, seed: this.doc.seed || 1, overlay,
-                     placeholders: !!this.doc.placeholders })
+                     placeholders: !!this.doc.placeholders, cutouts: this.doc.cutouts || {} })
   }
   scene(id) {
     const key = String(id)

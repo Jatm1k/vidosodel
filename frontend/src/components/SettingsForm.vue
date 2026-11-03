@@ -970,8 +970,11 @@ onMounted(async () => {
               </button>
             </div>
           </FormField>
-          <FormField label="Как канал показывает вещи" hint="Повторяющиеся приёмы, метафоры, чего избегать. Claude заполнит сам при подборе стиля — можно править">
-            <Textarea v-model="s.motion.direction" rows="4" auto-resize class="w-full" />
+          <FormField label="Правила канала для графики" hint="Необязательно. Что действует в каждом ролике: «всегда…», «никогда…». Арт-дирекцию под конкретный ролик Claude пишет сам по его сценарию — она видна и правится в панели моушн-графики">
+            <Textarea v-model="s.motion.direction" rows="3" auto-resize class="w-full" placeholder="Например: без черепов и крови; цифры всегда крупно" />
+          </FormField>
+          <FormField label="Вырезки на ролик" hint="Персонажи и предметы в стиле картинок канала без фона, которые Claude ставит в моушн-сцены. Каждая — одна генерация основной моделью картинок. 0 — без вырезок">
+            <InputNumber v-model="s.motion.cutouts" :min="0" :max="16" show-buttons class="w-32" />
           </FormField>
           <FormField label="Модель Claude">
             <Select v-model="s.motion.model" :options="MOTION_MODELS" option-label="label" option-value="value" class="w-72" />

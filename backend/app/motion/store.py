@@ -159,7 +159,7 @@ def overlay_entry(item: dict[str, Any]) -> dict[str, Any]:
 def build_doc(motion: dict[str, Any], scenes: Sequence[Any], duration: float, *, width: int, height: int, lang: str,
               seed: int, fonts_dir: str | None, assets: dict[str, str] | None = None, safe_bottom: float = 0.0,
               only: set[str] | None = None, extra: list[dict[str, Any]] | None = None,
-              preview_bg: dict[str, str] | None = None) -> dict[str, Any]:
+              preview_bg: dict[str, str] | None = None, cutouts: dict[str, Any] | None = None) -> dict[str, Any]:
     """The renderer's document for ``motion`` (``only`` – these item ids; ``extra`` – items not stored yet)."""
     doc_scenes, doc_overlays = [], []
     n = len(scenes)
@@ -177,6 +177,10 @@ def build_doc(motion: dict[str, Any], scenes: Sequence[Any], duration: float, *,
             if preview_bg and it["id"] in preview_bg:
                 ov["previewBg"] = preview_bg[it["id"]]
             doc_overlays.append(ov)
+    from .brief import cutout_assets, cutout_info  # noqa: PLC0415
+
+    assets = {**cutout_assets(motion), **(assets or {})}  # drawn cut-outs of the brief are always available
     return {"width": width, "height": height, "lang": lang, "seed": seed, "fontsDir": fonts_dir,
-            "style": data(motion).get("style") or {"base": "editorial"}, "assets": assets or {}, "safeBottom": safe_bottom,
-            "scenes": doc_scenes, "overlays": doc_overlays}
+            "style": data(motion).get("style") or {"base": "editorial"}, "assets": assets, "safeBottom": safe_bottom,
+            "scenes": doc_scenes, "overlays": doc_overlays,
+            "cutouts": cutouts if cutouts is not None else cutout_info(motion)}

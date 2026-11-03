@@ -66,8 +66,13 @@ if (cmd === 'validate') {
         res.settle = +settleOf(item.rt, item.dur).toFixed(2)
         // one frame in the middle and one at the end: drawing errors show up here
         for (const t of [item.dur / 2, Math.max(0, item.dur - 0.05)]) item.kind === 'scene' ? item.rt.draw(ctx, t) : item.rt.draw(ctx, item.rt.start + t)
-        res.warnings = checkLayout(item.rt.boxes(), { dur: item.dur, overlay: kind === 'overlays', safeBottom: doc.safeBottom || 0,
-                                                      cam: Array.isArray(spec.cam) && spec.cam.length > 0 })
+        const boxes = item.rt.boxes()
+        res.warnings = checkLayout(boxes, { dur: item.dur, overlay: kind === 'overlays', safeBottom: doc.safeBottom || 0,
+                                            cam: Array.isArray(spec.cam) && spec.cam.length > 0 })
+        if (item.kind === 'scene') {
+          if (item.rt.lateStart) res.warnings.unshift(`пустой кадр в начале: первый элемент появлялся только на ${item.rt.lateStart} с — сцена должна открываться главным образом сразу (at 0–0.3), а детали приходить по фразам`)
+          res.sig = signature(boxes, spec)
+        }
       } catch (e) { res.errors.push(e.message) }
       out[kind][spec.id] = res
     }
@@ -111,6 +116,21 @@ if (cmd === 'validate') {
 } else {
   process.stderr.write('usage: validate | sheet | still\n')
   process.exit(2)
+}
+
+/** What a scene is made of, to catch repetition across the video: the hero (largest element), where it sits,
+ *  and the set of element types. */
+function signature(boxes, spec) {
+  const clip = (b) => Math.max(0, Math.min(b.x1, VW) - Math.max(b.x0, 0)) * Math.max(0, Math.min(b.y1, VH) - Math.max(b.y0, 0))
+  const cands = boxes.filter((b) => b.type !== 'decor' && b.type !== 'scribble')
+  const hero = cands.reduce((a, b) => (!a || clip(b) > clip(a) ? b : a), null)
+  let zone = 'c'
+  if (hero) {
+    const cx = (Math.max(hero.x0, 0) + Math.min(hero.x1, VW)) / 2
+    zone = clip(hero) > VW * VH * 0.5 ? 'full' : cx < VW * 0.38 ? 'l' : cx > VW * 0.62 ? 'r' : 'c'
+  }
+  const types = [...new Set(boxes.map((b) => b.type))].sort()
+  return { hero: hero ? hero.type : 'none', zone, types, cam: Array.isArray(spec.cam) && spec.cam.length > 0, bg: spec.bg?.kind ?? spec.bg ?? null }
 }
 
 function label(ctx, text, x, y) {

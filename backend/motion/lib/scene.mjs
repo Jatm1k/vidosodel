@@ -9,7 +9,7 @@ export const VW = 1920, VH = 1080
 
 /** Everything an element needs besides its own data. */
 export class Env {
-  constructor({ style, lang = 'ru', assets = {}, images = {}, seed = 1, overlay = false, placeholders = false }) {
+  constructor({ style, lang = 'ru', assets = {}, images = {}, seed = 1, overlay = false, placeholders = false, cutouts = {} }) {
     this.style = style
     this.pal = overlay ? overlayPalette(style.palette) : style.palette
     this.lang = lang
@@ -18,14 +18,34 @@ export class Env {
     this.seed = seed
     this.overlay = overlay
     this.placeholders = placeholders
+    this.cutouts = cutouts // cut-out id → {shape: tall|wide|square, what}: the ones planned for this video
   }
   /** A picture by key; while composing, a missing one is a grey stand-in (it is drawn later in the pipeline). */
   image(key) {
     if (this.images[key]) return this.images[key]
-    if (!this.placeholders || !/^img\d+$/.test(String(key))) return null
+    const k = String(key)
+    if (!this.placeholders) return null
+    if (k.startsWith('cut:')) return this.cutoutStandIn(k)
+    if (!/^img\d+$/.test(k)) return null
     const c = createCanvas(1376, 768), x = c.getContext('2d')
     x.fillStyle = '#8d929b'; x.fillRect(0, 0, 1376, 768)
-    x.fillStyle = '#b9bdc4'; x.font = '600 90px "Inter"'; x.textAlign = 'center'; x.fillText(`картинка ${String(key).slice(3)}`, 688, 410)
+    x.fillStyle = '#b9bdc4'; x.font = '600 90px "Inter"'; x.textAlign = 'center'; x.fillText(`картинка ${k.slice(3)}`, 688, 410)
+    this.images[key] = c
+    return c
+  }
+  /** A cut-out still being drawn: a grey silhouette of its shape on a transparent background. */
+  cutoutStandIn(key) {
+    const info = this.cutouts[key.slice(4)]
+    if (!info) return null
+    const [w, h] = info.shape === 'wide' ? [900, 600] : info.shape === 'square' ? [700, 700] : [560, 900]
+    const c = createCanvas(w, h), x = c.getContext('2d')
+    x.fillStyle = 'rgba(141,146,155,0.9)'
+    x.beginPath()
+    if (info.shape === 'tall') { x.arc(w / 2, h * 0.17, w * 0.17, 0, Math.PI * 2); x.roundRect(w * 0.18, h * 0.36, w * 0.64, h * 0.64, 60) }
+    else x.roundRect(w * 0.05, h * 0.05, w * 0.9, h * 0.9, 80)
+    x.fill()
+    x.fillStyle = '#e4e6ea'; x.font = '600 46px "Inter"'; x.textAlign = 'center'
+    x.fillText(key.slice(4).slice(0, 18), w / 2, h * 0.7)
     this.images[key] = c
     return c
   }
@@ -214,6 +234,7 @@ export class SceneRuntime {
     this.dur = +(spec.dur ?? 5)
     this.nodes = prepElements(spec.els, env, ctx)
     this.bgSeed = hash(String(spec.id ?? 'scene')) ^ env.seed
+    this.lateStart = pullFirstIn(this.nodes)
   }
   draw(ctx, t) {
     const env = this.env
@@ -236,6 +257,26 @@ export class SceneRuntime {
     ctx.restore()
   }
   boxes() { return elementBoxes(this.nodes) }
+}
+
+/** A motion scene must not open on an empty background: when nothing is on screen in the first half second
+ *  (the first phrase anchor lands late), the first element — the largest of those arriving first — comes in at
+ *  once. Returns how late the scene would have started (0 = it was fine). */
+const FIRST_IN = 0.5
+function pullFirstIn(nodes) {
+  if (!nodes.length) return 0
+  const first = Math.min(...nodes.map((n) => n.at))
+  if (first <= FIRST_IN) return 0
+  const soon = nodes.filter((n) => n.at <= first + 0.6)
+  const size = (n) => (n.st.w || 0) * (n.st.h || 0)
+  const lead = soon.reduce((a, b) => (size(b) > size(a) ? b : a), soon[0])
+  lead.at = 0.15
+  // the hero of the opening (a chart, a photo, a figure due in the next seconds) comes along: a frame with only
+  // a caption or a decoration in it is still empty
+  const opening = nodes.filter((n) => n !== lead && n.at <= first + 2.5 && n.el.type !== 'decor')
+  const hero = opening.reduce((a, b) => (!a || size(b) > size(a) ? b : a), null)
+  if (hero && size(hero) > size(lead) * 1.5) hero.at = 0.35
+  return +first.toFixed(2)
 }
 
 export class OverlayRuntime {

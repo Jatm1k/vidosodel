@@ -51,7 +51,7 @@ class Session:
     width: int
     height: int
     fonts_dir: str | None
-    assets: dict[str, str]
+    assets: dict[str, str]          # shared by the sessions of a run: cut-outs are added as they are drawn
     safe_bottom: float
     visual_check: bool
     work: Path
@@ -64,6 +64,8 @@ class Session:
     #: Targets of the part: motion scenes and overlays to make.
     want_scenes: int = 0
     want_overlays: int = 0
+    #: Cut-outs planned for the video (stand-ins in the contact sheets until drawn).
+    cutouts: dict[str, Any] = field(default_factory=dict)
 
 
 SESSIONS: dict[str, Session] = {}
@@ -220,8 +222,8 @@ def _doc(s: Session, m: dict[str, Any], extra: list[dict[str, Any]] | None, only
     replaced = {e["id"] for e in extra or []}
     base = {**m, "items": [x for x in store.items(m) if x["id"] not in replaced]}
     doc = store.build_doc(base, s.scenes, s.duration, width=s.width, height=s.height, lang=s.lang, seed=s.seed,
-                          fonts_dir=s.fonts_dir, assets=s.assets, safe_bottom=s.safe_bottom, only=only, extra=extra,
-                          preview_bg=prev)
+                          fonts_dir=s.fonts_dir, assets=dict(s.assets), safe_bottom=s.safe_bottom, only=only, extra=extra,
+                          preview_bg=prev, cutouts=s.cutouts)
     doc["placeholders"] = True  # pictures still being generated are grey stand-ins while composing
     fd, path = tempfile.mkstemp(suffix=".json", dir=s.work)
     with open(fd, "w", encoding="utf-8") as fh:
@@ -277,8 +279,12 @@ def tool_submit(s: Session, args: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             c["settle"] = r.get("settle")
             c["warnings"] = r.get("warnings") or []
+            if r.get("sig"):
+                c["sig"] = r["sig"]
             ok.append(c)
-            lines.append(f"ok {c['id']}" + ("" if not c["warnings"] else " WARN: " + "; ".join(c["warnings"][:4])))
+        _variety(s, m, ok)
+        for c in ok:
+            lines.append(f"ok {c['id']}" + ("" if not c["warnings"] else " WARN: " + "; ".join(c["warnings"][:5])))
     if ok:
         ids = {c["id"] for c in ok}
 
@@ -296,6 +302,71 @@ def tool_submit(s: Session, args: dict[str, Any]) -> list[dict[str, Any]]:
         if img:
             content.append(img)
     return content
+
+
+# ------------------------------------------------------------------ variety across the whole video
+#: Devices that turn into a tic when they come back in scene after scene.
+DEVICES = ("stamp", "scribble", "compare", "iconarray", "list", "flow", "quote", "callout")
+HEROES_ALL = ("photo", "cutout", "map", "linechart", "bars", "donut", "timeline", "stat", "counter", "ring", "flow",
+              "compare", "icon", "text", "iconarray", "image")
+ZONES = {"l": "left", "r": "right", "c": "centre", "full": "full frame"}
+
+
+def _order(s: Session, it: dict[str, Any]) -> int:
+    return min(int(x) for x in it.get("slots") or [0])
+
+
+def _cap(m: dict[str, Any], ok: list[dict[str, Any]]) -> int:
+    """How many motion scenes of the video may share a hero or a device: about a fifth of them (written + planned)."""
+    ids = {x["id"] for x in store.scene_items(m)} | {c["id"] for c in ok if c["kind"] == "scene"}
+    written = {i for x in store.scene_items(m) for i in x["slots"]} | {i for c in ok if c["kind"] == "scene" for i in c["slots"]}
+    planned = {int(i) for i in m.get("plan_slots") or []} - written
+    return max(2, -(-(len(ids) + len(planned)) // 5))
+
+
+def _variety(s: Session, m: dict[str, Any], ok: list[dict[str, Any]]) -> None:
+    """Warnings for scenes that repeat their neighbours or overuse a device across the video (all parts)."""
+    new_ids = {c["id"] for c in ok}
+    pool = [x for x in store.scene_items(m) if x.get("sig") and x["id"] not in new_ids] + [c for c in ok if c.get("sig") and c["kind"] == "scene"]
+    pool.sort(key=lambda x: _order(s, x))
+    cap = _cap(m, ok)
+    for c in ok:
+        sig = c.get("sig")
+        if c["kind"] != "scene" or not sig:
+            continue
+        i = next(k for k, x in enumerate(pool) if x["id"] == c["id"])
+        near = pool[max(0, i - 2):i] + pool[i + 1:i + 3]
+        for o in near:
+            os_ = o["sig"]
+            if os_["hero"] == sig["hero"] and os_["zone"] == sig["zone"]:
+                c["warnings"].append(f"повторяет композицию соседней {o['id']} (главный — {sig['hero']}, {ZONES.get(sig['zone'], sig['zone'])}): "
+                                     "смените тип главного элемента и раскладку")
+                break
+        same = next((o for o in pool if o["id"] != c["id"] and len(sig["types"]) >= 3 and o["sig"]["types"] == sig["types"]), None)
+        if same:
+            c["warnings"].append(f"тот же набор элементов, что в {same['id']} ({'+'.join(sig['types'])})")
+        heroes = sum(1 for o in pool if o["sig"]["hero"] == sig["hero"])
+        if heroes > cap:
+            c["warnings"].append(f"главный элемент {sig['hero']} уже в {heroes} моушн-сценах ролика (не больше {cap}): возьмите другой")
+        for d in DEVICES:
+            if d in sig["types"] and d != sig["hero"]:
+                n = sum(1 for o in pool if d in o["sig"]["types"])
+                if n > cap:
+                    c["warnings"].append(f"{d} уже в {n} сценах ролика (не больше {cap}) — приём приелся, обойдитесь без него")
+
+
+def _variety_summary(s: Session, m: dict[str, Any]) -> str:
+    pool = [x for x in store.scene_items(m) if x.get("sig")]
+    if len(pool) < 3:
+        return ""
+    from collections import Counter  # noqa: PLC0415
+    heroes = Counter(x["sig"]["hero"] for x in pool)
+    devices = Counter(d for x in pool for d in DEVICES if d in x["sig"]["types"])
+    unused = [h for h in HEROES_ALL if h not in heroes and (h != "cutout" or s.cutouts) and h != "image"]
+    return (f"VIDEO SO FAR ({len(pool)} motion scenes, all parts): heroes "
+            + ", ".join(f"{k} {v}" for k, v in heroes.most_common())
+            + ("; devices " + ", ".join(f"{k} {v}" for k, v in devices.most_common()) if devices else "")
+            + (f"; not used yet as a hero: {', '.join(unused[:8])}" if unused else "") + ".")
 
 
 def tool_look(s: Session, args: dict[str, Any]) -> list[dict[str, Any]]:
