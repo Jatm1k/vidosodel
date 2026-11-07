@@ -3,6 +3,7 @@
 // any token for its niche; every scene is composed anew from the elements.
 
 import { harmonize } from './palette.mjs'
+import { resolveFormat } from './formats.mjs'
 
 const font = (family, weight, extra = {}) => ({ family, weight, ...extra })
 
@@ -196,12 +197,26 @@ function merge(base, over) {
   return out
 }
 
-/** Resolved style: ``{base: "neon", palette: {...}, fonts: {...}}`` – the base with any tokens overridden. */
+/** Font roles every style has besides its own five: a book serif for quotes and documents, roman caps for names
+ *  and titles, a letter hand, a typewriter. A style may override them like any other role. */
+const EXTRA_FONTS = {
+  book: font('EB Garamond', 400), caps: font('Forum', 400, { upper: true, ls: 3 }), script: font('Marck Script', 400),
+  typed: font('PT Mono', 400), thin: font('Tenor Sans', 400, { upper: true, ls: 4 }),
+}
+
+/** Resolved style: ``{base: "neon", format: "archive", palette: {...}, fonts: {...}}`` – the base with any tokens
+ *  overridden, and its format (how the graphics behave). The format's background and timing apply unless the spec
+ *  sets its own. */
 export function resolveStyle(spec) {
   const s = spec || {}
   const base = STYLES[s.base] || STYLES.editorial
-  const { base: _b, about: _a, ...over } = s
-  const out = merge(base, over)
+  const { base: _b, about: _a, format: fspec, ...over } = s
+  const format = resolveFormat(fspec)
+  let out = merge({ ...base, fonts: { ...EXTRA_FONTS, ...base.fonts } }, {})
+  if (format.motion) out.motion = { ...out.motion, ...format.motion }
+  if (format.bg) out.bg = { ...format.bg }
+  out = merge(out, over)
   out.palette = harmonize(out.palette)
+  out.format = format
   return { ...out, name: STYLES[s.base] ? s.base : 'editorial' }
 }

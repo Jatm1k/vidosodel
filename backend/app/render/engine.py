@@ -38,6 +38,7 @@ from .chapter_cards import CardRenderer
 from .look import LookParams, LookProcessor
 from .media import CAP_BY_REENCODE, CREATE_NO_WINDOW, cover_fit, encoder_args, imread, run
 from . import depth as depth_mod
+from .finish import processor_for
 from .motion import View, make_motion, max_zoom, render_view
 from .parallax import ParallaxRenderer, prepare_layers
 from .transitions import blend, duration as transition_length
@@ -101,6 +102,8 @@ class RenderPlan:
     motion_doc: str | None = None
     #: ``[start, end]`` of every overlay: the frame server is asked only when one is on screen.
     motion_overlays: list[list[float]] = field(default_factory=list)
+    #: The finish of the whole video in the manner of its motion format (:mod:`.finish`); empty → none.
+    finish: dict = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
     @property
@@ -126,6 +129,7 @@ class FrameRenderer:
         self.atmo = AtmosphereParams(**plan.atmosphere)
         self.look = LookProcessor(LookParams(**plan.look), plan.width, plan.height, self.atmo)
         self.fx = Atmosphere(self.atmo, plan.width, plan.height)
+        self.finish = processor_for(plan.finish, plan.width, plan.height, plan.fps)
         self._zmax = max_zoom(plan.intensity)
         if any(s.framing for s in plan.scenes):
             self._zmax *= FRAMING_HEADROOM  # closer shots sample the source at a higher magnification
@@ -268,6 +272,8 @@ class FrameRenderer:
             frame = self.cards.apply(frame, t)
         if self.accents is not None:
             frame = self.accents.apply(frame, t)
+        if self.finish is not None:
+            frame = self.finish.apply(frame, t)
         return self.look.apply(frame, fade, t)
 
 

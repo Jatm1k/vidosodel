@@ -2,7 +2,9 @@
 // Every frame is a pure function of (scene, t), so frames render in any order in any worker.
 import { clamp, lerp, ease, phase, boxOrigin, noise1, hash, rgba, css } from './core.mjs'
 import { createCanvas } from '@napi-rs/canvas'
-import { drawBackground } from './bg.mjs'
+import { drawBackground, resolveBg, surfaceOf } from './bg.mjs'
+import { harmonize } from './palette.mjs'
+import { treated } from './treat.mjs'
 import { ELEMENTS } from './els/index.mjs'
 
 export const VW = 1920, VH = 1080
@@ -49,6 +51,14 @@ export class Env {
     this.images[key] = c
     return c
   }
+  /** A picture as the format prints it (``treat`` overrides; ``portrait`` – the format's treatment of portraits). */
+  picture(key, treat, portrait = false) {
+    const img = this.image(key)
+    const f = this.style.format || {}
+    const kind = treat ?? (portrait ? f.treatPortrait ?? f.treat : f.treat)
+    return treated(img, kind, this.style.palette, hash(String(key)))
+  }
+  get format() { return this.style.format || {} }
   color(spec, fallback = 'ink') { return css(rgba(spec ?? fallback, this.pal, fallback)) }
   rgba(spec, fallback = 'ink') { return rgba(spec ?? fallback, this.pal, fallback) }
   get motion() { return this.style.motion }
@@ -109,6 +119,11 @@ function applyPreset(ctx, name, p, w, h, env) {
     case 'wipe-up': ctx.beginPath(); ctx.rect(-w, h + 4 - (h + 8) * p, w * 3, (h + 8) * p); ctx.clip(); return true
     case 'iris': { const r = Math.hypot(w, h) / 2 * p; ctx.beginPath(); ctx.arc(w / 2, h / 2, r, 0, Math.PI * 2); ctx.clip(); return true }
     case 'flip': ctx.translate(w / 2, h / 2); ctx.scale(1, Math.max(0.001, p)); ctx.translate(-w / 2, -h / 2); return true
+    case 'place': { // laid down on the desk: a little above, turned, settling into place
+      const s = lerp(1.07, 1, p)
+      ctx.translate(w / 2, h / 2); ctx.rotate((1 - p) * 0.06); ctx.scale(s, s); ctx.translate(-w / 2, -h / 2 - (1 - p) * 24)
+      ctx.globalAlpha *= clamp(p * 2.2); return true
+    }
     default: ctx.globalAlpha *= p; return true
   }
 }
@@ -172,6 +187,11 @@ function drawNode(ctx, node, t, env, end) {
   const [ox, oy] = CONTAINERS.has(el.type) ? [0, 0] : boxOrigin(el.anchor || def.anchor || 'c', w, h)
   ctx.save()
   ctx.translate(v.x, v.y)
+  if (env.boil) { // stop-motion: every held frame the paper lies a little differently
+    const b = hash(`${node.seed}:${Math.floor(t * env.boil + 1e-6)}`)
+    ctx.translate(((b & 255) / 255 - 0.5) * 2.6, (((b >> 8) & 255) / 255 - 0.5) * 2.6)
+    ctx.rotate((((b >> 16) & 255) / 255 - 0.5) * 0.008)
+  }
   if (v.rot) ctx.rotate(v.rot * Math.PI / 180)
   if (v.scale !== 1 || v.sx !== 1 || v.sy !== 1) ctx.scale(v.scale * v.sx, v.scale * v.sy)
   ctx.translate(ox, oy)
@@ -232,6 +252,13 @@ export class SceneRuntime {
     this.spec = spec
     this.env = env
     this.dur = +(spec.dur ?? 5)
+    // a background of another lightness than the style's (a dark desk under a light paper style): free text and
+    // marks take colours readable on it, paper things keep the style's own
+    const surface = surfaceOf(env.style, resolveBg(env.style, spec.bg))
+    if (surface) env.pal = harmonize({ ...env.style.palette, bg: surface, bg2: surface, ink: env.style.palette.panel, muted: undefined })
+    const f = env.format
+    this.hold = +(f.hold || 0)
+    if (f.boil && this.hold) env.boil = this.hold
     this.nodes = prepElements(spec.els, env, ctx)
     this.bgSeed = hash(String(spec.id ?? 'scene')) ^ env.seed
     this.lateStart = pullFirstIn(this.nodes)
@@ -240,23 +267,59 @@ export class SceneRuntime {
     const env = this.env
     ctx.save()
     const c = camAt(this.spec.cam, t)
-    if (!Array.isArray(this.spec.cam) && this.spec.cam !== false) {
-      // no camera of its own: a slow push-in with a little drift keeps the frame alive
-      const u = clamp(t / Math.max(1, this.dur))
-      const dir = (this.bgSeed % 4) - 1.5
-      c.zoom = 1 + 0.045 * ease('sine', u)
-      c.x += dir * 14 * ease('sine', u)
-      c.y += ((this.bgSeed >> 3) % 3 - 1) * 8 * ease('sine', u)
-    }
+    if (!Array.isArray(this.spec.cam) && this.spec.cam !== false) autoCam(c, t, this.dur, this.bgSeed, env.format.camera)
+    else if (env.format.camera === 'handheld' || env.format.camera === 'float') breathe(c, t, this.bgSeed, env.format.camera)
     drawBackground(ctx, env, this.spec.bg, t, this.bgSeed, c)
     ctx.translate(VW / 2, VH / 2)
     if (c.zoom !== 1) ctx.scale(c.zoom, c.zoom)
     if (c.rot) ctx.rotate(c.rot * Math.PI / 180)
     ctx.translate(-c.x, -c.y)
-    drawElements(ctx, this.nodes, t, env, this.dur)
+    // the camera moves smoothly; the things in the frame may move «on twos» (stop-motion, drawing)
+    const te = this.hold ? Math.floor(t * this.hold + 1e-6) / this.hold : t
+    drawElements(ctx, this.nodes, te, env, this.dur)
     ctx.restore()
   }
   boxes() { return elementBoxes(this.nodes) }
+}
+
+/** The camera of a scene without its own, in the manner of the format. */
+function autoCam(c, t, dur, seed, kind) {
+  const u = clamp(t / Math.max(1, dur))
+  const dir = (seed % 4) - 1.5, vdir = ((seed >> 3) % 3) - 1
+  switch (kind) {
+    case 'rostrum': { // documentary stand: an even, continuous glide and push, no easing to a stop
+      const e = 0.82 * u + 0.18 * ease('sine', u)
+      c.zoom = 1.02 + 0.085 * e
+      c.x += dir * 30 * e
+      c.y += vdir * 16 * e
+      break
+    }
+    case 'still': c.zoom = 1 + 0.014 * ease('sine', u); break
+    case 'float':
+      c.zoom = 1.025 + 0.03 * ease('sine', u)
+      breathe(c, t, seed, 'float')
+      break
+    case 'handheld':
+      c.zoom = 1.04 + 0.02 * ease('sine', u)
+      breathe(c, t, seed, 'handheld')
+      break
+    case 'drift': c.zoom = 1.01; c.x += dir * 36 * (u - 0.5); break
+    default: // push: a slow push-in with a little drift keeps the frame alive
+      c.zoom = 1 + 0.045 * ease('sine', u)
+      c.x += dir * 14 * ease('sine', u)
+      c.y += vdir * 8 * ease('sine', u)
+  }
+}
+/** Life of a camera held by a person (handheld) or floating (float), over any camera move. */
+function breathe(c, t, seed, kind) {
+  if (kind === 'handheld') {
+    c.x += noise1(t * 0.9, seed) * 6 + noise1(t * 3.1, seed + 5) * 1.6
+    c.y += noise1(t * 0.8, seed + 2) * 4 + noise1(t * 2.7, seed + 9) * 1.2
+    c.rot += noise1(t * 0.6, seed + 4) * 0.22
+  } else {
+    c.x += noise1(t * 0.13, seed) * 16
+    c.y += noise1(t * 0.11, seed + 3) * 10
+  }
 }
 
 /** A motion scene must not open on an empty background: when nothing is on screen in the first half second
@@ -300,7 +363,8 @@ export class OverlayRuntime {
     if (this.spec.shade) drawShade(ctx, this.env, this.spec.shade, clamp(t / 0.5))
     // a soft shadow under everything keeps thin lines and text readable on any picture
     ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 2
-    drawElements(ctx, this.nodes, t, this.env, dur)
+    const hold = +(this.env.format.hold || 0)
+    drawElements(ctx, this.nodes, hold ? Math.floor(t * hold + 1e-6) / hold : t, this.env, dur)
     ctx.restore()
   }
   boxes() { return elementBoxes(this.nodes) }

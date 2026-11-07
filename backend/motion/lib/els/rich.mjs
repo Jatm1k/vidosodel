@@ -16,7 +16,7 @@ const lay = (ctx, env, role, text, size, maxw) => {
 export const photo = {
   hasText: true,
   prep(el, env, ctx) {
-    const img = env.image(el.src)
+    const img = env.picture(el.src, el.treat)
     if (!img && !/^img\d+$/.test(String(el.src))) throw new Error(`photo: src «${el.src}» — нужно img<номер сцены>`)
     const w = +(el.w ?? 760)
     const h = +(el.h ?? w * 9 / 16)
@@ -197,11 +197,15 @@ export const stamp = {
     ctx.save(); ctx.translate(pad, pad * 0.7)
     drawText(ctx, t, env, { color: c, acc: c, align: 'c', boxW: t.w, mode: 'none', local: 99, styleKey: env.style.name })
     ctx.restore()
-    // worn ink: a few gaps punched out of the stamp
-    ctx.globalCompositeOperation = 'destination-out'
+    // worn ink: specks of what is under it show through (painted over, not punched: a hole would go through
+    // the whole scene)
     const r = rng(node.seed)
-    for (let i = 0; i < 26; i++) { ctx.fillStyle = `rgba(0,0,0,${0.3 + r() * 0.5})`; ctx.beginPath(); ctx.arc(r() * w, r() * h, 1 + r() * 4, 0, Math.PI * 2); ctx.fill() }
-    ctx.globalCompositeOperation = 'source-over'
+    if (!env.overlay) {
+      ctx.fillStyle = env.color('bg')
+      const a = ctx.globalAlpha
+      for (let i = 0; i < 26; i++) { ctx.globalAlpha = a * (0.25 + r() * 0.45); ctx.beginPath(); ctx.arc(r() * w, r() * h, 1 + r() * 3, 0, Math.PI * 2); ctx.fill() }
+      ctx.globalAlpha = a
+    }
   },
 }
 
@@ -269,7 +273,8 @@ export const cutout = {
   prep(el, env) {
     const key = String(el.src || '')
     if (!key.startsWith('cut:')) throw new Error(`cutout: src «${key}» — нужно cut:<id> из списка CUTOUTS`)
-    const img = env.image(key)
+    const raw = env.image(key)
+    const img = raw && env.picture(key, el.treat ?? env.format.treatCutout ?? 'none')
     if (!img && env.placeholders) throw new Error(`cutout: нет вырезки «${key.slice(4)}» (есть: ${Object.keys(env.cutouts).join(', ') || 'никаких'})`)
     const sprite = img && el.sticker ? stickerOf(img, env.color(el.sticker === true ? '#ffffff' : el.sticker)) : img
     const ar = sprite ? sprite.width / sprite.height : 0.62

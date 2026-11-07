@@ -160,7 +160,7 @@ const STEPS = [
   { id: 'translate', label: 'Перевод сценария', hint: 'для языков без текста' },
   { id: 'voice', label: 'Озвучка' },
   { id: 'scenes', label: 'Разбивка на сцены' },
-  { id: 'motion', label: 'Моушн-графика (Claude)', hint: 'если включена в настройках' },
+  { id: 'motion', label: 'Моушн-графика', hint: 'если включена в настройках' },
   { id: 'characters', label: 'Персонажи', hint: 'если включены референсы' },
   { id: 'prompts', label: 'Промпты' },
   { id: 'images', label: 'Картинки' },

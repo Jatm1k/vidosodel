@@ -107,8 +107,9 @@ export interface PipelineSettings {
     thumbnail_text_mode: 'overlay' | 'model'; thumbnail_text_color: string; thumbnail_accent_color: string
   }
   motion: {
+    provider: 'claude' | 'backup'
     mode: 'off' | 'accents' | 'mixed' | 'full'; overlays_per_minute: number; scene_share: number
-    style: string; style_overrides: Record<string, any>; direction: string
+    format: string; style: string; style_overrides: Record<string, any>; direction: string; finish: boolean
     model: string; effort: 'low' | 'medium' | 'high'; parallel: number; chunk_scenes: number; visual_check: boolean; cutouts: number
   }
 }
@@ -294,11 +295,24 @@ export interface MotionBrief {
   /** The script changed since Claude wrote it: the next run writes a new one. */
   stale: boolean
   cutouts: MotionCutout[]
+  /** How this video is told in graphics: picked with the brief, or the editor's choice. */
+  look: MotionLook | null
+}
+
+export interface MotionLook {
+  format: string | null
+  style: string | null
+  grade: string
+  film: number
+  why: string
+  by: 'auto' | 'user'
 }
 
 export interface MotionStyles {
   styles: Record<string, { about: string; palette: Record<string, string>; fonts: Record<string, string>; bg: string }>
   families: string[]
+  formats: Record<string, { about: string; suits: string; styles: string[]; camera: string; treat: string }>
+  grades: string[]
 }
 
 export interface LumeanTemplate {

@@ -58,14 +58,26 @@ class BackupLlm:
 
     def chat(self, messages: list[dict[str, str]], *, temperature: float = 0.7,
              max_tokens: int | None = None) -> str:
-        body: dict[str, Any] = {"model": self.model, "messages": messages, "temperature": temperature}
+        options: dict[str, Any] = {"temperature": temperature}
         if max_tokens:
-            body["max_tokens"] = max_tokens
-        data = request_json(self._client, SERVICE, "POST", self._url, json=body, attempts=4, cancellable=True)
+            options["max_tokens"] = max_tokens
+        data = self.complete(messages, **options)
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
             raise ApiError(SERVICE, 200, "пустой ответ", data) from exc
+
+    def complete(self, messages: list[dict[str, Any]], **options: Any) -> dict[str, Any]:
+        """Raw completion, including tool calls, provider metadata and token usage.
+
+        Keep the returned assistant message intact when replaying a conversation:
+        Gemini gateways may attach thought signatures to individual tool calls.
+        """
+        body = {**options, "model": self.model, "messages": messages}
+        data = request_json(self._client, SERVICE, "POST", self._url, json=body, attempts=4, cancellable=True)
+        if not isinstance(data, dict):
+            raise ApiError(SERVICE, 200, "ответ не объект", data)
+        return data
 
 
 def _configured(cfg: AppConfig) -> bool:

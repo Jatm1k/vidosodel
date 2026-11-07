@@ -76,7 +76,54 @@ export function resolveBg(style, spec) {
   return spec.kind && spec.kind !== base.kind ? { ...spec } : { ...base, ...spec }
 }
 const KINDS = new Set(['solid', 'grad', 'paper', 'grid', 'blueprint', 'notebook', 'dots', 'blobs', 'vignette', 'stars',
-                       'scan', 'rays', 'none', 'image'])
+                       'scan', 'rays', 'none', 'image', 'desk'])
+
+/** The desk under the archive's papers: a deep warm tone of the style's ink (or of a dark style's background). */
+export function deskColor(pal) {
+  const ink = rgba('ink', pal), bg = rgba('bg', pal)
+  const base = luma(ink) < 0.35 ? mix(ink, [92, 64, 40, 1], 0.35) : mix(bg, [58, 42, 28, 1], 0.45)
+  return [base[0], base[1], base[2], 1]
+}
+
+/** Hex of a scene background whose lightness differs from the style's own (then free text needs other colours),
+ *  or null. */
+export function surfaceOf(style, bg) {
+  let c = null
+  if (bg.kind === 'desk') c = bg.color ? rgba(bg.color, style.palette) : deskColor(style.palette)
+  else if (bg.color && bg.kind !== 'image') c = rgba(bg.color, style.palette)
+  if (!c) return null
+  const own = rgba('bg', style.palette)
+  if ((luma(c) < 0.45) === (luma(own) < 0.45)) return null
+  return '#' + [c[0], c[1], c[2]].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')
+}
+
+/** Long soft grain of wood or leather; seamless (every stroke wraps around the tile), so it can follow the camera. */
+function deskGrain(ctx, seed) {
+  const r = rng(seed + 21)
+  ctx.lineCap = 'round'
+  for (let i = 0; i < 260; i++) {
+    const y0 = r() * VH, amp = 4 + r() * 18, len = VW * (0.3 + r() * 0.9), x0 = r() * VW
+    const light = r() < 0.5
+    ctx.strokeStyle = light ? `rgba(255,235,200,${0.012 + r() * 0.03})` : `rgba(0,0,0,${0.03 + r() * 0.06})`
+    ctx.lineWidth = 0.8 + r() * 3.5
+    const ph = r() * 6
+    for (const dx of [-VW, 0]) for (const dy of [-VH, 0, VH]) {
+      if (x0 + dx + len < 0 || x0 + dx > VW) continue
+      ctx.beginPath(); ctx.moveTo(x0 + dx, y0 + dy)
+      for (let x = 0; x <= len; x += 40) ctx.lineTo(x0 + dx + x, y0 + dy + Math.sin(x / 260 + ph) * amp)
+      ctx.stroke()
+    }
+  }
+  const rs = rng(seed + 5)
+  for (let i = 0; i < 4500; i++) { ctx.fillStyle = `rgba(255,255,255,${0.02 + rs() * 0.035})`; ctx.fillRect(rs() * VW, rs() * VH, 1.2, 1.2) }
+}
+/** The lamp light over the desk and its deep corners: fixed to the frame. */
+function deskLight(ctx) {
+  const g = ctx.createRadialGradient(VW * 0.42, VH * 0.36, 0, VW * 0.42, VH * 0.36, VW * 0.62)
+  g.addColorStop(0, 'rgba(255,214,160,0.16)'); g.addColorStop(0.6, 'rgba(255,214,160,0.04)'); g.addColorStop(1, 'rgba(0,0,0,0)')
+  ctx.fillStyle = g; ctx.fillRect(0, 0, VW, VH)
+  vignette(ctx, 0.62)
+}
 
 export function drawBackground(ctx, env, spec, t, seed, cam) {
   const bg = resolveBg(env.style, spec)
@@ -90,7 +137,7 @@ export function drawBackground(ctx, env, spec, t, seed, cam) {
   const px = cam ? -(cam.x - VW / 2) * 0.3 : 0, py = cam ? -(cam.y - VH / 2) * 0.3 : 0
   if (bg.kind === 'none') return
   if (bg.kind === 'image' && env.image(bg.src)) {
-    const img = env.image(bg.src)
+    const img = env.picture(bg.src, bg.treat)
     const k = Math.max(VW / img.width, VH / img.height) * (1.06 + 0.04 * Math.sin(t * 0.2))
     ctx.drawImage(img, VW / 2 - img.width * k / 2 + px * 0.2, VH / 2 - img.height * k / 2 + py * 0.2, img.width * k, img.height * k)
     ctx.fillStyle = css(withAlpha(base, bg.dim ?? 0.55)); ctx.fillRect(0, 0, VW, VH)
@@ -108,6 +155,16 @@ export function drawBackground(ctx, env, spec, t, seed, cam) {
       g.addColorStop(0, css(rgba(bg.from || 'bg2', pal))); g.addColorStop(1, css(rgba(bg.to || 'bg', pal)))
       ctx.fillStyle = g; ctx.fillRect(0, 0, VW, VH)
       if (bg.dots) dotGrid(ctx, withAlpha(ink, 0.07), 36, px, py)
+      break
+    }
+    case 'desk': {
+      const c = bg.color ? rgba(bg.color, env.style.palette) : deskColor(env.style.palette)
+      ctx.fillStyle = css(c); ctx.fillRect(0, 0, VW, VH)
+      // the grain follows the camera (tiled), the light stays where the lamp is
+      const grain = texture(`deskgrain:${seed % 5}`, scale, (x) => deskGrain(x, seed % 5))
+      const ox = ((px % VW) + VW) % VW, oy = ((py % VH) + VH) % VH
+      for (const dx of [ox - VW, ox]) for (const dy of [oy - VH, oy]) ctx.drawImage(grain, dx, dy, VW, VH)
+      ctx.drawImage(texture('desklight', scale, deskLight), 0, 0, VW, VH)
       break
     }
     case 'paper': {

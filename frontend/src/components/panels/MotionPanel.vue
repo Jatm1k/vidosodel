@@ -8,11 +8,14 @@ import { computed, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputNumber from 'primevue/inputnumber'
+import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
+import Slider from 'primevue/slider'
 import Textarea from 'primevue/textarea'
 import { useConfirm } from 'primevue/useconfirm'
 import { api } from '@/api/client'
-import type { MotionInfo, MotionItem, ProjectDetail, TrackSummary } from '@/api/types'
+import type { MotionInfo, MotionItem, MotionStyles, ProjectDetail, TrackSummary } from '@/api/types'
+import { FORMAT_HINT, FORMAT_LABEL, GRADE_LABEL, formatLabel } from '@/api/motionLook'
 import { useNotify } from '@/composables/useNotify'
 import { timecode } from '@/composables/useFormat'
 import { useTrackActions } from '@/composables/useTrackActions'
@@ -56,7 +59,7 @@ const ready = computed(() => !!props.track.audio_url && props.track.scene_stats.
 function generate() {
   const params: Record<string, unknown> = { mode: mode.value }
   if (useRange.value) params.range = [rangeFrom.value - 1, rangeTo.value - 1]
-  const go = () => run('motion', params, 'Claude взялся за графику')
+  const go = () => run('motion', params, 'Запущена генерация графики')
   if ((info.value?.items.length ?? 0) > 0 && !useRange.value) {
     confirm.require({
       header: 'Сделать графику заново?', message: 'Текущие моушн-сцены и оверлеи этой версии будут заменены.',
@@ -79,7 +82,7 @@ function openRedo(it: MotionItem) {
 }
 async function redo() {
   if (!redoItem.value) return
-  await run('motion', { ids: [redoItem.value.id], comment: comment.value.trim() }, 'Claude переделывает')
+  await run('motion', { ids: [redoItem.value.id], comment: comment.value.trim() }, 'Запущена переделка')
   redoItem.value = null
 }
 
@@ -115,17 +118,39 @@ async function saveBrief() {
   try {
     await api.put(`/api/tracks/${props.track.id}/motion/brief`, { text: briefDraft.value })
     briefEditing.value = false
-    notify.ok('Арт-дирекция сохранена', 'Claude будет следовать ей при каждой генерации этого ролика')
+    notify.ok('Арт-дирекция сохранена', 'LLM будет следовать ей при каждой генерации этого ролика')
     await load()
   } catch (e) {
     notify.error(e)
   }
 }
+// ---- the look of this video: format, style, grade, film
+const look = computed(() => brief.value?.look ?? null)
+const catalog = ref<MotionStyles | null>(null)
+watch(briefOpen, async (open) => {
+  if (!open || catalog.value) return
+  try { catalog.value = await api.get<MotionStyles>('/api/motion/styles') } catch (e) { notify.error(e) }
+})
+const formatOptions = computed(() => Object.keys(catalog.value?.formats ?? {}).map((v) => ({ v, l: FORMAT_LABEL[v] ?? v })))
+const styleOptions = computed(() => Object.keys(catalog.value?.styles ?? {}).map((v) => ({ v, l: v })))
+const gradeOptions = computed(() => (catalog.value?.grades ?? []).map((v) => ({ v, l: GRADE_LABEL[v] ?? v })))
+const film = ref(0)
+watch(() => look.value?.film, (f) => { film.value = Math.round((f ?? 0) * 100) }, { immediate: true })
+async function saveLook(patch: Record<string, string | number>) {
+  try {
+    await api.put(`/api/tracks/${props.track.id}/motion/look`, patch)
+    await load()
+    if (patch.format) notify.info('Подача изменена', 'Камера, обработка картинок и плёнка уже новые; композиции сцен лучше сделать заново под эту подачу')
+  } catch (e) {
+    notify.error(e)
+  }
+}
+
 async function resetBrief() {
   try {
     await api.del(`/api/tracks/${props.track.id}/motion/brief`)
     briefEditing.value = false
-    notify.info('При следующей генерации Claude напишет арт-дирекцию заново')
+    notify.info('При следующей генерации LLM напишет арт-дирекцию заново')
     await load()
   } catch (e) {
     notify.error(e)
@@ -150,7 +175,7 @@ const styleName = computed(() => (info.value?.style as any)?.base ?? null)
     <header class="flex flex-wrap items-center gap-3">
       <h3 class="text-[15px] font-semibold">Моушн-графика</h3>
       <span class="text-[13px] text-ink-3">
-        делает Claude по вашей подписке ·
+        {{ project.effective_settings.motion.provider === 'backup' ? 'делает резервная LLM' : 'делает Claude по вашей подписке' }} ·
         <template v-if="info?.items.length">{{ scenes.length }} сцен, {{ overlays.length }} оверлеев</template>
         <template v-else>ещё нет</template>
         <template v-if="styleName"> · стиль {{ styleName }}</template>
@@ -158,7 +183,7 @@ const styleName = computed(() => (info.value?.style as any)?.base ?? null)
       <span v-if="info?.stale" class="rounded bg-tally/15 px-2 text-[12px] leading-6 text-tally">
         сцены изменились после генерации — тайминги могли сдвинуться
       </span>
-      <span v-if="info?.planning" class="text-[12px] text-tally"><i class="pi pi-spin pi-spinner mr-1 text-[11px]" />Claude выбирает сцены</span>
+      <span v-if="info?.planning" class="text-[12px] text-tally"><i class="pi pi-spin pi-spinner mr-1 text-[11px]" />LLM выбирает сцены</span>
       <div class="ml-auto flex gap-2">
         <Button v-if="info?.items.length" label="Удалить всё" severity="secondary" text size="small" @click="clearAll" />
       </div>
@@ -196,14 +221,34 @@ const styleName = computed(() => (info.value?.style as any)?.base ?? null)
         <i class="pi text-[11px] text-ink-3" :class="briefOpen ? 'pi-chevron-down' : 'pi-chevron-right'" />
         <span class="font-medium text-ink">Арт-дирекция этого ролика</span>
         <span class="text-ink-3">
-          {{ brief.by === 'user' ? 'ваша' : 'написал Claude' }}
+          {{ brief.by === 'user' ? 'ваша' : 'написала LLM' }}
           <template v-if="brief.cutouts.length"> · вырезок {{ brief.cutouts.filter((c) => c.status === 'done').length }}/{{ brief.cutouts.length }}</template>
+        </span>
+        <span v-if="look" class="rounded bg-tally/15 px-1.5 text-[12px] leading-5 text-tally" :title="look.why">
+          {{ formatLabel(look.format) }} · {{ look.style }}<template v-if="look.grade !== 'none'"> · {{ GRADE_LABEL[look.grade]?.toLowerCase() ?? look.grade }}</template>
         </span>
         <span v-if="brief.stale" class="text-[12px] text-tally">сценарий изменился — при генерации будет написана заново</span>
       </button>
       <div v-if="briefOpen" class="border-t border-line-soft p-3">
+        <template v-if="look">
+          <h4 class="text-[13px] font-medium">Подача ролика</h4>
+          <p class="mb-2 text-[12px] text-ink-3">
+            {{ look.by === 'user' ? 'Выбрана вами.' : look.why || 'LLM выбрала её под сценарий.' }}
+            {{ look.format ? FORMAT_HINT[look.format] : '' }}
+          </p>
+          <div class="mb-4 flex flex-wrap items-center gap-2">
+            <Select :model-value="look.format" :options="formatOptions" option-label="l" option-value="v" size="small" class="w-48"
+                    placeholder="Подача" @update:model-value="(v: string) => saveLook({ format: v })" />
+            <Select :model-value="look.style" :options="styleOptions" option-label="l" option-value="v" size="small" class="w-40"
+                    placeholder="Стиль" @update:model-value="(v: string) => saveLook({ style: v })" />
+            <Select :model-value="look.grade" :options="gradeOptions" option-label="l" option-value="v" size="small" class="w-56"
+                    placeholder="Тонировка" @update:model-value="(v: string) => saveLook({ grade: v })" />
+            <span class="ml-2 text-[12px] text-ink-3">Плёнка {{ film }}%</span>
+            <Slider v-model="film" :min="0" :max="100" :step="5" class="w-32" @slideend="saveLook({ film: film / 100 })" />
+          </div>
+        </template>
         <p class="mb-2 text-[12px] text-ink-3">
-          Сквозные образы, приёмы для разных частей сценария и чего избегать — общий план для всех частей ролика. Claude пишет
+          Сквозные образы, приёмы для разных частей сценария и чего избегать — общий план для всех частей ролика. LLM пишет
           её под каждый сценарий; если поправите — ваша версия сохранится для всех следующих генераций этого ролика.
         </p>
         <Textarea v-model="briefDraft" rows="6" auto-resize class="w-full font-mono text-[12px]" @input="briefEditing = true" />
@@ -213,7 +258,7 @@ const styleName = computed(() => (info.value?.style as any)?.base ?? null)
         </div>
         <template v-if="brief.cutouts.length">
           <h4 class="mt-4 text-[13px] font-medium">Вырезки</h4>
-          <p class="mb-2 text-[12px] text-ink-3">Персонажи и предметы в стиле картинок канала без фона — Claude ставит их в моушн-сцены</p>
+          <p class="mb-2 text-[12px] text-ink-3">Персонажи и предметы в стиле картинок канала без фона — LLM ставит их в моушн-сцены</p>
           <div class="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-2">
             <figure v-for="c in brief.cutouts" :key="c.id" class="group relative overflow-hidden rounded border border-line-soft"
                     :title="[c.what, c.use, c.error].filter(Boolean).join('\n\n')">
@@ -265,7 +310,7 @@ const styleName = computed(() => (info.value?.style as any)?.base ?? null)
     </div>
 
     <Dialog :visible="!!redoItem" modal header="Переделать" :style="{ width: '32rem' }" @update:visible="redoItem = null">
-      <p class="mb-2 text-[13px] text-ink-3">Что изменить? Claude переделает только этот элемент.</p>
+      <p class="mb-2 text-[13px] text-ink-3">Что изменить? LLM переделает только этот элемент.</p>
       <Textarea v-model="comment" rows="4" class="w-full" auto-resize placeholder="Например: вместо списка — карта; крупнее цифра; меньше текста" />
       <template #footer>
         <Button label="Отмена" severity="secondary" text @click="redoItem = null" />

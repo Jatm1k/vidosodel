@@ -66,6 +66,8 @@ class Session:
     want_overlays: int = 0
     #: Cut-outs planned for the video (stand-ins in the contact sheets until drawn).
     cutouts: dict[str, Any] = field(default_factory=dict)
+    #: Element types outside the language of the video's format (never suggested).
+    avoid: set[str] = field(default_factory=set)
 
 
 SESSIONS: dict[str, Session] = {}
@@ -306,9 +308,9 @@ def tool_submit(s: Session, args: dict[str, Any]) -> list[dict[str, Any]]:
 
 # ------------------------------------------------------------------ variety across the whole video
 #: Devices that turn into a tic when they come back in scene after scene.
-DEVICES = ("stamp", "scribble", "compare", "iconarray", "list", "flow", "quote", "callout")
+DEVICES = ("stamp", "scribble", "compare", "iconarray", "list", "flow", "quote", "callout", "title", "filmstrip", "paper")
 HEROES_ALL = ("photo", "cutout", "map", "linechart", "bars", "donut", "timeline", "stat", "counter", "ring", "flow",
-              "compare", "icon", "text", "iconarray", "image")
+              "compare", "icon", "text", "iconarray", "image", "document", "portrait", "title", "filmstrip")
 ZONES = {"l": "left", "r": "right", "c": "centre", "full": "full frame"}
 
 
@@ -362,7 +364,7 @@ def _variety_summary(s: Session, m: dict[str, Any]) -> str:
     from collections import Counter  # noqa: PLC0415
     heroes = Counter(x["sig"]["hero"] for x in pool)
     devices = Counter(d for x in pool for d in DEVICES if d in x["sig"]["types"])
-    unused = [h for h in HEROES_ALL if h not in heroes and (h != "cutout" or s.cutouts) and h != "image"]
+    unused = [h for h in HEROES_ALL if h not in heroes and (h != "cutout" or s.cutouts) and h != "image" and h not in s.avoid]
     return (f"VIDEO SO FAR ({len(pool)} motion scenes, all parts): heroes "
             + ", ".join(f"{k} {v}" for k, v in heroes.most_common())
             + ("; devices " + ", ".join(f"{k} {v}" for k, v in devices.most_common()) if devices else "")

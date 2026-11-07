@@ -1,7 +1,8 @@
 """Motion graphics job: the app asks Claude Code to compose the graphics of a track.
 
-* the channel's look – picked once for the niche (``style: auto``) by a short structured call and saved to
-  the channel, so every video of the channel shares it;
+* the look of the video – its format (how the graphics behave: an explainer, an archive, a cinematic essay…), its
+  style, the grade and film texture of the whole video – picked with its brief for its script, close to the channel's
+  recent videos; a channel may pin a format or a style;
 * the brief of the video – its own art direction and cut-outs, written for its script (see :mod:`app.motion.brief`);
   the cut-outs are drawn while the sessions compose;
 * a long video is cut into parts of ``chunk_scenes`` scenes; ``parallel`` Claude sessions work on them at once,
@@ -26,7 +27,8 @@ from ..config import get_settings
 from ..db import session_scope
 from ..models import Channel, Character, Track
 from ..motion import brief, store
-from ..motion.agent import GUIDE, ClaudeError, run_claude, tool_events, usage_of
+from ..motion.agent import GUIDE, tool_events, usage_of
+from ..motion.provider import MotionError, check_provider, run_designer
 from ..motion.node import MotionUnavailable, ensure_installed, run_cli
 from ..motion.tools import SESSIONS, WRITE_LOCK, Session
 from ..render.engine import RESOLUTIONS
@@ -49,54 +51,46 @@ MODE_TEXT = {
 }
 
 
-# ------------------------------------------------------------------ style of the channel
+# ------------------------------------------------------------------ the look of the video
+_CATALOG: dict[str, Any] | None = None
+
+
 def _catalog() -> dict[str, Any]:
-    return run_cli("styles", timeout=60)
+    """Styles, formats, font families and grades of the renderer (asked once per process)."""
+    global _CATALOG
+    if _CATALOG is None:
+        _CATALOG = run_cli("styles", timeout=60)
+    return _CATALOG
 
 
-def ensure_style(ctx: JobContext, tc: TrackCtx, ms: MotionSettings) -> dict[str, Any]:
-    """The style document ``{"base": …, **overrides}``; picks and saves the channel's look when ``auto``."""
-    if ms.style != "auto":
-        return {"base": ms.style, **(ms.style_overrides or {})}
+def _style_pin(ms: MotionSettings) -> dict[str, Any] | None:
+    return {"base": ms.style, **(ms.style_overrides or {})} if ms.style and ms.style != "auto" else None
+
+
+def _default_look(ms: MotionSettings, catalog: dict[str, Any]) -> dict[str, Any]:
+    fmt = ms.format if ms.format in (catalog.get("formats") or {}) else "explainer"
+    base = ((catalog.get("formats") or {}).get(fmt) or {}).get("styles") or ["editorial"]
+    return {"format": fmt, "style": _style_pin(ms) or {"base": base[0]},
+            "grade": (((catalog.get("formats") or {}).get(fmt) or {}).get("finish") or {}).get("grade", "none"),
+            "film": 0.6, "why": "", "by": "auto"}
+
+
+def _recent_looks(channel_id: int, track_id: int) -> list[dict[str, Any]]:
+    """Looks of the channel's latest videos (newest first): the brief keeps the channel recognisable."""
+    from ..models import Project  # noqa: PLC0415
+
+    out = []
     with session_scope() as db:
-        ch = db.get(Channel, tc.channel.id)
-        saved = ((ch.settings or {}).get("motion") or {})
-        if saved.get("style") and saved.get("style") != "auto":
-            return {"base": saved["style"], **(saved.get("style_overrides") or {})}
-        niche, cname, image_style = tc.settings.llm.niche, ch.name, tc.settings.images.style_prompt
-    ctx.progress(0.02, "Claude подбирает визуальный язык канала под нишу", force=True)
-    cat = _catalog()
-    styles = "\n".join(f"- {n}: {s['about']} (bg {s['bg']}; fonts {s['fonts']['display']} / {s['fonts']['body']}; "
-                       f"palette {json.dumps(s['palette'])})" for n, s in cat["styles"].items())
-    with session_scope() as db:
-        script = (db.get(Track, tc.track.id).script or "")[:1800]
-    prompt = (f"Channel «{cname}». Niche: {niche or 'unknown — infer from the script'}. Picture style of the channel: "
-              f"{image_style}.\nScript sample:\n{script}\n\nBase styles:\n{styles}\n\nFont families: "
-              f"{', '.join(cat['families'])}.\n\nChoose the base style that fits this niche and audience, and tune it "
-              "into the channel's own look: palette overrides (keep contrast: ink on bg must be very readable; the "
-              "accent must pop on bg), optionally fonts overrides ({role: {family, weight}} from the list, roles "
-              "display/body/label). Keep it coherent with the picture style.")
-    schema = {"type": "object", "required": ["base"], "properties": {
-        "base": {"type": "string", "enum": list(cat["styles"])},
-        "palette": {"type": "object", "additionalProperties": {"type": "string"}},
-        "fonts": {"type": "object", "additionalProperties": {"type": "object", "properties": {
-            "family": {"type": "string"}, "weight": {"type": "integer"}}}}}}
-    try:
-        res = run_claude(prompt, model=ms.model, effort="low", system="You are an art director of motion graphics. "
-                         "Answer only with the structured output.", json_schema=schema, timeout=300,
-                         should_stop=ctx.should_stop)
-    except ClaudeError as e:
-        raise JobError(str(e)) from e
-    out = res.get("structured_output") or {}
-    base = out.get("base") if out.get("base") in cat["styles"] else "editorial"
-    overrides = {k: out[k] for k in ("palette", "fonts") if isinstance(out.get(k), dict) and out[k]}
-    with session_scope() as db:
-        ch = db.get(Channel, tc.channel.id)
-        st = json.loads(json.dumps(ch.settings or {}))
-        mo = st.setdefault("motion", {})
-        mo.update({"style": base, "style_overrides": overrides})
-        ch.settings = st
-    return {"base": base, **overrides}
+        rows = (db.query(Track.motion).join(Project, Project.id == Track.project_id)
+                .filter(Project.channel_id == channel_id, Track.id != track_id, Track.motion.isnot(None))
+                .order_by(Track.id.desc()).limit(12).all())
+        for (m,) in rows:
+            look = brief.brief_of(m).get("look")
+            if look and look.get("format"):
+                out.append(look)
+            if len(out) >= 3:
+                break
+    return out
 
 
 # ------------------------------------------------------------------ parts
@@ -141,11 +135,21 @@ def _assets_line(scenes: list[Any], lo: int, hi: int, mode: str) -> str:
 
 
 def _head(tc: TrackCtx, style: dict[str, Any], ms: MotionSettings, duration: float, subs_bottom: bool,
-          brief_m: dict[str, Any] | None = None) -> str:
+          brief_m: dict[str, Any] | None = None, finish: dict[str, Any] | None = None) -> str:
     title = ((tc.track.publish_meta or {}).get("titles") or [tc.project.name])[0]
+    fmt_name = style.get("format") or "explainer"
+    fmt = (_catalog().get("formats") or {}).get(fmt_name) or {}
+    look = {k: v for k, v in style.items() if k != "format"}
     lines = [f"VIDEO: «{title}» · language: {tc.track.language} · {int(duration // 60)}:{int(duration % 60):02d}"
              + (f" · niche: {tc.settings.llm.niche}" if tc.settings.llm.niche else ""),
-             f"STYLE: {json.dumps(style, ensure_ascii=False)}"]
+             f"STYLE: {json.dumps(look, ensure_ascii=False)}"]
+    if fmt:
+        lines.append(f"FORMAT: {fmt_name} — {fmt.get('about')}. Its default camera: {fmt.get('camera')}; pictures are "
+                     f"printed as {fmt.get('treat')} (element treat overrides). This is the language of the whole video — "
+                     f"it overrides the general art direction where they differ:\n{fmt.get('playbook')}")
+    if finish and (finish.get("grade") not in (None, "none") or finish.get("grain", 0) > 0.3):
+        lines.append(f"FINISH: the render grades the whole video «{finish.get('grade')}» with film texture — design in the "
+                     "palette as it is, do not imitate the grade or the film.")
     if ms.direction.strip():
         lines.append(f"CHANNEL RULES: {ms.direction.strip()}")
     if subs_bottom:
@@ -154,31 +158,54 @@ def _head(tc: TrackCtx, style: dict[str, Any], ms: MotionSettings, duration: flo
     return "\n".join(lines) + (f"\n\n{extra}" if extra else "")
 
 
-def _ensure_brief(ctx: JobContext, tc: TrackCtx, ms: MotionSettings, scenes: list[Any], style: dict[str, Any],
-                  mode: str, old: dict[str, Any], adapt_brief: dict[str, Any] | None) -> dict[str, Any]:
-    """The brief for this run: the master's (a translation), the editor's, the current one while the script is the
-    same, or a new one. Cut-outs already drawn with the same id and description are kept."""
+def _ensure_brief(ctx: JobContext, tc: TrackCtx, ms: MotionSettings, scenes: list[Any], mode: str,
+                  old: dict[str, Any], adapt_brief: dict[str, Any] | None) -> dict[str, Any]:
+    """The brief for this run, with the look of the video: the master's (a translation), the editor's, the current
+    one while the script is the same, or a new one. Cut-outs already drawn with the same id and description are
+    kept."""
     if adapt_brief:
         return json.loads(json.dumps(adapt_brief))
-    if old.get("by") == "user" or (old.get("text") and old.get("key") == brief.script_key(scenes)):
-        return old
-    characters = []
+    catalog = _catalog()
+    fmt_pin, style_pin = ms.format if ms.format != "auto" else "", _style_pin(ms)
     with session_scope() as db:
         title = ((db.get(Track, tc.track.id).publish_meta or {}).get("titles") or [tc.project.name])[0]
+    recent = _recent_looks(tc.channel.id, tc.track.id)
+    if old.get("by") == "user" or (old.get("text") and old.get("key") == brief.script_key(scenes)):
+        look = dict(old.get("look") or {})
+        if look and look.get("by") != "user":
+            if fmt_pin and look.get("format") != fmt_pin:
+                look = {}  # the channel pinned another format since
+            elif style_pin:
+                look["style"] = style_pin
+        if not look:
+            ctx.progress(0.03, "LLM подбирает подачу ролика", force=True)
+            try:
+                look = brief.make_look(title=title, niche=tc.settings.llm.niche, picture_style=tc.settings.images.style_prompt,
+                                       scenes=scenes, catalog=catalog, format_pin=fmt_pin, style_pin=style_pin,
+                                       recent=recent, model=ms.model, should_stop=ctx.should_stop, provider=ms.provider)
+            except MotionError as e:
+                if ctx.should_stop():
+                    raise JobCancelled() from e
+                log.warning("look failed: %s", e)
+                look = _default_look(ms, catalog)
+        return {**old, "look": look}
+    characters = []
+    with session_scope() as db:
         for c in db.query(Character).filter(Character.project_id == tc.project.id):
             if (c.kind or "character") == "character":
                 characters.append((c.name, c.description or ""))
-    ctx.progress(0.03, "Claude пишет арт-дирекцию этого ролика", force=True)
+    ctx.progress(0.03, "LLM выбирает подачу и пишет арт-дирекцию этого ролика", force=True)
     try:
         new = brief.make_brief(title=title, lang=tc.track.language, niche=tc.settings.llm.niche,
-                               picture_style=tc.settings.images.style_prompt, style=style, rules=ms.direction, mode=mode,
+                               picture_style=tc.settings.images.style_prompt, rules=ms.direction, mode=mode,
                                scenes=scenes, characters=characters, max_cutouts=max(0, ms.cutouts), model=ms.model,
-                               should_stop=ctx.should_stop)
-    except ClaudeError as e:
+                               catalog=catalog, format_pin=fmt_pin, style_pin=style_pin, recent=recent,
+                               should_stop=ctx.should_stop, provider=ms.provider)
+    except MotionError as e:
         if ctx.should_stop():
             raise JobCancelled() from e
         log.warning("brief failed: %s", e)
-        return old or {}
+        return {**(old or {}), "look": (old or {}).get("look") or _default_look(ms, catalog)}
     drawn = {c["id"]: c for c in old.get("cutouts") or [] if c.get("status") == "done" and c.get("file")}
     new["cutouts"] = [drawn[c["id"]] if c["id"] in drawn and drawn[c["id"]].get("what") == c["what"] else c
                       for c in new["cutouts"]]
@@ -186,7 +213,7 @@ def _ensure_brief(ctx: JobContext, tc: TrackCtx, ms: MotionSettings, scenes: lis
 
 
 # ------------------------------------------------------------------ the job
-@register("motion", "motion", "Моушн-графика (Claude)")
+@register("motion", "motion", "Моушн-графика")
 def motion_job(ctx: JobContext) -> dict[str, Any]:
     """Params: ``ids`` + ``comment`` – redo these items; ``mode`` – override the channel's mode;
     ``range`` – ``[first, last]`` scene indices: only that part (the rest is kept)."""
@@ -228,6 +255,7 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
             master = master_track(db, tc.project)
             if master is not None and store.items(master.motion):
                 adapt_from = {"lang": master.language, "items": store.items(master.motion), "style": (master.motion or {}).get("style"),
+                              "finish": (master.motion or {}).get("finish"),
                               "brief": brief.brief_of(master.motion),
                               "master_scenes": [(sc.idx, sc.start) for sc in master.scenes]}
                 mode = "adapt"
@@ -236,9 +264,24 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
         render = tc.settings.render
         track_id, lang = track.id, track.language
         old_brief = brief.brief_of(track.motion)
-    style = (adapt_from or {}).get("style") or ensure_style(ctx, tc, ms)
-    the_brief = old_brief if redo_ids else _ensure_brief(ctx, tc, ms, scenes, style, mode, old_brief,
-                                                         (adapt_from or {}).get("brief"))
+        old_style, old_finish = (track.motion or {}).get("style"), (track.motion or {}).get("finish")
+    try:
+        check_provider(ms.provider)
+    except MotionError as e:
+        raise JobError(str(e)) from e
+    try:
+        catalog = _catalog()
+    except MotionUnavailable as e:
+        raise JobError(str(e)) from e
+    if adapt_from:  # a translation looks exactly like its original
+        the_brief = brief.brief_of({"brief": adapt_from.get("brief")})
+        style, finish = adapt_from.get("style") or {"base": "editorial"}, adapt_from.get("finish")
+    elif redo_ids:  # single items again: the video keeps its look
+        the_brief, style, finish = old_brief, old_style or brief.style_doc(_default_look(ms, catalog)), old_finish
+    else:
+        the_brief = _ensure_brief(ctx, tc, ms, scenes, mode, old_brief, None)
+        look = the_brief.get("look") or _default_look(ms, catalog)
+        style, finish = brief.style_doc(look), brief.finish_of(look, catalog)
     width, height = RESOLUTIONS[render.resolution]
     words = timings.words
     work = track_dir(tc.project.id, track_id, "motion")
@@ -276,6 +319,8 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
             if mode == "adapt":
                 m["plan_slots"] = sorted(store.motion_scene_idxs({"items": adapt_from["items"]}))
         m["style"] = style
+        if finish is not None:
+            m["finish"] = finish
         m["key"] = key
         if the_brief:
             m["brief"] = the_brief
@@ -294,7 +339,7 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
                                   lambda cid: cut_info.pop(cid, None))  # a failed one is not offered any more
         maker.start(pending)
 
-    head = _head(tc, style, ms, duration, subs_bottom, m_now)
+    head = _head(tc, style, ms, duration, subs_bottom, m_now, finish)
     port = get_settings().port
     sessions: list[Session] = []
     for lo, hi, body, want_k, want_o in tasks:
@@ -306,7 +351,8 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
                     fonts_dir=str(get_settings().fonts_dir),
                     assets=assets, cutouts=cut_info, safe_bottom=0.8 if subs_bottom else 0.0,
                     visual_check=ms.visual_check, work=work, seed=track_id * 7919 + lo,
-                    want_scenes=want_k, want_overlays=want_o)
+                    want_scenes=want_k, want_overlays=want_o,
+                    avoid=set((((catalog.get("formats") or {}).get(style.get("format") or "") or {}).get("avoid") or {}).get("types") or []))
         s.prompt = f"{head}\n\n{body}"  # type: ignore[attr-defined]
         sessions.append(s)
     done_parts = {"n": 0}
@@ -316,7 +362,7 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
     def report() -> None:
         live = " · ".join(v for v in status.values() if v)
         ctx.progress(0.05 + 0.9 * done_parts["n"] / max(1, len(sessions)),
-                     f"Claude: частей {done_parts['n']}/{len(sessions)}" + (f" · {live}" if live else ""))
+                     f"{'Claude' if ms.provider == 'claude' else 'Резервная LLM'}: частей {done_parts['n']}/{len(sessions)}" + (f" · {live}" if live else ""))
 
     def run(s: Session) -> dict[str, Any]:
         label = f"#{s.lo}–#{s.hi}"
@@ -328,7 +374,7 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
         SESSIONS[s.token] = s
         try:
             tools = ["submit", "look"] + (["plan"] if s.mode == "mixed" else [])
-            res = run_claude(s.prompt, model=ms.model, effort=ms.effort, system_file=GUIDE,
+            res = run_designer(s.prompt, provider=ms.provider, session=s, model=ms.model, effort=ms.effort, system_file=GUIDE,
                              mcp_url=f"http://127.0.0.1:{port}/mcp/motion/{s.token}", tools=tools,
                              timeout=40 * 60, should_stop=lambda: ctx.should_stop() or halt["on"],
                              on_event=tool_events(lambda name: on_progress(f"{name}…")))
@@ -349,7 +395,7 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
             try:
                 for k, v in fut.result().items():
                     usage[k] += v
-            except ClaudeError as e:
+            except MotionError as e:
                 errors.append(f"#{s.lo}–#{s.hi}: {e}")
                 if "Лимит" in str(e) or "авторизован" in str(e):
                     halt["on"] = True

@@ -23,6 +23,10 @@ export const FAMILIES = {
   'Press Start 2P': [400],
   'Caveat': [500, 700],
   'Comfortaa': [500, 700],
+  'EB Garamond': [400, 600],
+  'Forum': [400],
+  'Tenor Sans': [400],
+  'Marck Script': [400],
 }
 
 const dir = new URL('../fonts/', import.meta.url)

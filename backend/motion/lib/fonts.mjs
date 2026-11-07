@@ -12,7 +12,8 @@ let loaded = false
 /** «PlayfairDisplay» → «Playfair Display», «PTSerif» → «PT Serif», «JetBrainsMono» → «JetBrains Mono». */
 const SPACED = { PTSerif: 'PT Serif', PTMono: 'PT Mono', JetBrainsMono: 'JetBrains Mono', OldStandardTT: 'Old Standard TT',
                  PressStart2P: 'Press Start 2P', DelaGothicOne: 'Dela Gothic One', RussoOne: 'Russo One', YesevaOne: 'Yeseva One',
-                 PlayfairDisplay: 'Playfair Display', CormorantGaramond: 'Cormorant Garamond' }
+                 PlayfairDisplay: 'Playfair Display', CormorantGaramond: 'Cormorant Garamond', EBGaramond: 'EB Garamond',
+                 TenorSans: 'Tenor Sans', MarckScript: 'Marck Script' }
 
 export function loadFonts(extraDir) {
   if (loaded) return
@@ -89,7 +90,7 @@ function _layout(ctx, words, font, size, maxw, lh, ls) {
   for (const wd of words) {
     if (wd.br) { lines.push(cur); cur = { words: [], w: 0 }; continue }
     const w = ctx.measureText(wd.text).width
-    const gap = wd.glue ? 0 : space
+    const gap = wd.glue ? (/^[,.;:!?…»)]/.test(wd.text) ? space * 0.12 : 0) : space
     const nx = cur.words.length ? cur.w + gap : 0
     if (maxw && cur.words.length && !wd.glue && nx + w > maxw) {
       lines.push(cur)

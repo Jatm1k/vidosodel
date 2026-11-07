@@ -58,9 +58,12 @@ def get_motion(track_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
              "status": c.get("status") or "pending", "error": c.get("error"),
              "url": f"/api/tracks/{track_id}/motion/cutouts/{c['id']}.png?v={c.get('file', '')[-24:]}" if c.get("file") else None}
             for c in motion_brief.cutout_list(mo)]
+    lk = b.get("look") or {}
+    look_out = {"format": lk.get("format"), "style": (lk.get("style") or {}).get("base"), "grade": lk.get("grade") or "none",
+                "film": lk.get("film", 0.0), "why": lk.get("why") or "", "by": lk.get("by") or "auto"} if lk else None
     brief_out = {"text": b.get("text") or "", "by": b.get("by") or "auto",
                  "stale": bool(b.get("key")) and b.get("by") != "user" and bool(scenes) and b.get("key") != motion_brief.script_key(scenes),
-                 "cutouts": cuts} if b else None
+                 "cutouts": cuts, "look": look_out} if b else None
     return {"mode": mo.get("mode"), "style": mo.get("style"), "planning": store.planning(mo), "items": out, "brief": brief_out,
             "stale": bool(mo.get("key")) and bool(scenes) and mo.get("key") != store.timeline_key(scenes),
             "updated": mo.get("updated")}
@@ -176,6 +179,49 @@ def save_brief(track_id: int, body: BriefIn, db: Session = Depends(get_db)) -> d
     mo = json.loads(json.dumps(t.motion or {}))
     b = mo.setdefault("brief", {})
     b.update(text=body.text.strip()[:6000], by="user", key=motion_brief.script_key(list(t.scenes)))
+    t.motion = mo
+    db.commit()
+    track_changed(track_id, "motion")
+    return {"ok": True}
+
+
+class LookIn(BaseModel):
+    format: str | None = None
+    style: str | None = None
+    grade: str | None = None
+    film: float | None = None
+
+
+@router.put("/tracks/{track_id}/motion/look")
+def save_look(track_id: int, body: LookIn, db: Session = Depends(get_db)) -> dict[str, bool]:
+    """The editor's choice of the video's format, style, grade or film. The graphics are not composed again: the
+    camera, the printing of pictures, the backgrounds and the finish of the format apply at once; compositions made
+    for another format are best regenerated."""
+    t = _track(db, track_id)
+    cat = _catalog()
+    mo = json.loads(json.dumps(t.motion or {}))
+    b = mo.setdefault("brief", {})
+    look = dict(b.get("look") or {"format": "explainer", "style": (mo.get("style") or {"base": "editorial"}), "grade": "none",
+                                  "film": 0.6})
+    if body.format is not None:
+        if body.format not in (cat.get("formats") or {}):
+            raise HTTPException(400, f"Нет подачи «{body.format}»")
+        look["format"] = body.format
+    if body.style is not None:
+        if body.style not in (cat.get("styles") or {}):
+            raise HTTPException(400, f"Нет стиля «{body.style}»")
+        old = look.get("style") or {}
+        look["style"] = old if old.get("base") == body.style else {"base": body.style}
+    if body.grade is not None:
+        if body.grade not in (cat.get("grades") or []):
+            raise HTTPException(400, f"Нет тонировки «{body.grade}»")
+        look["grade"] = body.grade
+    if body.film is not None:
+        look["film"] = round(max(0.0, min(1.0, body.film)), 2)
+    look["by"] = "user"
+    b["look"] = look
+    mo["style"] = motion_brief.style_doc(look)
+    mo["finish"] = motion_brief.finish_of(look, cat)
     t.motion = mo
     db.commit()
     track_changed(track_id, "motion")

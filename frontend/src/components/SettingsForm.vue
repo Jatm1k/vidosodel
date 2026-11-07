@@ -3,6 +3,7 @@
  * Pipeline settings editor shared by channels and projects.
  * Works on a full PipelineSettings object (v-model); the parent decides what to persist.
  */
+import { FORMAT_HINT, FORMAT_LABEL } from '@/api/motionLook'
 import { computed, onMounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import ColorPicker from 'primevue/colorpicker'
@@ -75,6 +76,7 @@ function motionPalette(name: string): string[] {
   return ['bg', 'ink', 'accent', 'accent2', 'accent3'].map((k) => p[k]).filter(Boolean)
 }
 watch(active, (a) => a === 'motion' && loadMotionStyles())
+const motionFormats = computed(() => Object.keys(motionStyles.value?.formats ?? {}))
 function pickMotionStyle(name: string) {
   if (s.value.motion.style !== name) s.value.motion.style_overrides = {}
   s.value.motion.style = name
@@ -937,26 +939,51 @@ onMounted(async () => {
       <!-- ============================== CHAPTER CARDS -->
       <template v-else-if="active === 'motion'">
         <p class="text-ink-3">
-          Инфографику и анимированные вставки сочиняет Claude: приложение само запускает Claude Code по вашей подписке
-          (нужен установленный и авторизованный <code>claude</code>), даёт ему сценарий с таймингами и стиль канала, а свой движок
-          рисует результат прямо в кадры видео. Графика синхронизирована со словами диктора.
+          Инфографику и анимированные вставки сочиняет выбранная LLM по сценарию с таймингами и стилю канала.
+          Движок приложения рисует результат прямо в кадры видео. Графика синхронизирована со словами диктора.
         </p>
         <FormField label="Режим" hint="Акценты — поверх картинок (цифры, карты, подписи). Смешанный — ещё и часть сцен целиком инфографика, картинки для них не рисуются. Весь ролик — только моушн-графика">
           <SelectButton v-model="s.motion.mode" :options="MOTION_MODES" option-label="label" option-value="value" :allow-empty="false" />
         </FormField>
         <template v-if="s.motion.mode !== 'off'">
+          <FormField label="Исполнитель графики" hint="Claude Code работает по подписке (нужен установленный и авторизованный claude). Резервная LLM использует адрес API, ключ и модель из общих настроек приложения">
+            <SelectButton v-model="s.motion.provider" :options="[{ value: 'claude', label: 'Claude Code' }, { value: 'backup', label: 'Резервная LLM' }]"
+                          option-label="label" option-value="value" :allow-empty="false" />
+          </FormField>
+          <p v-if="s.motion.provider === 'backup'" class="text-[13px] text-ink-3">
+            Включите резервную LLM в настройках приложения. API должен поддерживать вызов функций (tool calling),
+            а для визуальной проверки — входные изображения. Запросы оплачиваются по тарифам выбранного сервиса.
+            Модель берётся из общих настроек. Уровень размышлений задаётся выбранным сервисом.
+          </p>
           <FormField v-if="s.motion.mode !== 'full'" label="Оверлеев в минуту" hint="Графика поверх картинок: 1–2 — ненавязчиво, 3+ — плотно">
             <InputNumber v-model="s.motion.overlays_per_minute" :min="0" :max="6" :step="0.5" :min-fraction-digits="0" :max-fraction-digits="1" show-buttons class="w-32" />
           </FormField>
-          <FormField v-if="s.motion.mode === 'mixed'" :label="`Доля моушн-сцен: ${Math.round(s.motion.scene_share * 100)}%`" hint="Claude выберет сцены, которые лучше всего показать графикой (цифры, сравнения, карты, процессы)">
+          <FormField v-if="s.motion.mode === 'mixed'" :label="`Доля моушн-сцен: ${Math.round(s.motion.scene_share * 100)}%`" hint="LLM выберет сцены, которые лучше всего показать графикой (цифры, сравнения, карты, процессы)">
             <Slider v-model="s.motion.scene_share" :min="0.05" :max="0.8" :step="0.05" class="mt-3 w-72" />
           </FormField>
-          <FormField label="Визуальный язык" hint="«Под нишу» — на первом ролике Claude подберёт и настроит стиль под тематику канала и сохранит его: все ролики канала будут в одном стиле">
+          <FormField label="Подача" hint="Как ведёт себя графика и из чего она сделана: камера, ритм, материалы кадра, обработка картинок и всего ролика. «Под ролик» — LLM выбирает подачу под сценарий каждого ролика (и держит канал узнаваемым)">
+            <div class="grid w-full grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-2">
+              <button class="rounded-md border p-2.5 text-left" :class="s.motion.format === 'auto' ? 'border-tally/60 bg-tally/[0.05]' : 'border-line-soft'"
+                      @click="s.motion.format = 'auto'">
+                <span class="font-medium">Под ролик (LLM)</span>
+                <span class="mt-1 block text-[12px] leading-snug text-ink-3">по сценарию, теме и стилю картинок</span>
+              </button>
+              <button v-for="name in motionFormats" :key="name" class="rounded-md border p-2.5 text-left"
+                      :class="s.motion.format === name ? 'border-tally/60 bg-tally/[0.05]' : 'border-line-soft'" @click="s.motion.format = name">
+                <span class="font-medium">{{ FORMAT_LABEL[name] ?? name }}</span>
+                <span class="mt-1 block text-[12px] leading-snug text-ink-3">{{ FORMAT_HINT[name] ?? motionStyles?.formats[name]?.about }}</span>
+              </button>
+            </div>
+          </FormField>
+          <FormField label="Обработка всего ролика" hint="Тонировка и плёнка подачи ложатся на весь ролик — и на картинки, и на графику (сепия и пыль архива, ореол кино-эссе). Субтитры остаются чистыми">
+            <ToggleSwitch v-model="s.motion.finish" class="mt-1.5" />
+          </FormField>
+          <FormField label="Визуальный язык" hint="Палитра, шрифты и фактуры. «Под ролик» — LLM подбирает стиль к подаче каждого ролика, оставаясь близко к прошлым роликам канала. Выбранный стиль закрепляется за каналом">
             <div class="grid w-full grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-2">
               <button class="rounded-md border p-2.5 text-left" :class="s.motion.style === 'auto' ? 'border-tally/60 bg-tally/[0.05]' : 'border-line-soft'"
                       @click="pickMotionStyle('auto')">
-                <span class="font-medium">Под нишу (Claude)</span>
-                <span class="mt-1 block text-[12px] leading-snug text-ink-3">подберёт и запомнит стиль канала</span>
+                <span class="font-medium">Под ролик (LLM)</span>
+                <span class="mt-1 block text-[12px] leading-snug text-ink-3">подберёт стиль к подаче ролика</span>
               </button>
               <button v-for="(st, name) in motionStyles?.styles ?? {}" :key="name" class="rounded-md border p-2.5 text-left"
                       :class="s.motion.style === name ? 'border-tally/60 bg-tally/[0.05]' : 'border-line-soft'" @click="pickMotionStyle(String(name))">
@@ -970,16 +997,16 @@ onMounted(async () => {
               </button>
             </div>
           </FormField>
-          <FormField label="Правила канала для графики" hint="Необязательно. Что действует в каждом ролике: «всегда…», «никогда…». Арт-дирекцию под конкретный ролик Claude пишет сам по его сценарию — она видна и правится в панели моушн-графики">
+          <FormField label="Правила канала для графики" hint="Необязательно. Что действует в каждом ролике: «всегда…», «никогда…». Арт-дирекцию под конкретный ролик LLM пишет сама по его сценарию — она видна и правится в панели моушн-графики">
             <Textarea v-model="s.motion.direction" rows="3" auto-resize class="w-full" placeholder="Например: без черепов и крови; цифры всегда крупно" />
           </FormField>
-          <FormField label="Вырезки на ролик" hint="Персонажи и предметы в стиле картинок канала без фона, которые Claude ставит в моушн-сцены. Каждая — одна генерация основной моделью картинок. 0 — без вырезок">
+          <FormField label="Вырезки на ролик" hint="Персонажи и предметы в стиле картинок канала без фона, которые LLM ставит в моушн-сцены. Каждая — одна генерация основной моделью картинок. 0 — без вырезок">
             <InputNumber v-model="s.motion.cutouts" :min="0" :max="16" show-buttons class="w-32" />
           </FormField>
-          <FormField label="Модель Claude">
+          <FormField v-if="s.motion.provider !== 'backup'" label="Модель Claude">
             <Select v-model="s.motion.model" :options="MOTION_MODELS" option-label="label" option-value="value" class="w-72" />
           </FormField>
-          <FormField label="Глубина размышлений" hint="Низкая тратит меньше всего токенов лимита подписки">
+          <FormField v-if="s.motion.provider !== 'backup'" label="Глубина размышлений" hint="Низкая тратит меньше всего токенов лимита подписки">
             <SelectButton v-model="s.motion.effort" :options="[{ v: 'low', l: 'Низкая' }, { v: 'medium', l: 'Средняя' }, { v: 'high', l: 'Высокая' }]"
                           option-label="l" option-value="v" :allow-empty="false" />
           </FormField>
@@ -989,7 +1016,7 @@ onMounted(async () => {
           <FormField label="Сцен в одной части">
             <InputNumber v-model="s.motion.chunk_scenes" :min="8" :max="80" show-buttons class="w-32" />
           </FormField>
-          <FormField label="Визуальная проверка" hint="Claude смотрит на кадры того, что сделал, и исправляет заметные проблемы (немного больше токенов)">
+          <FormField label="Визуальная проверка" hint="LLM смотрит на кадры того, что сделала, и исправляет заметные проблемы (немного больше токенов). Резервная модель и API должны поддерживать изображения">
             <ToggleSwitch v-model="s.motion.visual_check" class="mt-1.5" />
           </FormField>
         </template>

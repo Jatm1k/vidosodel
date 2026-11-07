@@ -12,10 +12,11 @@ const [cmd, docPath, ...rest] = process.argv.slice(2)
 if (cmd === 'styles') {
   const { STYLES } = await import('./lib/styles.mjs')
   const { FAMILIES, loadFonts } = await import('./lib/fonts.mjs')
+  const { formatCatalog, GRADES } = await import('./lib/formats.mjs')
   loadFonts()
   const out = {}
   for (const [name, s] of Object.entries(STYLES)) out[name] = { about: s.about, palette: s.palette, fonts: Object.fromEntries(Object.entries(s.fonts).map(([k, f]) => [k, `${f.family} ${f.weight}`])), bg: s.bg.kind }
-  process.stdout.write(JSON.stringify({ styles: out, families: [...FAMILIES] }))
+  process.stdout.write(JSON.stringify({ styles: out, families: [...FAMILIES], formats: formatCatalog(), grades: GRADES }))
   process.exit(0)
 }
 const loaded = await loadDoc(docPath)
@@ -69,6 +70,7 @@ if (cmd === 'validate') {
         const boxes = item.rt.boxes()
         res.warnings = checkLayout(boxes, { dur: item.dur, overlay: kind === 'overlays', safeBottom: doc.safeBottom || 0,
                                             cam: Array.isArray(spec.cam) && spec.cam.length > 0 })
+        res.warnings.push(...formatWarnings(spec, loaded.style.format))
         if (item.kind === 'scene') {
           if (item.rt.lateStart) res.warnings.unshift(`пустой кадр в начале: первый элемент появлялся только на ${item.rt.lateStart} с — сцена должна открываться главным образом сразу (at 0–0.3), а детали приходить по фразам`)
           res.sig = signature(boxes, spec)
@@ -131,6 +133,22 @@ function signature(boxes, spec) {
   }
   const types = [...new Set(boxes.map((b) => b.type))].sort()
   return { hero: hero ? hero.type : 'none', zone, types, cam: Array.isArray(spec.cam) && spec.cam.length > 0, bg: spec.bg?.kind ?? spec.bg ?? null }
+}
+
+/** Elements, decor kinds and entrances that break the language of the video's format. */
+function formatWarnings(spec, f) {
+  if (!f || !f.avoid) return []
+  const out = new Set()
+  const walk = (els) => {
+    for (const el of els || []) {
+      if (f.avoid.types?.includes(el.type)) out.add(`${el.type} не из языка подачи «${f.name}» — замените материалом этой подачи`)
+      if (el.type === 'decor' && f.avoid.kinds?.includes(el.kind)) out.add(`decor ${el.kind} не из языка подачи «${f.name}»`)
+      if (el.in && f.avoid.ins?.includes(el.in)) out.add(`вход «${el.in}» не из языка подачи «${f.name}» (${el.type})`)
+      if (el.els) walk(el.els)
+    }
+  }
+  walk(spec.els)
+  return [...out]
 }
 
 function label(ctx, text, x, y) {

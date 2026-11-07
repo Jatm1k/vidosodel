@@ -270,7 +270,7 @@ class PublishSettings(_Base):
 
 
 class MotionSettings(_Base):
-    """Motion graphics and infographics drawn by Claude Code (see :mod:`app.motion`).
+    """Motion graphics composed by Claude Code or the backup LLM (see :mod:`app.motion`).
 
     The app asks Claude itself (``claude -p`` on the user's subscription) to compose the graphics of a video;
     the renderer (Node + Skia, ``backend/motion``) draws them into the frames.
@@ -279,12 +279,17 @@ class MotionSettings(_Base):
     #: ``off``; ``accents`` – graphics over the pictures (numbers, maps, captions); ``mixed`` – also some scenes
     #: become full-screen motion scenes (no picture is generated for them); ``full`` – the whole video is motion.
     mode: Literal["off", "accents", "mixed", "full"] = "off"
+    #: Backup uses the global OpenAI-compatible URL/key/model; Claude settings stay separate.
+    provider: Literal["claude", "backup"] = "claude"
     #: Overlays per minute over picture scenes (``accents`` / ``mixed``).
     overlays_per_minute: float = 1.5
     #: Share of the scenes that become motion scenes in ``mixed`` (Claude picks those that show data best).
     scene_share: float = 0.25
-    #: Visual language (see backend/motion/lib/styles.mjs); ``auto`` – Claude picks and tunes one for the niche
-    #: on the first video and saves it to the channel, so every video of the channel looks related.
+    #: Format – how the graphics behave and what they are made of (backend/motion/lib/formats.mjs: explainer,
+    #: archive, cinematic, data, sketch, collage, interface); ``auto`` – picked for every video by its script.
+    format: str = "auto"
+    #: Look – palette, type, textures (backend/motion/lib/styles.mjs); ``auto`` – picked and tuned for every video
+    #: with its format, keeping the channel recognisable; a name pins the channel's look.
     style: str = "auto"
     #: Token overrides of the style: palette roles, fonts, background, motion character.
     style_overrides: dict[str, Any] = Field(default_factory=dict)
@@ -305,6 +310,9 @@ class MotionSettings(_Base):
     chunk_scenes: int = 28
     #: Claude looks at a contact sheet of what it submitted and fixes visible problems.
     visual_check: bool = True
+    #: The whole video gets the finish of its format in the render: grade, film grain, weave, dust (archive),
+    #: halation (cinematic)… – pictures and graphics alike.
+    finish: bool = True
 
 
 class PipelineSettings(_Base):

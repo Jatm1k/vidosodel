@@ -135,7 +135,7 @@ export const icon = {
 // ------------------------------------------------------------------ image
 export const image = {
   prep(el, env) {
-    const img = env.image(el.src)
+    const img = env.picture(el.src, el.treat)
     if (!img && !/^img\d+$/.test(String(el.src))) throw new Error(`image: src «${el.src}» — нужно img<номер сцены>`)
     const w = +(el.w ?? 800), h = +(el.h ?? (el.w && img ? +el.w * img.height / img.width : 450))
     return { img, w, h }
@@ -168,7 +168,7 @@ export const decor = {
   prep(el) {
     const w = +(el.w ?? 400), h = +(el.h ?? el.w ?? 400)
     const r = rng((el.seed ?? 7) * 97 + w)
-    const n = +(el.n ?? ({ burst: 14, rings: 3, particles: 40, confetti: 60, sparkle: 8 }[el.kind] ?? 20))
+    const n = +(el.n ?? ({ burst: 14, rings: 3, particles: 40, confetti: 60, sparkle: 8, dust: 70, light: 1 }[el.kind] ?? 20))
     const items = Array.from({ length: n }, () => ({ a: r() * Math.PI * 2, d: r(), s: r(), c: Math.floor(r() * 3), x: r(), y: r() }))
     return { w, h, n, items }
   },
@@ -228,6 +228,30 @@ export const decor = {
           ctx.beginPath(); ctx.moveTo(x, y - s); ctx.quadraticCurveTo(x, y, x + s, y); ctx.quadraticCurveTo(x, y, x, y + s)
           ctx.quadraticCurveTo(x, y, x - s, y); ctx.quadraticCurveTo(x, y, x, y - s); ctx.fill()
         }
+        break
+      }
+      case 'dust': { // motes drifting through a beam of light, some out of focus
+        for (const it of items) {
+          const x = ((it.x * w + Math.sin(t * 0.21 + it.a) * 40 + t * 6 * (it.s - 0.4)) % w + w) % w
+          const y = ((it.y * h + Math.cos(t * 0.17 + it.a) * 30 - t * 4 * it.d) % h + h) % h
+          const big = it.s > 0.85
+          const tw = 0.6 + 0.4 * Math.sin(t * (0.6 + it.d) + it.a)
+          const rad = big ? 5 + it.d * 9 : 1 + it.d * 2.2
+          const c = col || [255, 238, 210, 1]
+          const g = ctx.createRadialGradient(x, y, 0, x, y, rad)
+          g.addColorStop(0, css(withAlpha(c, (big ? 0.16 : 0.55) * tw))); g.addColorStop(1, css(withAlpha(c, 0)))
+          ctx.fillStyle = g; ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2)
+        }
+        break
+      }
+      case 'light': { // a soft warm light sweeping slowly across (a window, a projector, a light leak)
+        const u = (t * 0.06 + (st.items[0]?.x ?? 0)) % 1.4 - 0.2
+        const c = col || [255, 196, 130, 1]
+        const cx = w * u, cy = h * 0.35
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.55)
+        g.addColorStop(0, css(withAlpha(c, 0.26))); g.addColorStop(0.5, css(withAlpha(c, 0.08))); g.addColorStop(1, css(withAlpha(c, 0)))
+        ctx.globalCompositeOperation = 'screen'
+        ctx.fillStyle = g; ctx.fillRect(0, 0, w, h)
         break
       }
       default: break

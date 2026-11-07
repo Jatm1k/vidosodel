@@ -130,6 +130,8 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
             safe_bottom=0.8 if subs.enabled and subs.position == "bottom" else 0.0)
         plan.extra["motion_doc"] = doc
         plan.motion_overlays = [[float(o["start"]), float(o["end"])] for o in overlays]
+    if s.motion.mode != "off" and s.motion.finish and isinstance((motion or {}).get("finish"), dict):
+        plan.finish = {**motion["finish"], "seed": look.seed}  # the whole film in the manner of its format
     return plan, look.seed
 
 
