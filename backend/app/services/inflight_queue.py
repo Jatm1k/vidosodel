@@ -214,10 +214,15 @@ def _admit(client, ids):
                 continue
             if row.mode == "im2v" and min(int((usage.get("video") or {}).get("left", 0)), local["video"]) <= 0:
                 continue
-            payload = _resolve(db, row)
-            if payload is None:
+            try:
+                payload = _resolve(db, row)
+                if payload is None:
+                    continue
+                body = wire_payload(row.mode, payload)  # validate/encode before marking anything submitted
+            except (ValueError, RuntimeError, OSError) as exc:
+                # One unusable input (unreadable image, missing previous frame) fails only its own task.
+                row.state, row.error = "failed", str(exc)[:500]
                 continue
-            body = wire_payload(row.mode, payload)  # validate/encode before marking anything submitted
             body["client_ref"] = f"vidosodel-{row.id}"
             chosen.append((row, {"mode": row.mode, "body": body}))
             for p in needs:
