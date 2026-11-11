@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import InputNumber from 'primevue/inputnumber'
 import Textarea from 'primevue/textarea'
 import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
@@ -59,7 +60,7 @@ const channelSettings = ref<PipelineSettings | null>(null)
 const projSettings = ref<PipelineSettings | null>(null)
 const showSettings = ref(false)
 const SECTION_NAMES: Record<string, string> = {
-  voice: 'озвучка', scenes: 'сцены', images: 'изображения', llm: 'тексты', render: 'видео',
+  videos: 'видеоряд', voice: 'озвучка', scenes: 'сцены', images: 'изображения', llm: 'тексты', render: 'видео',
   subtitles: 'субтитры', unique: 'уникализация', publish: 'публикация',
 }
 const overrides = computed(() =>
@@ -67,6 +68,28 @@ const overrides = computed(() =>
     ? ((diffSettings(projSettings.value, channelSettings.value) ?? {}) as Partial<PipelineSettings>)
     : {},
 )
+const composition = ref('channel')
+const compositions = [
+  { value: 'channel', label: 'Как у канала' },
+  { value: 'video', label: 'Только видеоряд' },
+  { value: 'intro', label: 'Видео только в начале' },
+  { value: 'video_motion', label: 'Видеоряд + моушн' },
+  { value: 'video_image', label: 'Видеоряд + картинки' },
+  { value: 'video_image_motion', label: 'Видеоряд + картинки + моушн' },
+]
+watch(composition, (value) => {
+  if (!projSettings.value || !channelSettings.value) return
+  if (value === 'channel') {
+    projSettings.value.videos = JSON.parse(JSON.stringify(channelSettings.value.videos))
+    projSettings.value.motion = JSON.parse(JSON.stringify(channelSettings.value.motion))
+    projSettings.value.images.provider = channelSettings.value.images.provider
+  } else {
+    projSettings.value.images.provider = channelSettings.value.images.provider === 'both' ? 'both' : 'inflight'
+    projSettings.value.videos.mode = value === 'intro' ? 'intro' : value.includes('image') ? 'mixed' : 'full'
+    projSettings.value.videos.share = 0.5
+    projSettings.value.motion.mode = value.includes('motion') ? 'mixed' : 'off'
+  }
+})
 const changedSections = computed(() => Object.keys(overrides.value).map((k) => SECTION_NAMES[k] ?? k))
 const publishEnabled = computed(() => projSettings.value?.publish.enabled ?? true)
 
@@ -90,6 +113,7 @@ watch(visible, async (v) => {
 }, { immediate: true })
 
 function resetSettings() {
+  composition.value = 'channel'
   if (channelSettings.value) projSettings.value = JSON.parse(JSON.stringify(channelSettings.value)) as PipelineSettings
 }
 
@@ -181,6 +205,13 @@ async function create() {
             : 'Каждая версия получает свою раскадровку. Полезно, если видео должны сильнее отличаться.' }}
           Сценарии остальных языков переведутся автоматически, их можно отредактировать.
         </span>
+      </div>
+
+      <div v-if="projSettings" class="flex flex-col gap-2">
+        <label class="text-ink-2">Состав видео</label>
+        <Select v-model="composition" :options="compositions" option-value="value" option-label="label" />
+        <label v-if="composition === 'intro'" class="flex items-center gap-3 text-ink-2">Клипов в начале <InputNumber v-model="projSettings.videos.intro_clips" :min="0" :max-fraction-digits="0" show-buttons class="w-36" /></label>
+        <span class="text-[13px] text-ink-3">Клипы создаются в Inflight. В режиме «Видео только в начале» оставшиеся сцены — картинки. Для смешанного видеоряда — 50% клипов; долю и моушн можно настроить ниже.</span>
       </div>
 
       <div class="flex items-center gap-3 rounded-md border border-line-soft px-4 py-3">

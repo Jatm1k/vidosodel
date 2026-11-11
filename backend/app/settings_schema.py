@@ -55,6 +55,7 @@ class SceneSettings(_Base):
 class ImageSettings(_Base):
     """FastGen image generation."""
 
+    provider: Literal["fastgen", "inflight", "both"] = "fastgen"
     #: Main (quality) model.
     operation: str = "nano_banana_2_image_generate"
     #: How models are distributed over the scenes (see ``pipeline.image_plan``):
@@ -95,6 +96,19 @@ class ImageSettings(_Base):
     #: Ask the LLM to rephrase a prompt rejected by the content filter.
     auto_fix_rejected: bool = True
     max_attempts: int = 3
+
+
+class VideoSettings(_Base):
+    """Generated footage; motion scenes take precedence over footage selection."""
+    mode: Literal["off", "full", "mixed", "intro"] = "off"
+    intro_clips: int = Field(default=5, ge=0)
+    share: float = Field(default=0.5, ge=0, le=1)
+    generation: Literal["auto", "t2v", "i2v", "ref2v", "im2v"] = "auto"
+    aspect_ratio: Literal["16:9", "9:16"] = "16:9"
+    direction: str = "Natural continuous movement, coherent anatomy, cinematic camera movement."
+    references: list[str] = Field(default_factory=list, max_length=10)
+    character_refs: bool = True
+    fit: Literal["loop", "freeze", "stretch"] = "freeze"
 
 
 class LlmSettings(_Base):
@@ -319,6 +333,7 @@ class PipelineSettings(_Base):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     scenes: SceneSettings = Field(default_factory=SceneSettings)
     images: ImageSettings = Field(default_factory=ImageSettings)
+    videos: VideoSettings = Field(default_factory=VideoSettings)
     llm: LlmSettings = Field(default_factory=LlmSettings)
     render: RenderSettings = Field(default_factory=RenderSettings)
     atmosphere: AtmosphereSettings = Field(default_factory=AtmosphereSettings)

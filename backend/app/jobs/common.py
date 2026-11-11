@@ -67,11 +67,21 @@ def scene_image(scene: Scene) -> str | None:
 def scene_to_dict(scene: Scene) -> dict[str, Any]:
     src = scene.source_scene if scene.source_scene_id else None
     image = src.image_file if src is not None else scene.image_file
+    source = src or scene
+    poster = (source.video_meta or {}).get("poster_file") or image
     return {
         "id": scene.id, "idx": scene.idx, "start": round(scene.start, 3), "end": round(scene.end, 3),
         "text": scene.text, "prompt": src.prompt if src is not None else scene.prompt,
         "prompt_locked": scene.prompt_locked,
         "image_url": media_url(image),
+        "image_file": image,
+        "video_file": (src or scene).video_file,
+        "video_url": media_url((src or scene).video_file),
+        "poster_url": media_url(poster),
+        "video_status": (src or scene).video_status or "none",
+        "video_error": (src or scene).video_error,
+        "video_meta": (src or scene).video_meta or {},
+        "video_plan": (src or scene).video_plan or {},
         "image_status": src.image_status if src is not None else scene.image_status,
         "image_error": scene.image_error, "image_meta": scene.image_meta or {},
         "source_scene_id": scene.source_scene_id, "overrides": scene.overrides or {},

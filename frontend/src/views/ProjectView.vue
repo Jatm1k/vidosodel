@@ -24,6 +24,7 @@ import StoryboardPanel from '@/components/panels/StoryboardPanel.vue'
 import VideoPanel from '@/components/panels/VideoPanel.vue'
 import PublishPanel from '@/components/panels/PublishPanel.vue'
 import MotionPanel from '@/components/panels/MotionPanel.vue'
+import FootagePanel from '@/components/panels/FootagePanel.vue'
 
 const props = defineProps<{ id: number }>()
 const router = useRouter()
@@ -95,11 +96,11 @@ onMounted(async () => {
 onUnmounted(() => off?.())
 
 // ------------------------------------------------------------------ storyboard tabs
-type BoardTab = 'scenes' | 'motion'
+type BoardTab = 'scenes' | 'motion' | 'footage'
 const boardTab = ref<BoardTab>(readBoardTab())
 function readBoardTab(): BoardTab {
   try {
-    return localStorage.getItem('vidosodel.boardTab') === 'motion' ? 'motion' : 'scenes'
+    const saved = localStorage.getItem('vidosodel.boardTab'); return saved === 'motion' || saved === 'footage' ? saved : 'scenes'
   } catch {
     return 'scenes'
   }
@@ -119,6 +120,7 @@ const boardTabs = computed(() => {
   return [
     { id: 'scenes' as const, label: 'Сцены и картинки', icon: 'pi-images', count: t?.scene_stats.total || 0,
       running: busy(['scenes', 'characters', 'prompts', 'images', 'watermarks']) },
+    { id: 'footage' as const, label: 'Видеоряд', icon: 'pi-video', count: t?.scene_stats.total || 0, running: busy(['videos']) },
     { id: 'motion' as const, label: 'Моушн-графика', icon: 'pi-chart-bar', count: (mo?.scenes ?? 0) + (mo?.overlays ?? 0),
       running: busy(['motion']) },
   ]
@@ -164,7 +166,8 @@ const STEPS = [
   { id: 'characters', label: 'Персонажи', hint: 'если включены референсы' },
   { id: 'prompts', label: 'Промпты' },
   { id: 'images', label: 'Картинки' },
-  { id: 'render', label: 'Видео' },
+  { id: 'videos', label: 'Генерация видеоряда', hint: 'по настройкам проекта и сцен' },
+  { id: 'render', label: 'Сборка видео' },
   { id: 'metadata', label: 'Название, описание, теги' },
   { id: 'thumbnails', label: 'Обложки' },
 ]
@@ -415,6 +418,7 @@ const hasOverrides = computed(() => !!project.value && Object.keys(project.value
             </button>
           </div>
           <StoryboardPanel v-if="boardTab === 'scenes'" :key="`b${track.id}`" :track="track" :project="project" @changed="reload" />
+          <FootagePanel v-else-if="boardTab === 'footage'" :key="`f${track.id}`" :track="track" :project="project" @changed="reload" />
           <MotionPanel v-else :key="`m${track.id}`" :track="track" :project="project" @changed="reload" />
         </template>
         <VideoPanel v-else-if="stage === 'video'" :key="`r${track.id}`" :track="track" :project="project" @open-settings="openSettings" />

@@ -300,6 +300,8 @@ class BudgetLimiter:
                         self._reserved += amount
                         return
                     if used + amount <= budget:  # only threads are busy – they free up quickly
+                        if not wait:
+                            raise LimitReached()
                         self._cond.wait(timeout=2.0)
                         if self._waited_long_for_threads():
                             usage_sync.refresh(max_age=_SYNC_INTERVAL_BUSY)

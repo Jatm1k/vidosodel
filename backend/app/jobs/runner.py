@@ -119,7 +119,7 @@ def kind_title(kind: str) -> str:
 def _lane_limits() -> dict[str, int]:
     cfg = load_config()
     return {"llm": 3, "prompts": 1, "voice": max(1, cfg.lumean_parallel_orders), "images": 1,
-            "images_few": 3, "characters": 1, "render": max(1, cfg.parallel_renders), "preview": 1, "misc": 4, "motion": 1}
+            "images_few": 3, "characters": 1, "render": max(1, cfg.parallel_renders), "preview": 1, "misc": 4, "motion": 1, "footage": 1}
 
 
 def _job_lane(kind: str, params: dict[str, Any] | None) -> str:
@@ -331,6 +331,9 @@ class JobRunner:
                 data = None
         if data:
             bus.publish({"type": "job", "job": data})
+        if ctx.track_id and ctx.kind in ("images", "videos"):
+            from ..services.media_reconcile import reconcile_idle_media
+            reconcile_idle_media(ctx.track_id)
         if ctx.track_id:
             bus.publish({"type": "track", "track_id": ctx.track_id, "what": ctx.kind})
         if status in ("failed", "cancelled"):

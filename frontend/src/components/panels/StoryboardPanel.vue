@@ -39,7 +39,7 @@ const bible = ref(props.project.visual_context)
 
 const shares = computed(() => props.track.shares_images)
 /** Character references are on: the cast is shown and scenes list who is in them. */
-const cast = computed(() => (props.project.effective_settings.images.character_refs ? props.project.characters : []))
+const cast = computed(() => ((props.project.effective_settings.images.character_refs || props.project.effective_settings.videos.character_refs && props.project.effective_settings.videos.mode !== 'off') ? props.project.characters : []))
 const stats = computed(() => props.track.scene_stats)
 const master = computed(() => props.project.tracks.find((t) => t.is_master))
 /** Drawn as motion graphics (written or planned): needs neither a prompt nor a picture. */
@@ -153,7 +153,7 @@ const imageItems = computed(() => [
     command: () =>
       confirm.require({
         header: 'Перегенерировать все картинки?',
-        message: `Это ≈ ${trackPlan.value?.credits ?? '?'} кредитов FastGen (${planModels.value}). Готовые картинки будут заменены.`,
+        message: props.project.effective_settings.images.provider === 'both' ? 'Сцены распределятся между FastGen и Inflight по доступным лимитам. Расход FastGen зависит от его доли сцен; Inflight использует суточную квоту. Готовые картинки будут заменены.' : props.project.effective_settings.images.provider === 'inflight' ? 'Будет использована суточная квота картинок Inflight. Готовые картинки будут заменены.' : `Это ≈ ${trackPlan.value?.credits ?? '?'} кредитов FastGen (${planModels.value}). Готовые картинки будут заменены.`,
         acceptLabel: 'Перегенерировать',
         rejectLabel: 'Отмена',
         rejectProps: { severity: 'secondary', text: true },
@@ -256,8 +256,8 @@ onUnmounted(() => {
       <template v-if="scenes.length">
         <span class="tnum text-[13px] text-ink-3">
           {{ stats.total }} {{ plural(stats.total, ['сцена', 'сцены', 'сцен']) }}
-          <template v-if="!shares"> · промпты {{ stats.prompts }}/{{ stats.total }} · картинки {{ stats.images }}/{{ stats.total }}</template>
-          <template v-if="!shares && missingImages && trackPlan"> · нужно ≈ {{ trackPlan.remaining_credits }} кр.</template>
+          <template v-if="!shares"> · промпты {{ stats.prompts }}/{{ stats.total }} · картинки {{ stats.image_files }}/{{ stats.image_total }}</template>
+          <template v-if="!shares && missingImages && trackPlan && project.effective_settings.images.provider === 'fastgen'"> · нужно ≈ {{ trackPlan.remaining_credits }} кр.</template>
         </span>
         <a :href="`/api/tracks/${track.id}/download/images`" class="p-button p-button-secondary p-button-text p-button-sm" v-tooltip.top="'Скачать все картинки ZIP-архивом'">
           <i class="pi pi-download text-xs" />
@@ -266,7 +266,7 @@ onUnmounted(() => {
     </div>
 
     <div
-      v-if="!shares && plan && trackPlan?.scenes && Object.keys(trackPlan.by_operation).length > 1"
+      v-if="project.effective_settings.images.provider === 'fastgen' && !shares && plan && trackPlan?.scenes && Object.keys(trackPlan.by_operation).length > 1"
       class="flex flex-wrap items-baseline gap-x-2 rounded-md border border-line-soft bg-panel px-4 py-2.5 text-[13px] text-ink-2"
     >
       <i class="pi pi-images text-[12px] text-ink-3" />

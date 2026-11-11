@@ -73,8 +73,6 @@ _models_cache: tuple[list[str], float] = ([], 0.0)
 class FastgenClient:
     def __init__(self, api_key: str | None = None):
         key = api_key if api_key is not None else load_config().fastgen_api_key
-        if not key:
-            raise ApiError("FastGen", 401, "не задан API-ключ FastGen (Настройки → Ключи API)")
         self._key = key
         self._client = httpx.Client(
             base_url=get_settings().fastgen_base_url,
@@ -92,6 +90,8 @@ class FastgenClient:
         self.close()
 
     def _req(self, method: str, path: str, **kw: Any) -> Any:
+        if not self._key:
+            raise ApiError("FastGen", 401, "не задан API-ключ FastGen (Настройки → Ключи API)")
         return request_json(self._client, "FastGen", method, path, **kw)
 
     # ------------------------------------------------------------------ account
@@ -102,9 +102,9 @@ class FastgenClient:
         return self._req("GET", "/v1/models").get("data", [])
 
     # ------------------------------------------------------------- generations
-    def start(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def start(self, payload: dict[str, Any], *, attempts: int = 5) -> dict[str, Any]:
         # 429 is not retried here: the caller holds a budget slot and waits via the limiter instead.
-        return self._req("POST", "/api/v6/generations", json=payload, retry_429=False)
+        return self._req("POST", "/api/v6/generations", json=payload, retry_429=False, attempts=attempts)
 
     def status(self, generation_id: str) -> dict[str, Any]:
         return self._req("GET", f"/api/v6/generations/{generation_id}")
@@ -155,7 +155,12 @@ class FastgenClient:
         accepted = self.start(payload)
         if on_started:
             on_started(accepted)
-        result = self.wait(accepted["id"], should_stop=should_stop)
+        return self.finish_image(accepted["id"], dest, operation=operation, should_stop=should_stop)
+
+    def finish_image(self, generation_id: str, dest: Path, *, operation: str,
+                     should_stop: Any = None) -> dict[str, Any]:
+        """Download an already accepted image without submitting another generation."""
+        result = self.wait(generation_id, should_stop=should_stop)
         item = next((r for r in result.get("results", []) if r.get("type") == "image"), None)
         if not item:
             raise GenerationFailed("FastGen", 200, "в ответе нет изображения", {})
@@ -165,7 +170,7 @@ class FastgenClient:
             dest.write_bytes(base64.b64decode(item["data"].split(",", 1)[-1]))
         else:
             raise GenerationFailed("FastGen", 200, "в ответе нет данных изображения", {})
-        return {"generation_id": accepted["id"], "operation": operation,
+        return {"generation_id": generation_id, "operation": operation,
                 "credits": (result.get("usage") or {}).get("credits")}
 
     def transcribe(self, audio_data_uri: str, *, language: str | None = None,
@@ -197,6 +202,15 @@ class FastgenClient:
         from .limiter import LimitReached, check_cancelled  # noqa: PLC0415 – import cycle
         from .llm_fallback import backup_llm, backup_usage, is_fastgen_stub  # noqa: PLC0415
 
+        if not self._key:
+            backup = backup_llm()
+            if backup is None:
+                raise ApiError("LLM", 401, "Настройте резервную LLM или ключ FastGen для написания промптов")
+            with backup:
+                text = backup.chat(messages, temperature=temperature, max_tokens=max_tokens)
+            check_cancelled()
+            backup_usage.note("FastGen не настроен")
+            return text
         spare = self._spare_model(model)
         models = [model] + ([spare] if spare else [])
         backup = backup_llm()

@@ -29,24 +29,31 @@ def channel_to_dict(db: Session, ch: Channel) -> dict[str, Any]:
 
 
 def _scene_stats(db: Session, track: Track) -> dict[str, int]:
-    rows = db.execute(
-        select(Scene.image_status, Scene.prompt != "", Scene.source_scene_id.isnot(None), func.count())
-        .where(Scene.track_id == track.id)
-        .group_by(Scene.image_status, Scene.prompt != "", Scene.source_scene_id.isnot(None))
-    ).all()
-    stats = {"total": 0, "prompts": 0, "images": 0, "failed": 0, "generating": 0, "shared": 0}
-    for status, has_prompt, shared, n in rows:
-        stats["total"] += n
-        if has_prompt:
-            stats["prompts"] += n
-        if shared:
-            stats["shared"] += n
-        if status == "done":
-            stats["images"] += n
+    from ..pipeline.footage import wants_video, uses_first_frame, scene_first_frame
+    eff = effective_settings(track.project.channel.settings, track.project.settings)
+    stats = {"total": 0, "prompts": 0, "images": 0, "videos": 0, "image_files": 0, "image_total": 0,
+             "video_total": 0, "failed": 0, "generating": 0, "shared": 0}
+    motion = motion_store.motion_scene_idxs(track.motion)
+    for scene in track.scenes:
+        source = scene.source_scene if scene.source_scene_id and scene.source_scene else scene
+        stats["total"] += 1
+        stats["prompts"] += bool(source.prompt)
+        stats["shared"] += bool(scene.source_scene_id)
+        video = wants_video(source, eff)
+        if scene.idx not in motion:
+            image_needed = not video or uses_first_frame(source, eff)
+            stats["image_total"] += image_needed
+            stats["image_files"] += bool(scene_first_frame(source)) if image_needed else 0
+            stats["video_total"] += video
+        status = source.video_status if video else source.image_status
+        file = source.video_file if video else source.image_file
+        stats["videos"] += bool(source.video_file)
+        if status == "done" and file:
+            stats["images"] += 1  # total ready visual scenes, including footage
         elif status == "failed":
-            stats["failed"] += n
+            stats["failed"] += 1
         elif status in ("queued", "generating"):
-            stats["generating"] += n
+            stats["generating"] += 1
     return stats
 
 

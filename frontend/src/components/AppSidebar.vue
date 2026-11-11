@@ -24,6 +24,10 @@ const budgetPct = computed(() => (budget.value ? Math.min(100, (budget.value.use
 const tokens = computed(() => store.status?.llm)
 const tokensPct = computed(() => (tokens.value ? Math.min(100, (tokens.value.used / tokens.value.budget) * 100) : 0))
 const backup = computed(() => store.status?.llm_fallback)
+const inflight = computed(() => store.status?.inflight)
+const inflightPools = computed(() => inflight.value ? [
+  { label: 'Видео', ...inflight.value.video }, { label: 'Картинки', ...inflight.value.image },
+] : [])
 const thousands = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)} тыс.` : String(n))
 
 // FastGen zeroes its counters at the top of every hour; tick locally so the countdown stays live between polls.
@@ -123,7 +127,7 @@ async function createChannel() {
       </button>
     </div>
 
-    <div class="border-t border-line-soft px-5 py-4">
+    <div class="max-h-[55vh] overflow-y-auto border-t border-line-soft px-5 py-4">
       <div v-if="budget" class="mb-3">
         <div class="mb-1.5 flex items-baseline justify-between text-xs">
           <span class="text-ink-3">FastGen за час</span>
@@ -143,6 +147,28 @@ async function createChannel() {
         <div v-if="budget.used" class="mt-0.5 text-xs" :class="budget.used >= budget.budget ? 'text-bad' : 'text-ink-3'">
           {{ budget.used >= budget.budget ? 'Исчерпан до' : 'Сброс в' }} {{ resetLabel(budget.reset_at) }}
         </div>
+      </div>
+      <div v-if="inflight" class="mb-3 border-t border-line-soft pt-3">
+        <div class="mb-2 flex items-baseline justify-between text-xs">
+          <span class="text-ink-3">Inflight за сутки</span>
+          <span v-if="inflight.stale" class="text-tally" :title="inflight.error || 'Обновление квоты'">{{ inflight.updated_at ? 'нет свежих данных' : 'обновление…' }}</span>
+        </div>
+        <div v-for="pool in inflightPools" :key="pool.label" class="mb-2">
+          <div class="mb-1 flex items-baseline justify-between text-xs">
+            <span class="text-ink-3">{{ pool.label }} · осталось</span>
+            <span class="tnum text-ink-2">{{ pool.remaining ?? '—' }} / {{ pool.budget }}</span>
+          </div>
+          <div class="h-1.5 overflow-hidden rounded-full bg-raised">
+            <div class="h-full rounded-full transition-all" :class="pool.remaining === 0 ? 'bg-bad' : 'bg-ink-3'" :style="{width: `${pool.used == null ? 0 : Math.min(100, pool.used / pool.budget * 100)}%`}" />
+          </div>
+        </div>
+        <div v-if="inflight.plan === 'parallel'" class="text-xs text-ink-3">
+          Потоки: видео <span class="tnum">{{ inflight.video.active }}/{{ inflight.video.slots }}</span> · картинки <span class="tnum">{{ inflight.image.active }}/{{ inflight.image.slots }}</span>
+        </div>
+        <div v-else class="text-xs text-ink-3">Общих потоков занято: <span class="tnum">{{ inflight.active }}/{{ inflight.threads }}</span></div>
+        <div class="mt-0.5 text-xs text-ink-3">Сброс в {{ resetLabel(inflight.reset_at) }}</div>
+        <div v-if="inflight.expired" class="mt-1 text-xs text-bad">Тариф истёк</div>
+        <div v-if="inflight.error || inflight.warning" class="mt-1 text-xs text-tally" :title="inflight.error || inflight.warning">{{ inflight.error || inflight.warning }}</div>
       </div>
       <div v-if="tokens" class="mb-3">
         <div class="mb-1.5 flex items-baseline justify-between text-xs">

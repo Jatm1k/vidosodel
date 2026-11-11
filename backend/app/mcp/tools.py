@@ -668,6 +668,8 @@ def get_scenes(a: EpisodeIdIn) -> dict[str, Any]:
                 "characters": [by_id[i].name for i in ids if i in by_id and by_id[i].kind != "location"],
                 "location": next((by_id[i].name for i in ids if i in by_id and by_id[i].kind == "location"), None),
                 "continuity": s.continuity, "image_status": s.image_status, "image_error": s.image_error,
+                "video_status": s.video_status, "video_error": s.video_error,
+                "video_path": str(to_abs(s.video_file)) if s.video_file else None, "media": s.overrides or {},
             })
         return {"scenes": out}
 
@@ -678,6 +680,9 @@ class SceneEdit(BaseModel):
                                                  "её дают референсы; опишите действие, позу, эмоцию, план)")
     characters: list[str] | None = Field(None, description="Кто в кадре (имена, до 3)")
     location: str | None = Field(None, description="Локация (имя); пустая строка — без локации")
+    media_type: Literal["auto", "image", "video"] | None = None
+    video_mode: Literal["inherit", "auto", "t2v", "i2v", "ref2v", "im2v"] | None = None
+    video_prompt: str | None = Field(None, max_length=5800)
     continue_previous: str | None = Field(None, description="Продолжить предыдущий кадр: что меняется "
                                                             "(по-английски); пустая строка — новый кадр")
 
@@ -698,6 +703,9 @@ def update_scenes(a: UpdateScenesIn) -> dict[str, Any]:
             s = scenes.get(e.id)
             if s is None:
                 raise ToolError(f"Сцена #{e.id} не из этой серии")
+            changes = {k: getattr(e, k) for k in ("media_type", "video_mode", "video_prompt") if getattr(e, k) is not None}
+            if changes:
+                s.overrides = {**(s.overrides or {}), **changes}
             if e.prompt is not None:
                 s.prompt, s.prompt_locked = e.prompt.strip(), True
             ids = list(s.characters or [])
@@ -745,6 +753,32 @@ def generate_images(a: SceneIdsIn) -> dict[str, Any]:
     with session_scope() as db:
         p = ops.get_episode(db, a.episode_id)
         return {"job_id": ops.start_episode_job(db, p, "images", {"scene_ids": a.scene_ids, "force": a.force})}
+
+
+@tool("write_video_prompts", "Режиссура и промпты клипов", SceneIdsIn)
+def write_video_prompts(a: SceneIdsIn) -> dict[str, Any]:
+    """Написать и проверить видеопромпты без отправки генераций Inflight.
+    Учитываются стиль канала, визуальная библия, соседи, режим и первые кадры/референсы.
+    Ручной video_prompt не перезаписывается даже с force."""
+    with session_scope() as db:
+        p = ops.get_episode(db, a.episode_id)
+        allowed = {s.id for s in ops.episode_track(p).scenes}
+        if not set(a.scene_ids) <= allowed:
+            raise ToolError("Сцены не принадлежат этой серии")
+        return {"job_id": ops.start_episode_job(db, p, "video_prompts", {"scene_ids": a.scene_ids, "force": a.force})}
+
+
+@tool("generate_videos", "Сгенерировать видеоряд", SceneIdsIn)
+def generate_videos(a: SceneIdsIn) -> dict[str, Any]:
+    """Создать клипы Inflight: t2v/i2v/ref2v/im2v по videos.generation и переопределениям сцен.
+    Выбранные scene_ids становятся видеосценами. Пустой список — только недостающие по плану.
+    Возвращает job_id; принятые задания возобновляются после перезапуска без новой оплаты."""
+    with session_scope() as db:
+        p = ops.get_episode(db, a.episode_id)
+        allowed = {s.id for s in ops.episode_track(p).scenes}
+        if not set(a.scene_ids) <= allowed:
+            raise ToolError("Сцены не принадлежат этой серии")
+        return {"job_id": ops.start_episode_job(db, p, "videos", {"scene_ids": a.scene_ids, "force": a.force})}
 
 
 class RenderIn(BaseModel):
@@ -1095,7 +1129,7 @@ def mark_episode(a: MarkIn) -> dict[str, Any]:
 
 
 # ===================================================================== settings
-SETTINGS_SECTIONS = ("voice", "scenes", "images", "llm", "render", "atmosphere", "subtitles", "chapters",
+SETTINGS_SECTIONS = ("voice", "scenes", "images", "videos", "llm", "render", "atmosphere", "subtitles", "chapters",
                      "unique", "publish")
 
 

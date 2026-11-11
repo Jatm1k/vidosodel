@@ -25,6 +25,7 @@ class Settings(BaseSettings):
         env_file=ROOT_DIR / ".env", env_file_encoding="utf-8", extra="ignore"
     )
 
+    inflight_api_key: str = ""
     lumean_api_key: str = ""
     fastgen_api_key: str = ""
 

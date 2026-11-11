@@ -27,7 +27,9 @@ from typing import Any
 
 from ..models import Project, Scene, Track
 from ..services.fastgen import IMAGE_OPS_BY_ID, image_credits
-from ..settings_schema import ImageSettings
+from ..settings_schema import ImageSettings, effective_settings
+from .footage import wants_video, wants_still
+from ..motion.store import motion_scene_idxs
 from .characters import accepts_refs, scene_character_ids
 
 
@@ -60,7 +62,9 @@ def plan_project(project: Project, images: ImageSettings, hourly_budget: int) ->
     cost = lambda op: image_credits(op, images.upscale_2x)  # noqa: E731
     strategy = images.model_strategy if premium != economy else "single"
     tracks = generating_tracks(project)
-    scenes_by_track = {t.id: sorted(t.scenes, key=lambda s: s.idx) for t in tracks}
+    settings = effective_settings(project.channel.settings, project.settings)
+    scenes_by_track = {t.id: sorted((s for s in t.scenes if s.idx not in motion_scene_idxs(t.motion)
+                                   and (wants_still(s, settings) if images.provider == "both" else not wants_video(s, settings))), key=lambda s: s.idx) for t in tracks}
     plan = ImagePlan(budget=images.budget_credits or hourly_budget)
 
     cast = list(project.characters) if images.character_refs else []

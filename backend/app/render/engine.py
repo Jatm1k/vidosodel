@@ -69,6 +69,10 @@ class PlanScene:
     span: list[float] | None = None
     #: Id of a full-screen motion scene of :attr:`RenderPlan.motion_doc` drawn instead of ``image``.
     motion: str | None = None
+    video: str | None = None
+    clip_fit: str = "freeze"
+    clip_start: float = 0.0
+    clip_speed: float = 1.0
 
 
 @dataclass
@@ -144,6 +148,8 @@ class FrameRenderer:
         self.accents = (AccentRenderer(ax["items"], plan.width, plan.height, ax.get("color", ""), ax.get("font", ""),
                                        int(ax.get("variant", 0)), float(ax.get("center_y", 0.42)),
                                        float(ax.get("safe_bottom", 0.86))) if ax.get("items") else None)
+        from .footage import FootageReader
+        self._footage = FootageReader(plan.width, plan.height)
         self._motion = None  # frame server of the motion graphics, started on first use
         self._ov = sorted((float(a), float(b)) for a, b in plan.motion_overlays)
         self._starts = [s.start for s in plan.scenes]
@@ -198,6 +204,7 @@ class FrameRenderer:
         return self._motion
 
     def close(self) -> None:
+        self._footage.close()
         if self._motion is not None:
             self._motion.close()
             self._motion = None
@@ -210,6 +217,9 @@ class FrameRenderer:
         s = self.plan.scenes[idx]
         if s.motion:
             return self.motion_client().scene(s.motion, t - s.start)
+        if s.video:
+            return self._footage.frame(s.video, t - s.start, s.end - s.start,
+                                       fit=s.clip_fit, offset=s.clip_start, speed=s.clip_speed)
         a, b = self._window[idx]
         u = (t - a) / max(0.1, b - a)
         lp = self.look.p

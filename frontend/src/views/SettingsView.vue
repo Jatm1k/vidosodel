@@ -62,12 +62,13 @@ async function save() {
 }
 
 const KEY_LABELS = {
+  inflight: 'Inflight — генерация видео и изображений',
   lumean: 'Lumean — озвучка',
   fastgen: 'FastGen — изображения, тексты, распознавание речи',
   youtube: 'YouTube Data API — исследование ниши для упаковки',
 } as const
 
-async function check(service: 'lumean' | 'fastgen' | 'llm_fallback' | 'gemini' | 'youtube') {
+async function check(service: 'inflight' | 'lumean' | 'fastgen' | 'llm_fallback' | 'gemini' | 'youtube') {
   await save()
   checks.value[service] = 'pending'
   const result = await api.post<{ ok: boolean; error?: string; details?: string[]; models?: string[] }>(
@@ -87,11 +88,22 @@ async function check(service: 'lumean' | 'fastgen' | 'llm_fallback' | 'gemini' |
     <p class="mt-1 text-ink-3">Общие для всех каналов. Голос, стиль и монтаж задаются в настройках каждого канала.</p>
 
     <form v-if="cfg" class="mt-8 flex flex-col gap-10" @submit.prevent="save">
+      <section class="rounded-xl border border-line p-5">
+        <h2 class="font-semibold">Inflight: лимиты генерации</h2>
+        <p class="my-3 text-sm text-ink-3">До 1000 видео и 1000 картинок за сутки UTC. Очередь ждёт сброса квоты; серверные ограничения учитываются дополнительно.</p>
+        <label class="block">Адрес API <InputText v-model="cfg.inflight_base_url" class="w-full" /></label>
+        <div class="mt-4 flex flex-wrap gap-4">
+          <label>Потоки на пул <InputNumber v-model="cfg.inflight_threads" :min="1" :max="12" show-buttons /></label>
+          <label>Видео/сутки <InputNumber v-model="cfg.inflight_video_daily" :min="1" :max="1000" /></label>
+          <label>Картинки/сутки <InputNumber v-model="cfg.inflight_image_daily" :min="1" :max="1000" /></label>
+        </div>
+        <p class="mt-3 text-sm text-ink-3">На тарифе parallel картинки и видео используют отдельные пулы потоков. На chain лимит общий. FastGen работает независимо.</p>
+      </section>
       <section>
         <h2 class="text-base font-semibold">Ключи API</h2>
         <p class="mt-1 text-[13px] text-ink-3">Хранятся локально в базе приложения. Ключи из файла .env используются, если здесь пусто.</p>
         <div class="mt-4 flex flex-col gap-5">
-          <div v-for="svc in (['lumean', 'fastgen', 'youtube'] as const)" :key="svc" class="flex flex-col gap-1.5">
+          <div v-for="svc in (['inflight', 'lumean', 'fastgen', 'youtube'] as const)" :key="svc" class="flex flex-col gap-1.5">
             <label :for="`key-${svc}`" class="text-ink-2">
               {{ KEY_LABELS[svc] }}
             </label>

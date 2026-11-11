@@ -214,6 +214,12 @@ class Scene(Base):
     image_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
+    video_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    video_status: Mapped[str] = mapped_column(String(20), default="none")
+    video_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    video_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    video_plan: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
     #: In ``shared`` image mode a non-master scene borrows the image of this scene.
     source_scene_id: Mapped[int | None] = mapped_column(
         ForeignKey("scenes.id", ondelete="SET NULL"), nullable=True
@@ -455,3 +461,22 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[Any] = mapped_column(JSON)
+
+
+class MediaGeneration(TimestampMixin, Base):
+    """Durable media ledger for Inflight and shared image jobs; no base64 or API keys."""
+    __tablename__ = "media_generations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner: Mapped[str] = mapped_column(String(200), index=True)
+    account: Mapped[str] = mapped_column(String(64), index=True)
+    provider: Mapped[str] = mapped_column(String(20), default="inflight", index=True)
+    kind: Mapped[str] = mapped_column(String(10))
+    mode: Mapped[str] = mapped_column(String(12))
+    state: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    remote_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)

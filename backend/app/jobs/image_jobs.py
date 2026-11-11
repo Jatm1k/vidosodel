@@ -19,12 +19,14 @@ from ..models import Character, Job, Project, Scene, Track
 from ..pipeline import characters as chars
 from ..pipeline import llm_tasks, packaging
 from ..pipeline.image_plan import plan_project
+from ..pipeline.footage import wants_video
 from ..render import thumb_text
 from ..render.media import imread, imwrite, make_thumbnail, remove_watermark, repair_overcorrected
 from ..services.fastgen import IMAGE_OPS_BY_ID, FastgenClient, GenerationFailed, image_credits
 from ..services.http import ApiError
 from ..services.limiter import Cancelled, is_limit_error, limiter
 from ..settings_schema import ImageSettings, LlmSettings
+from ..settings_store import load_config
 from ..storage import to_abs, to_rel, track_dir, unique_name
 from .common import load_track, scene_to_dict
 from .events import scene_changed, track_changed
@@ -83,6 +85,16 @@ def generate_one(
 
     ``note`` is put before the prompt (e.g. which reference image shows which character).
     """
+    provider = images.provider
+    if provider == "both":
+        cfg = load_config()
+        compatible = len(refs) <= 6 and (not refs or bool(IMAGE_OPS_BY_ID.get(operation or images.operation, {}).get("refs")))
+        state = limiter.status() if cfg.fastgen_api_key and compatible else {}
+        fg_free = cfg.fastgen_api_key and compatible and state.get("used", 0) < state.get("budget", 0) and state.get("active", 0) < state.get("threads", 1)
+        provider = "fastgen" if fg_free or not cfg.inflight_api_key and compatible else "inflight"
+    if provider == "inflight":
+        from .inflight_images import generate_image
+        return generate_image(prompt, dest_dir, stem, images, refs, ctx, note, aspect_ratio)
     operation = operation or images.operation
     credits = image_credits(operation, images.upscale_2x)
     attempts = max(1, images.max_attempts)
@@ -152,8 +164,15 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
     ``follow_overwrite`` – that job rewrites existing prompts, so a scene waits
     for its new prompt (or for the prompts job to end).
     """
+    with session_scope() as db:
+        tc = load_track(db, ctx.track_id)
+        use_inflight = tc.settings.images.provider in ("inflight", "both")
+    if use_inflight:
+        from .footage_jobs import generate_scenes
+        return generate_scenes(ctx, False)
     only_ids = set(ctx.params.get("scene_ids") or [])
-    force = bool(ctx.params.get("force"))
+    force = bool(ctx.params.get("force")) and not ctx.params.get("missing_only")
+    retry_failed = bool(ctx.params.get("retry_failed"))
     follow = ctx.params.get("follow")
     missing_only = bool(ctx.params.get("missing_only"))
     with session_scope() as db:
@@ -162,7 +181,7 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             raise JobError("Этот язык использует картинки основного языка — генерируйте их там.")
         motion_idxs = motion_store.motion_scene_idxs(tc.track.motion)  # motion scenes need no picture
         wanted = {s.id for s in tc.track.scenes if (s.id in only_ids) or
-                  (not only_ids and s.idx not in motion_idxs and (force or s.image_status != "done" or not s.image_file))}
+                  (not only_ids and s.idx not in motion_idxs and not wants_video(s, tc.settings) and (force or s.image_status != "done" or not s.image_file))}
         stale = ({s.id: s.prompt for s in tc.track.scenes
                   if s.id in wanted and s.prompt.strip() and not s.prompt_locked}
                  if follow and ctx.params.get("follow_overwrite") else {})
@@ -205,7 +224,8 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
                      and (final or s.id not in stale or s.prompt != stale[s.id])
                      # «missing_only»: another job may have drawn it meanwhile – never pay for a picture twice
                      and not ((missing_only or (not force and not only_ids))
-                              and (s.image_file or s.image_status in ("queued", "generating")))]
+                              and ((s.image_file and not (retry_failed and s.image_status == "failed"))
+                                   or s.image_status in ("queued", "generating")))]
             if not ready:
                 return []
             plan = plan_project(track.project, images, limiter.hourly_budget())
@@ -339,7 +359,7 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
             with session_scope() as db:
                 sc = db.get(Scene, scene_id)
                 if sc:
-                    sc.image_status = "failed" if not sc.image_file else "done"
+                    sc.image_status = "failed"
                     sc.image_error = str(exc)[:500]
                     scene_changed(track_id, scene_to_dict(sc))
             with lock:
@@ -451,12 +471,12 @@ def job_status(job_id: int) -> str | None:
 
 
 # ------------------------------------------------------------------------ thumbnails
-def _cover_refs(cast: list[tuple[str, str, str | None, str]], operation: str) -> tuple[list[Any], str]:
+def _cover_refs(cast: list[tuple[str, str, str | None, str]], operation: str, provider: str = "fastgen") -> tuple[list[Any], str]:
     """Reference inputs and their note for the characters and the place of a cover.
 
     ``cast`` – ``(name, description, image, kind)``; entries without an image are skipped.
     """
-    if not cast or not chars.accepts_refs(operation):
+    if not cast or (provider not in ("inflight", "both") and not chars.accepts_refs(operation)):
         return [], ""
     taken: set[str] = set()
     inputs: list[Any] = []
@@ -518,7 +538,7 @@ def thumbnails_job(ctx: JobContext) -> dict[str, Any]:
             })
             prompt = llm_tasks.thumbnail_image_prompt(concept, pub, overlay=overlay or not headline)
             inputs, note = _cover_refs([cast[i] for i in concept.get("cast") or [] if i in cast],
-                                       pub.thumbnail_operation)
+                                       pub.thumbnail_operation, images.provider)
             path, _ = generate_one(fg, prompt, out_dir, f"thumb_src_{k}", thumb_images, llm, inputs, ctx,
                                    operation=pub.thumbnail_operation, note=note)
             if overlay:

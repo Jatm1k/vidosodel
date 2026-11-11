@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..models import Project, Track
 from ..motion import store as motion_store
 from ..pipeline import chapters as chapters_mod
+from ..pipeline.footage import wants_video, scene_video
 from ..pipeline import llm_tasks, packaging, research
 from ..render.engine import RESOLUTIONS, PlanScene, RenderPlan, render_video
 from ..render.atmosphere import make_params as atmosphere_params
@@ -51,9 +52,13 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
     owner = {idx: mid for idx, mid in motion_store.slot_owner(motion).items() if mid in written and idx < len(scenes)}
     images: list[str | None] = []
     missing = []
+    clip_paths = set()
     for sc in scenes:
-        rel = scene_image(sc)
+        is_clip = wants_video(sc.source_scene if sc.source_scene_id and sc.source_scene else sc, s)
+        rel = scene_video(sc) if is_clip else scene_image(sc)
         path = to_abs(rel) if rel else None
+        if is_clip and path and path.exists():
+            clip_paths.add(str(path))
         if sc.idx in owner:
             images.append(str(path) if path is not None and path.exists() else "")
         elif path is None or not path.exists():
@@ -62,7 +67,7 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
         else:
             images.append(str(path))
     if missing and not allow_missing:
-        raise JobError(f"Нет изображений у {len(missing)} сцен (№ {', '.join(map(str, missing[:20]))}"
+        raise JobError(f"Нет медиа у {len(missing)} сцен (№ {', '.join(map(str, missing[:20]))}"
                        f"{'…' if len(missing) > 20 else ''}). Сгенерируйте их или разрешите рендер с пропусками.")
     # Fill gaps with the nearest available image.
     for i in range(len(images)):
@@ -82,7 +87,8 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
         mid = owner.get(sc.idx)
         if mid and min(written[mid]["slots"]) != sc.idx:
             continue  # a later slot of a motion scene: drawn by its first slot
-        ov = sc.overrides or {}
+        source_ov = sc.source_scene.overrides if sc.source_scene_id and sc.source_scene else {}
+        ov = {**(source_ov or {}), **(sc.overrides or {})}
         choices = [e for e in effects if e != prev_effect] or effects
         effect = ov.get("effect") or rnd.choice(choices)
         prev_effect = effect
@@ -102,9 +108,15 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
             continue
         end = scenes[i + 1].start if i + 1 < len(scenes) else duration
         plan_scenes.append(PlanScene(img, 0.0 if i == 0 else sc.start, max(end, sc.start + 0.1), effect,
-                                     rnd.randrange(1, 10**9), trans))
+                                     rnd.randrange(1, 10**9), trans,
+                                     video=img if img in clip_paths else None,
+                                     clip_fit=ov.get("clip_fit", s.videos.fit),
+                                     clip_start=float(ov.get("clip_start", 0)),
+                                     clip_speed=float(ov.get("clip_speed", 1))))
 
     width, height = RESOLUTIONS["540p" if preview else s.render.resolution]
+    if s.videos.aspect_ratio == "9:16":
+        width, height = height, width
     fps = 25 if preview else s.render.fps
     if preview:
         length = min(length or 30.0, max(1.0, duration - start))

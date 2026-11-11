@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import get_settings
 from .db import session_scope
@@ -17,6 +17,11 @@ from .models import AppSetting
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    inflight_api_key: str = ""
+    inflight_base_url: str = "https://api.varag.video/v1"
+    inflight_threads: int = Field(default=12, ge=1, le=12)
+    inflight_video_daily: int = Field(default=1000, ge=1, le=1000)
+    inflight_image_daily: int = Field(default=1000, ge=1, le=1000)
     lumean_api_key: str = ""
     fastgen_api_key: str = ""
     #: FastGen image credits allowed per rolling hour (plan limit).
@@ -51,13 +56,13 @@ class AppConfig(BaseModel):
     youtube_api_key: str = ""
 
 
-_SECRET_KEYS = ("lumean_api_key", "fastgen_api_key", "llm_fallback_api_key", "youtube_api_key")
+_SECRET_KEYS = ("inflight_api_key", "lumean_api_key", "fastgen_api_key", "llm_fallback_api_key", "youtube_api_key")
 
 
 def load_config() -> AppConfig:
     """Effective config: defaults ← .env keys ← DB values."""
     env = get_settings()
-    data: dict[str, Any] = {"lumean_api_key": env.lumean_api_key, "fastgen_api_key": env.fastgen_api_key}
+    data: dict[str, Any] = {"inflight_api_key": env.inflight_api_key, "lumean_api_key": env.lumean_api_key, "fastgen_api_key": env.fastgen_api_key}
     with session_scope() as db:
         for row in db.query(AppSetting).all():
             if row.value not in (None, ""):
@@ -68,6 +73,7 @@ def load_config() -> AppConfig:
 def save_config(patch: dict[str, Any]) -> AppConfig:
     """Persist the given keys. Masked secrets coming back from the UI are ignored."""
     allowed = set(AppConfig.model_fields)
+    AppConfig.model_validate({**load_config().model_dump(), **patch})
     with session_scope() as db:
         for key, value in patch.items():
             if key not in allowed:

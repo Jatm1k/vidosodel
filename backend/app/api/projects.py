@@ -43,7 +43,7 @@ router = APIRouter(prefix="/api", tags=["projects"])
 AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 JOB_KINDS = {"voice", "voice_fix", "transcribe", "translate", "scenes", "prompts", "images", "render", "preview",
-             "metadata", "thumbnail_ideas", "thumbnails", "watermarks", "motion"}
+             "metadata", "thumbnail_ideas", "thumbnails", "watermarks", "motion", "videos", "video_prompts"}
 
 
 # ============================================================== helpers
@@ -339,7 +339,7 @@ def start_job(track_id: int, kind: str, params: dict[str, Any] | None = None, db
         raise HTTPException(400, "Неизвестное действие")
     t = _track(db, track_id)
     # A chunk fix and a full voice-over rewrite the same audio – never run them together.
-    _busy(track_id, {kind} | ({"voice", "voice_fix", "transcribe"} if kind in ("voice", "voice_fix") else set()))
+    _busy(track_id, {kind} | ({"videos", "video_prompts"} if kind in ("videos", "video_prompts") else set()) | ({"voice", "voice_fix", "transcribe"} if kind in ("voice", "voice_fix") else set()))
     job = runner.enqueue(kind, project_id=t.project_id, track_id=t.id, params=params or {},
                          title=f"{kind_title(kind)} · {t.language.upper()}")
     return {"job_id": job.id}
@@ -505,16 +505,17 @@ def download(track_id: int, what: str, background: BackgroundTasks, db: Session 
     t = _track(db, track_id)
     base = safe_filename(t.project.name, "project")
     lang = t.language
-    if what == "images":
+    if what in ("images", "clips"):
         tmp = Path(tempfile.mkstemp(suffix=".zip")[1])
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
             for s in t.scenes:
-                rel = s.source_scene.image_file if s.source_scene_id and s.source_scene else s.image_file
+                source = s.source_scene if s.source_scene_id and s.source_scene else s
+                rel = source.video_file if what == "clips" else source.image_file
                 p = to_abs(rel)
                 if p and p.exists():
                     zf.write(p, f"{s.idx + 1:04d}_{s.start:08.2f}s{p.suffix}")
         background.add_task(tmp.unlink, missing_ok=True)
-        return FileResponse(tmp, filename=f"{base}_{lang}_images.zip", media_type="application/zip")
+        return FileResponse(tmp, filename=f"{base}_{lang}_{what}.zip", media_type="application/zip")
     if what == "scenes":
         tmp = Path(tempfile.mkstemp(suffix=".json")[1])
         tmp.write_text(json.dumps([{"idx": s.idx + 1, "start": s.start, "end": s.end, "text": s.text,

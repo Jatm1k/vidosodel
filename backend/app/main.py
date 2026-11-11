@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import cleanup
-from .api import channels, characters, jobs, motion as motion_api, previews, projects, series, storage, system
+from .api import footage, channels, characters, jobs, motion as motion_api, previews, projects, series, storage, system
 from .config import get_settings
 from .db import init_db
 from .jobs import runner
@@ -43,6 +43,8 @@ def _quiet_client_disconnects(loop: asyncio.AbstractEventLoop) -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    from .services.media_reconcile import reconcile_idle_media
+    reconcile_idle_media()
     _quiet_client_disconnects(asyncio.get_running_loop())
     bus.bind_loop(asyncio.get_running_loop())
     runner.start()
@@ -56,7 +58,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Vidosodel", version=__version__, lifespan=lifespan)
 
 for r in (system.router, channels.router, projects.router, characters.router, jobs.router, previews.router,
-          storage.router, series.router, mcp_server.router, motion_tools.router, motion_api.router):
+          storage.router, series.router, mcp_server.router, motion_tools.router, motion_api.router, footage.router):
     app.include_router(r)
 
 

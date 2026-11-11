@@ -130,7 +130,7 @@ def prompts_job(ctx: JobContext) -> dict[str, Any]:
                                       and (not s.prompt.strip() or (overwrite and not s.prompt_locked)))
         ]
         llm, project_id, track_id = tc.settings.llm, tc.project.id, tc.track.id
-        use_characters = tc.settings.images.character_refs
+        use_characters = tc.settings.images.character_refs or (tc.settings.videos.mode != "off" and tc.settings.videos.character_refs)
         continuity = tc.settings.images.scene_continuity
         # The frame right before every target: a batch may start by continuing it.
         order = list(tc.track.scenes)

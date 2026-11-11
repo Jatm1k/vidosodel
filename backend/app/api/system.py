@@ -13,6 +13,7 @@ from ..render.media import available_encoders, ffmpeg_version
 from ..render.motion import EFFECT_LABELS, EFFECTS
 from ..render.transitions import DYNAMIC, TRANSITION_LABELS, TRANSITIONS
 from ..services.fastgen import IMAGE_OPERATIONS, FastgenClient
+from ..services.inflight_status import inflight_status
 from ..services.gemini_tts import GeminiTts
 from ..services.http import ApiError
 from ..services.limiter import limiter, token_limiter
@@ -51,7 +52,8 @@ def status() -> dict[str, Any]:
     return {
         "ffmpeg": ffmpeg_version(),
         "keys": {"lumean": bool(cfg.lumean_api_key), "fastgen": bool(cfg.fastgen_api_key),
-                 "gemini": bool(cfg.gemini_api_keys)},
+                 "gemini": bool(cfg.gemini_api_keys), "inflight": bool(cfg.inflight_api_key)},
+        "inflight": inflight_status.status(cfg),
         "fastgen": limiter.status() if cfg.fastgen_api_key else None,
         "llm": token_limiter.status() if cfg.fastgen_api_key else None,
         "llm_fallback": backup_usage.status(),
@@ -104,7 +106,10 @@ def get_app_settings() -> dict[str, Any]:
 
 @router.put("/settings")
 def put_app_settings(patch: dict[str, Any]) -> dict[str, Any]:
-    save_config(patch)
+    try:
+        save_config(patch)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     return public_config()
 
 
@@ -116,7 +121,11 @@ class KeyCheck(BaseModel):
 def check_key(body: KeyCheck) -> dict[str, Any]:
     """Verify that the stored API key works."""
     try:
-        if body.service == "lumean":
+        if body.service == "inflight":
+            from ..services.inflight import InflightClient
+            with InflightClient() as client:
+                return {"ok": True, "account": client.account_info(), "usage": client.usage()}
+        elif body.service == "lumean":
             with LumeanClient() as lm:
                 lm.user()
         elif body.service == "gemini":

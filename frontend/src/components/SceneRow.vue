@@ -167,10 +167,10 @@ async function restructure(action: 'split' | 'merge-next') {
       <span v-if="scene.shared" class="absolute left-1.5 top-1.5 rounded bg-black/60 px-1.5 text-[11px] leading-5 text-white/80">общая</span>
       <span v-if="scene.motion != null" class="absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 text-[11px] leading-5 text-tally">моушн</span>
       <span
-        v-if="scene.image_url && usedModel && !busy"
+        v-if="scene.image_url && (usedModel || scene.image_meta?.provider) && !busy"
         class="absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 text-[11px] leading-5 text-white/80"
         :title="scene.image_meta?.watermark_removed ? 'Водяной знак удалён' : undefined"
-      >{{ usedModel }}<i v-if="scene.image_meta?.watermark_removed" class="pi pi-eraser ml-1 text-[9px]" /></span>
+      >{{ scene.image_meta?.provider === 'inflight' ? 'Inflight' : scene.image_meta?.provider === 'fastgen' ? 'FastGen · ' : '' }}{{ usedModel }}<i v-if="scene.image_meta?.watermark_removed" class="pi pi-eraser ml-1 text-[9px]" /></span>
     </div>
 
     <div class="flex min-w-0 flex-col gap-2.5">
@@ -234,6 +234,9 @@ async function restructure(action: 'split' | 'merge-next') {
       <div v-if="scene.image_error && scene.image_status === 'failed'" class="text-[13px] text-bad">{{ scene.image_error }}</div>
 
       <div class="flex flex-wrap items-center gap-2 text-[13px] text-ink-3">
+        <span v-if="scene.image_meta?.provider === 'inflight' && scene.image_meta?.request_audit" :title="scene.image_meta.request_audit.endpoint">
+          Inflight · {{ scene.image_meta.server_mode || 'режим сервером не подтверждён' }} · референсов отправлено: {{ scene.image_meta.request_audit.references?.length ?? 0 }}
+        </span>
         <span v-if="scene.prompt_locked" class="flex items-center gap-1"><i class="pi pi-pencil text-[11px]" />промпт изменён вручную</span>
         <span v-if="scene.image_meta?.original_prompt" class="flex items-center gap-1" :title="scene.image_meta.original_prompt">
           <i class="pi pi-shield text-[11px]" />промпт смягчён после отказа модели

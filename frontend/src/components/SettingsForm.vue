@@ -38,6 +38,7 @@ const notify = useNotify()
 const sections = [
   { id: 'voice', label: 'Озвучка', icon: 'pi-microphone' },
   { id: 'scenes', label: 'Сцены', icon: 'pi-th-large' },
+  { id: 'videos', label: 'Видеоряд', icon: 'pi-video' },
   { id: 'images', label: 'Изображения', icon: 'pi-image' },
   { id: 'llm', label: 'Тексты и промпты', icon: 'pi-sparkles' },
   { id: 'render', label: 'Анимация и видео', icon: 'pi-video' },
@@ -461,8 +462,35 @@ onMounted(async () => {
         </FormField>
       </template>
 
+      <template v-else-if="active === 'videos'">
+        <FormField label="Состав видеоряда" hint="Моушн-сцены задаются отдельно во вкладке «Моушн-графика» и заменяют выбранные сцены. Акценты могут накладываться поверх видео.">
+          <Select v-model="s.videos.mode" :options="[{value:'off',label:'Картинки'}, {value:'full',label:'Весь видеоряд — клипы'}, {value:'mixed',label:'Клипы + картинки'}, {value:'intro',label:'Видео только в начале'}]" option-label="label" option-value="value" />
+        </FormField>
+        <FormField v-if="s.videos.mode === 'intro'" label="Количество клипов в начале" hint="Первые N сцен — видеоклипы, все последующие — картинки. 0 — только картинки. Отдельные настройки сцен и моушн-сцены имеют приоритет.">
+          <InputNumber v-model="s.videos.intro_clips" :min="0" :max-fraction-digits="0" show-buttons class="w-40" />
+        </FormField>
+        <FormField v-if="s.videos.mode === 'mixed'" :label="`Доля клипов: ${Math.round(s.videos.share * 100)}%`">
+          <Slider v-model="s.videos.share" :min="0" :max="1" :step="0.05" class="my-4 max-w-md" />
+        </FormField>
+        <FormField label="Генерация видео" hint="Авто: создать первый кадр с референсами героев и стилем канала, затем анимировать его через i2v. Готовый первый кадр используется сразу. Новый кадр расходует квоту картинок. im2v расходует квоты картинки и видео; референсы в этом режиме API не принимает.">
+          <Select v-model="s.videos.generation" :options="[{value:'auto',label:'Автоматически'}, {value:'t2v',label:'Текст → видео'}, {value:'i2v',label:'Первый кадр → видео'}, {value:'ref2v',label:'Референсы → видео'}, {value:'im2v',label:'Создать картинку, затем видео'}]" option-label="label" option-value="value" />
+        </FormField>
+        <FormField label="Формат кадра"><Select v-model="s.videos.aspect_ratio" :options="['16:9','9:16']" /></FormField>
+        <FormField label="Движение и режиссура"><Textarea v-model="s.videos.direction" rows="3" auto-resize class="w-full" /></FormField>
+        <FormField label="Референсы героев и локаций" hint="Используются персонажи проекта, назначенные сцене. Их можно загрузить или сгенерировать."><ToggleSwitch v-model="s.videos.character_refs" /></FormField>
+        <FormField label="Если клип короче сцены" hint="Оригинальный звук клипов не используется: остаются озвучка, музыка и субтитры проекта.">
+          <Select v-model="s.videos.fit" :options="[{value:'freeze',label:'Удержать последний кадр'}, {value:'loop',label:'Повторять клип'}, {value:'stretch',label:'Растянуть по длительности сцены'}]" option-label="label" option-value="value" />
+        </FormField>
+        <p class="text-sm text-ink-3">Общие референсы стиля задаются в «Изображениях». Первый кадр, отдельные референсы, герои и движение каждой сцены — в разделе «Видеоряд» раскадровки.</p>
+      </template>
+
       <!-- ============================== IMAGES -->
       <template v-else-if="active === 'images'">
+        <FormField label="Сервис генерации картинок">
+          <Select v-model="s.images.provider" :options="[{value:'fastgen',label:'FastGen'}, {value:'inflight',label:'Inflight — 1000 картинок/сутки'}, {value:'both',label:'FastGen + Inflight — параллельно'}]" option-label="label" option-value="value" />
+        </FormField>
+        <p v-if="s.images.provider === 'inflight'" class="text-sm text-ink-3">Картинки, референсы героев и обложки создаются в Inflight. Настройки моделей и кредитов ниже относятся к FastGen.</p>
+        <p v-if="s.images.provider === 'both'" class="text-sm text-ink-3">Сцены и первые кадры клипов создаются одновременно через оба сервиса. Освободившийся сервис берёт следующие сцены из общей очереди. Лимиты учитываются отдельно; одна сцена закрепляется за одним сервисом. Модели ниже используются для части FastGen. При разных моделях фактура изображения может отличаться, даже с общим стилем и референсами.</p>
         <FormField label="Распределение моделей">
           <SelectButton
             v-model="s.images.model_strategy"
@@ -524,8 +552,8 @@ onMounted(async () => {
           :hint="mode === 'channel' ? 'Примеры картинок в нужном стиле — отправляются вместе с каждым запросом' : 'Задаются в настройках канала'"
         >
           <div class="flex items-center gap-3 pt-1">
-            <ToggleSwitch v-model="s.images.use_references" :disabled="!currentOp?.refs" />
-            <span class="text-[13px] text-ink-3">{{ currentOp?.refs ? 'Использовать референсы' : 'Эта модель не принимает референсы' }}</span>
+            <ToggleSwitch v-model="s.images.use_references" :disabled="s.images.provider === 'fastgen' && !currentOp?.refs" />
+            <span class="text-[13px] text-ink-3">{{ s.images.provider !== 'fastgen' || currentOp?.refs ? 'Использовать референсы' : 'Эта модель не принимает референсы' }}</span>
           </div>
           <div v-if="references?.length || mode === 'channel'" class="mt-3 flex flex-wrap gap-2">
             <div v-for="r in references" :key="r.path" class="group relative h-20 w-32 overflow-hidden rounded-md border border-line">
@@ -558,10 +586,13 @@ onMounted(async () => {
               <span class="text-[13px] text-ink-2">Модель для портретов</span>
               <Select v-model="s.images.character_operation" :options="economyOptions" option-value="id" option-label="label" class="w-80" />
             </label>
-            <p v-if="!characterModelsOk" class="text-[13px] text-tally">
+            <p v-if="s.images.provider === 'both'" class="text-[13px] text-ink-3">
+              Портреты передаются обоим сервисам. Если выбранная модель FastGen не принимает референсы сцены, её создаст Inflight.
+            </p>
+            <p v-else-if="s.images.provider === 'fastgen' && !characterModelsOk" class="text-[13px] text-tally">
               Ни одна из выбранных моделей не принимает референсы — портреты не будут учитываться. Выберите, например, Nano Banana 2.
             </p>
-            <p v-else-if="characterUpgrade" class="text-[13px] text-ink-3">
+            <p v-else-if="s.images.provider === 'fastgen' && characterUpgrade" class="text-[13px] text-ink-3">
               {{ characterUpgrade }} не принимает референсы — сцены с персонажами сделает {{ opName(characterRefsOp) }}.
             </p>
           </div>

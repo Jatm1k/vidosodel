@@ -679,7 +679,8 @@ def start_episode_job(db: Session, p: Project, kind: str, params: dict[str, Any]
     usual track job – ``prompts``, ``images``, ``render``, ``preview``, ``metadata``, ``thumbnails``…)."""
     track = episode_track(p)
     exclusive = {"episode_voice", "episode_assemble", "voice"}
-    _busy(track.id, {kind} | (exclusive if kind in exclusive else set()))
+    _busy(track.id, {kind} | (exclusive if kind in exclusive else set()) |
+          ({"videos", "video_prompts"} if kind in ("videos", "video_prompts") else set()))
     title = f"{kind_title(kind)} · {p.name}"
     job = runner.enqueue(kind, project_id=p.id, track_id=track.id, params={**(params or {}), "series_id": p.series_id},
                          title=title)

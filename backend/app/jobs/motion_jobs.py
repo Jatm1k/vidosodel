@@ -283,6 +283,8 @@ def _motion_job(ctx: JobContext) -> dict[str, Any]:
         look = the_brief.get("look") or _default_look(ms, catalog)
         style, finish = brief.style_doc(look), brief.finish_of(look, catalog)
     width, height = RESOLUTIONS[render.resolution]
+    if tc.settings.videos.aspect_ratio == "9:16":
+        width, height = height, width
     words = timings.words
     work = track_dir(tc.project.id, track_id, "motion")
     ctx.check()

@@ -17,7 +17,7 @@ const store = useAppStore()
 const KINDS: Record<StageId, string[]> = {
   script: ['translate'],
   voice: ['voice', 'voice_fix', 'transcribe'],
-  storyboard: ['scenes', 'characters', 'prompts', 'images', 'watermarks', 'motion'],
+  storyboard: ['scenes', 'characters', 'prompts', 'images', 'watermarks', 'motion', 'videos', 'video_prompts'],
   video: ['render', 'preview'],
   publish: ['metadata', 'thumbnail_ideas', 'thumbnails'],
 }
@@ -36,8 +36,8 @@ const stages = computed(() => {
     { id: 'voice' as const, title: 'Озвучка', state: t.stages.voice,
       note: t.audio_duration ? duration(t.audio_duration) : t.timings_origin === 'srt' ? 'Есть SRT' : 'Нет аудио' },
     { id: 'storyboard' as const, title: 'Раскадровка', state: storyboardState,
-      note: !st.total ? 'Нет сцен' : t.shares_images ? `${st.total} сцен, картинки основного языка`
-        : `${st.images}/${st.total - (t.motion?.slots ?? 0)} картинок` + (t.motion?.scenes || t.motion?.overlays ? ' · моушн' : '') },
+      note: !st.total ? 'Нет сцен' : t.shares_images ? `${st.total} сцен, видеоряд основного языка`
+        : `Картинки ${st.image_files}/${st.image_total}` + (st.video_total ? ` · клипы ${st.videos}/${st.video_total}` : '') + (t.motion?.scenes || t.motion?.overlays ? ' · моушн' : '') },
     { id: 'video' as const, title: 'Видео', state: t.stages.video,
       note: t.video_url && t.video_meta?.resolution ? `${t.video_meta.resolution}` : t.video_meta?.removed_at ? 'Удалено после публикации' : 'Не собрано' },
     { id: 'publish' as const, title: 'Публикация', state: t.stages.publish,

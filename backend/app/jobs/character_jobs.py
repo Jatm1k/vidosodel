@@ -68,7 +68,7 @@ def ensure_scanned(project_id: int, fg: FastgenClient, *, force: bool = False) -
 
 
 def ensure_portraits(project_id: int, ctx: JobContext, *, only: set[int] | None = None,
-                     force: bool = False) -> tuple[int, int]:
+                     force: bool = False, provider: str | None = None) -> tuple[int, int]:
     """Draw missing portraits (or the ``only`` ones when ``force``). Returns ``(done, failed)``."""
     def wanted(c: Character) -> bool:
         missing = not c.image_file or c.image_status == "failed"
@@ -88,7 +88,7 @@ def ensure_portraits(project_id: int, ctx: JobContext, *, only: set[int] | None 
     if not targets:
         return 0, 0
     _notify(project_id)
-    images = s.images.model_copy(update={"upscale_2x": False})
+    images = s.images.model_copy(update={"upscale_2x": False, "provider": provider or ("inflight" if s.videos.mode != "off" and s.images.provider != "both" else s.images.provider)})
     out_dir = project_dir(project_id) / "characters"
     out_dir.mkdir(parents=True, exist_ok=True)
     result = {"done": 0, "failed": 0}

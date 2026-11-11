@@ -64,12 +64,19 @@ export interface PipelineSettings {
     limit_mode: 'duration' | 'count'; max_images: number
   }
   images: {
+    provider: 'fastgen' | 'inflight' | 'both'
     operation: string; model_strategy: 'single' | 'intro' | 'budget'; economy_operation: string
     premium_minutes: number; budget_credits: number
     upscale_2x: boolean; style_prompt: string; avoid: string
     reference_images: string[]; use_references: boolean
     character_refs: boolean; character_operation: string; scene_continuity: boolean
     watermark_fix: 'auto' | 'inpaint' | 'crop' | 'none'; auto_fix_rejected: boolean; max_attempts: number
+  }
+  videos: {
+    mode: 'off' | 'full' | 'mixed' | 'intro'; share: number; intro_clips: number
+    generation: 'auto' | 't2v' | 'i2v' | 'ref2v' | 'im2v'
+    aspect_ratio: '16:9' | '9:16'; direction: string; references: string[]
+    character_refs: boolean; fit: 'loop' | 'freeze' | 'stretch'
   }
   llm: { model: string; packaging_model: string; niche: string; prompt_instructions: string; temperature: number }
   render: {
@@ -173,6 +180,10 @@ export interface SceneStats {
   total: number
   prompts: number
   images: number
+  image_files: number
+  image_total: number
+  videos: number
+  video_total: number
   failed: number
   generating: number
   shared: number
@@ -243,11 +254,19 @@ export interface Scene {
   prompt: string
   prompt_locked: boolean
   image_url: string | null
+  image_file: string | null
+  video_url: string | null
+  poster_url: string | null
+  video_file: string | null
+  video_status: string
+  video_error: string | null
+  video_meta: Record<string, any>
+  video_plan: Record<string, any>
   image_status: 'none' | 'queued' | 'generating' | 'done' | 'failed'
   image_error: string | null
   image_meta: Record<string, any>
   source_scene_id: number | null
-  overrides: { effect?: string; transition?: string; operation?: string }
+  overrides: { effect?: string; transition?: string; operation?: string; [key: string]: any }
   /** Ids of project characters in the scene; null – not assigned (names in the prompt are used). */
   characters: number[] | null
   /** The scene continues the previous frame (its image is drawn from it); null – a new frame. */
@@ -349,7 +368,13 @@ export interface LimiterStatus {
 
 export interface SystemStatus {
   ffmpeg: string | null
-  keys: { lumean: boolean; fastgen: boolean; gemini?: boolean }
+  keys: { lumean: boolean; fastgen: boolean; gemini?: boolean; inflight?: boolean }
+  inflight: {
+    video: { budget: number; remaining: number | null; used: number | null; active: number; slots: number }
+    image: { budget: number; remaining: number | null; used: number | null; active: number; slots: number }
+    active: number; threads: number; plan: 'parallel' | 'chain' | null; reset_at: number; updated_at: number | null
+    loading: boolean; stale: boolean; error: string | null; warning: string; expired: boolean
+  } | null
   fastgen: LimiterStatus | null
   /** LLM tokens per hour (prompt + completion), shared by every app on the key. */
   llm: Omit<LimiterStatus, 'active' | 'threads'> | null
@@ -359,6 +384,11 @@ export interface SystemStatus {
 }
 
 export interface AppConfig {
+  inflight_api_key: string
+  inflight_base_url: string
+  inflight_threads: number
+  inflight_video_daily: number
+  inflight_image_daily: number
   lumean_api_key: string
   fastgen_api_key: string
   fastgen_credits_per_hour: number

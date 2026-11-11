@@ -33,15 +33,15 @@ export const RUN_TARGETS: {
   },
   {
     id: 'prompts', label: 'До промптов', icon: 'pi pi-pencil', hint: 'Всё до промптов картинок — проверить их, прежде чем тратить кредиты',
-    steps: ['translate', 'voice', 'scenes', 'characters', 'prompts'], below: 'storyboard',
+    steps: ['translate', 'voice', 'scenes', 'motion', 'characters', 'prompts'], below: 'storyboard',
   },
   {
-    id: 'images', label: 'До раскадровки', icon: 'pi pi-images', hint: 'Картинки готовы, видео не собирается',
-    steps: ['translate', 'voice', 'scenes', 'characters', 'prompts', 'images'], below: 'storyboard',
+    id: 'images', label: 'До раскадровки', icon: 'pi pi-images', hint: 'Клипы и картинки готовы, монтаж не запускается',
+    steps: ['translate', 'voice', 'scenes', 'motion', 'characters', 'prompts', 'images', 'videos'], below: 'storyboard',
   },
   {
     id: 'video', label: 'До видео', icon: 'pi pi-video', hint: 'Собранное видео без метаданных и обложек',
-    steps: ['translate', 'voice', 'scenes', 'characters', 'prompts', 'images', 'render'], below: 'video',
+    steps: ['translate', 'voice', 'scenes', 'motion', 'characters', 'prompts', 'images', 'videos', 'render'], below: 'video',
   },
   { id: 'all', label: 'Весь конвейер', icon: 'pi pi-play', hint: '', steps: null, below: 'ready' },
 ]

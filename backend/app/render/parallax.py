@@ -248,10 +248,10 @@ def prepare(plan: RenderPlan, words: Sequence[Word] | None, *, phrase_cuts: bool
     use_cuts = phrase_cuts and bool(words)
     cuts: dict[int, list[float]] = {}
     for i, s in enumerate(plan.scenes):
-        if use_cuts and s.end > t0 and s.start < t1 and not s.motion:
+        if use_cuts and s.end > t0 and s.start < t1 and not s.motion and not s.video:
             cuts[i] = cut_points(words, s.start, s.end, seed=s.seed)
     todo = [s for i, s in enumerate(plan.scenes)
-            if s.end > t0 and s.start < t1 and not s.motion and (s.effect == "parallax" or cuts.get(i))]
+            if s.end > t0 and s.start < t1 and not s.motion and not s.video and (s.effect == "parallax" or cuts.get(i))]
     images = list(dict.fromkeys(s.image for s in todo))
     for folder in {Path(img).parent for img in images}:
         depth_mod.prune(folder)
@@ -282,7 +282,7 @@ def prepare(plan: RenderPlan, words: Sequence[Word] | None, *, phrase_cuts: bool
 
     scenes = []
     for i, s in enumerate(plan.scenes):
-        if s.motion:
+        if s.motion or s.video:
             scenes.append(s)
             continue
         subject = subjects.get(s.image)

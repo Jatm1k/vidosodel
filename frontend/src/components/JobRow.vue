@@ -26,7 +26,7 @@ async function cancel() {
 async function retry() {
   try {
     await api.post(`/api/jobs/${props.job.id}/retry`)
-    notify.ok('Задача перезапущена')
+    notify.ok(['images', 'videos'].includes(props.job.kind) ? 'Запущено продолжение: готовые сцены сохраняются' : 'Задача перезапущена')
     void store.loadActiveJobs()
   } catch (e) {
     notify.error(e)
@@ -94,7 +94,7 @@ async function retry() {
       severity="secondary"
       size="small"
       aria-label="Повторить"
-      v-tooltip.left="'Повторить'"
+      v-tooltip.left="['images', 'videos'].includes(job.kind) ? 'Продолжить: повторить ошибки и создать недостающие, сохранив готовые сцены' : 'Повторить'"
       @click="retry"
     />
   </div>

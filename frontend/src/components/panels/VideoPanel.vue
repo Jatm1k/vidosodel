@@ -35,7 +35,7 @@ const master = computed(() => props.project.tracks.find((t) => t.is_master))
 const imagesReady = computed(() => {
   if (props.track.shares_images) {
     const m = master.value?.scene_stats
-    return m ? m.total > 0 && m.images === m.total : false
+    return m ? m.total > 0 && m.images >= m.total - (master.value?.motion?.slots ?? 0) : false
   }
   // motion scenes are drawn by the motion renderer and need no picture
   const st = props.track.scene_stats
@@ -45,7 +45,7 @@ const checks = computed(() => [
   { ok: !!props.track.audio_url, label: 'Озвучка', note: props.track.audio_url ? duration(props.track.audio_duration) : 'нет аудио' },
   { ok: props.track.scene_stats.total > 0, label: 'Сцены', note: `${props.track.scene_stats.total}` },
   {
-    ok: imagesReady.value, label: 'Картинки',
+    ok: imagesReady.value, label: 'Видеоряд и картинки',
     note: props.track.shares_images ? 'из основного языка'
       : `${props.track.scene_stats.images}/${props.track.scene_stats.total - (props.track.motion?.slots ?? 0)}`
         + (props.track.motion?.slots ? ` · моушн-сцен ${props.track.motion.scenes}` : ''),

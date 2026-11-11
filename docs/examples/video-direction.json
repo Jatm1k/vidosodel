@@ -1,0 +1,61 @@
+{
+  "synthetic_example": true,
+  "production": {
+    "title": "The end of a study session",
+    "channel_style": "hand-drawn 2D ink illustration on textured cream paper, muted ochre and charcoal, no photorealism",
+    "avoid": "text, captions, letters, watermark, logo, signature, frame, border, collage, split screen",
+    "direction": "Quiet deliberate movements; grounded camera.",
+    "aspect_ratio": "16:9",
+    "visual_bible": "A woman in a red sweater sits at a wooden desk beside a left-side window. A book and a cup are on the desk.",
+    "storyboard": [
+      {
+        "id": 1,
+        "narration": "She closes the book and decides to rest."
+      },
+      {
+        "id": 2,
+        "narration": "She turns to look out of the window."
+      }
+    ]
+  },
+  "shots": [
+    {
+      "id": 1,
+      "purpose": "Show the student concluding her work by closing her book, establishing a quiet, reflective atmosphere.",
+      "shot_size": "medium",
+      "camera": "locked",
+      "camera_detail": "Static eye-level locked framing focused on the woman seated at her desk with the window softly framing screen-left.",
+      "opening_frame": "Hand-drawn 2D ink illustration on textured cream paper. A woman in a red knit sweater sits in profile at a rustic wooden desk. An open hardbound book and a ceramic cup sit before her, bathed in soft window light from the left.",
+      "subject_action": "Her hands gently meet at the edges of the open book, folding the cover shut with a calm, deliberate gesture before resting her palms flat beside it as she exhales.",
+      "environment_motion": "A faint curl of delicate steam rises steadily from the ceramic cup on the desk.",
+      "lighting": "Soft diffused daylight enters from the screen-left window, rendering muted ochre highlights and charcoal ink crosshatching.",
+      "beats": [
+        "She sits still over the open book, hands resting lightly at the paper edges.",
+        "She lifts the right cover and steadily closes the volume shut.",
+        "Her hands settle flat beside the closed book as her shoulders ease downward."
+      ],
+      "continuity": "Establishes the woman's red sweater, wooden desk, cup, closed book, and window-left lighting for Scene 2."
+    },
+    {
+      "id": 2,
+      "purpose": "Capture the internal transition to resting as her gaze shifts out the window into the distance.",
+      "shot_size": "close_up",
+      "camera": "slow_push_in",
+      "camera_detail": "A very gentle, grounded slow push-in framing her profile as her attention drifts toward the window.",
+      "opening_frame": "Hand-drawn 2D ink illustration on textured cream paper. Close-up profile of the woman in the red sweater, eyes cast downward in thought, the corner of the closed book visible at the bottom edge.",
+      "subject_action": "She smoothly turns her head toward the screen-left window, her expression softening into a relaxed, contemplative gaze out toward the light.",
+      "environment_motion": "Subtle dust specks drift slowly through the soft shaft of window daylight across the paper surface.",
+      "lighting": "Warm, muted ochre daylight softly illuminating her facial profile against deep charcoal ink shadows.",
+      "beats": [
+        "She pauses with eyes lowered in quiet thought.",
+        "Her head turns gradually toward the bright left-side window.",
+        "She rests her gaze outward with a serene, settled expression."
+      ],
+      "continuity": "Maintains the red sweater, 2D ink line work on cream paper, and consistent light direction from the left window established in Scene 1."
+    }
+  ],
+  "prompts": [
+    "One continuous shot; no cuts, titles, subtitles or unrequested speech.\nCreate the entire shot from text; no external visual reference is supplied.\nOpening (medium): Hand-drawn 2D ink illustration on textured cream paper. A woman in a red knit sweater sits in profile at a rustic wooden desk. An open hardbound book and a ceramic cup sit before her, bathed in soft window light from the left.\nCamera (locked): Static eye-level locked framing focused on the woman seated at her desk with the window softly framing screen-left.\nSubject action: Her hands gently meet at the edges of the open book, folding the cover shut with a calm, deliberate gesture before resting her palms flat beside it as she exhales.\nSecondary movement: A faint curl of delicate steam rises steadily from the ceramic cup on the desk.\nLighting and atmosphere: Soft diffused daylight enters from the screen-left window, rendering muted ochre highlights and charcoal ink crosshatching.\nProgression: She sits still over the open book, hands resting lightly at the paper edges. Then: She lifts the right cover and steadily closes the volume shut. Then: Her hands settle flat beside the closed book as her shoulders ease downward.\nContinuity: Establishes the woman's red sweater, wooden desk, cup, closed book, and window-left lighting for Scene 2.\nAuthoritative channel visual style (preserve this medium throughout): hand-drawn 2D ink illustration on textured cream paper, muted ochre and charcoal, no photorealism\nChannel direction (within the channel visual style): Quiet deliberate movements; grounded camera.\nNative aspect ratio: 16:9\nAvoid: text, captions, letters, watermark, logo, signature, frame, border, collage, split screen",
+    "One continuous shot; no cuts, titles, subtitles or unrequested speech.\nCreate the entire shot from text; no external visual reference is supplied.\nOpening (close up): Hand-drawn 2D ink illustration on textured cream paper. Close-up profile of the woman in the red sweater, eyes cast downward in thought, the corner of the closed book visible at the bottom edge.\nCamera (slow push in): A very gentle, grounded slow push-in framing her profile as her attention drifts toward the window.\nSubject action: She smoothly turns her head toward the screen-left window, her expression softening into a relaxed, contemplative gaze out toward the light.\nSecondary movement: Subtle dust specks drift slowly through the soft shaft of window daylight across the paper surface.\nLighting and atmosphere: Warm, muted ochre daylight softly illuminating her facial profile against deep charcoal ink shadows.\nProgression: She pauses with eyes lowered in quiet thought. Then: Her head turns gradually toward the bright left-side window. Then: She rests her gaze outward with a serene, settled expression.\nContinuity: Maintains the red sweater, 2D ink line work on cream paper, and consistent light direction from the left window established in Scene 1.\nAuthoritative channel visual style (preserve this medium throughout): hand-drawn 2D ink illustration on textured cream paper, muted ochre and charcoal, no photorealism\nChannel direction (within the channel visual style): Quiet deliberate movements; grounded camera.\nNative aspect ratio: 16:9\nAvoid: text, captions, letters, watermark, logo, signature, frame, border, collage, split screen"
+  ]
+}

@@ -301,7 +301,7 @@ class CutoutMaker:
                     if ch is not None:
                         if (ch.description or "").strip():
                             what = {**c, "what": f"{ch.name} ({' '.join(ch.description.split())[:400]}): {c['what']}"}
-                        if chars.accepts_refs(images.operation) and ch.image_file and (uri := image_data_uri(ch.image_file, 1024)):
+                        if (images.provider in ("inflight", "both") or chars.accepts_refs(images.operation)) and ch.image_file and (uri := image_data_uri(ch.image_file, 1024)):
                             file = chars.reference_name(ch.name, set())
                             refs.append({"name": file, "input": uri})
                             note = chars.reference_note([(ch.name, file, ch.description or "")])
