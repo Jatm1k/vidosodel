@@ -66,17 +66,35 @@ class TransportTests(unittest.TestCase):
                                              {"mode": "t2v", "body": {"prompt": "b"}}])
             self.assertEqual(len(result), 2)
             body = json.loads(self.requests[-1].content)
-            self.assertEqual(body["jobs"][1]["mode"], "t2v")
+            self.assertTrue(self.requests[-1].url.path.endswith("/jobs"))
+            self.assertNotIn("mode", body["jobs"][1])  # /jobs has no mode field
+            self.assertNotIn("image_role", body["jobs"][1])
             client.poll(["1", "2"])
             self.assertEqual(self.requests[-1].url.params["ids"], "1,2")
 
-    def test_reference_batches_are_rejected_before_any_http_request(self):
-        with self.client(lambda r: httpx.Response(200, json={})) as client:
-            for mode in ("ref2i", "ref2v", "i2v"):
-                with self.subTest(mode=mode), self.assertRaises(ValueError):
+    def test_reference_and_frame_batches_use_image_role_and_ordered_images(self):
+        ref = {"name": "REF_A", "image_base64": "QUJD", "mime": "image/jpeg"}
+        frame = {"image_base64": "REVG", "mime": "image/jpeg"}
+        bodies = {"ref2i": {"reference_images": [ref]}, "ref2v": {"reference_images": [ref]},
+                  "i2v": {"image_base64": "REVG", "image_mime": "image/jpeg"},
+                  "frames2v": {"first_frame": frame, "last_frame": ref, "duration_seconds": 6},
+                  "frame_ref2v": {"first_frame": frame, "last_frame_reference": ref}}
+        roles = {"ref2i": "reference", "ref2v": "reference", "i2v": "first_frame",
+                 "frames2v": "first_last_frame", "frame_ref2v": "first_frame_last_reference"}
+        with self.client(lambda r: httpx.Response(200, json={"jobs": [{"id": "1"}, {"id": "2"}]})) as client:
+            for mode, extra in bodies.items():
+                with self.subTest(mode=mode):
                     client.submit("image" if mode == "ref2i" else "video", [
-                        {"mode": mode, "body": {"prompt": "a"}}, {"mode": mode, "body": {"prompt": "b"}}])
-        self.assertFalse(self.requests)
+                        {"mode": mode, "body": {"prompt": "a", **extra}}, {"mode": mode, "body": {"prompt": "b", **extra}}])
+                    job = json.loads(self.requests[-1].content)["jobs"][0]
+                    self.assertEqual(job["image_role"], roles[mode])
+                    self.assertNotIn("mode", job)
+                    self.assertNotIn("reference_images", job)
+                    self.assertEqual(job["images"][0]["image_base64"], "REVG" if mode in ("i2v", "frames2v", "frame_ref2v") else "QUJD")
+                    if mode == "frames2v":
+                        self.assertEqual(job["duration_seconds"], 6)
+            with self.assertRaises(ValueError):
+                client.submit("video", [{"mode": "im2v", "body": {}}, {"mode": "t2v", "body": {"prompt": "x"}}])
 
     def test_post_timeout_is_not_retried(self):
         def timeout(req):
@@ -160,13 +178,18 @@ class QueueTests(unittest.TestCase):
                     db.rollback()
                     raise
         self.scope = scope
-        self.cfg = AppConfig(inflight_api_key="test")
+        self.cfg = AppConfig(inflight_api_key="test", inflight_video_daily=1000, inflight_image_daily=1000)
         self.patches = [patch.object(queue, "session_scope", scope), patch.object(queue, "load_config", return_value=self.cfg)]
         for p in self.patches:
             p.start()
-        self.client = SimpleNamespace(account=hashlib.sha256(b"test").hexdigest(), usage=lambda: {
-            "plan": "parallel", "video": {"free": 12, "busy": 0, "left": 1000},
-            "image": {"free": 12, "busy": 0, "left": 1000}})
+        account = hashlib.sha256(b"test").hexdigest()
+        def usage():
+            # Like the real server: busy slots are the key's accepted/running jobs.
+            with scope() as db:
+                active = queue.active_counts(db, account)
+            return {"plan": "parallel", **{k: {"slots": 12, "free": max(0, 12 - active[k]), "busy": active[k],
+                                              "left": 1000} for k in ("video", "image")}}
+        self.client = SimpleNamespace(account=account, usage=usage)
         self.submissions = []
         def submit(kind, tasks):
             self.submissions.append(tasks)
@@ -186,7 +209,7 @@ class QueueTests(unittest.TestCase):
         return queue.enqueue(self.client, owner, "image" if mode == "t2i" else "video", mode,
             {"prompt": "test", "image_prompt": "still", "video_prompt": "move"})
 
-    def test_reference_jobs_use_individual_endpoints_and_fill_all_twelve_slots(self):
+    def test_reference_jobs_are_batched_with_roles_and_fill_all_slots(self):
         from app.services import inflight
         root = Path(self.tmp.name)
         Image.new("RGB", (32, 32), "green").save(root / "hero.jpg")
@@ -196,22 +219,41 @@ class QueueTests(unittest.TestCase):
             if req.url.path.endswith('/account/usage'):
                 return httpx.Response(200, json=self.client.usage())
             body = json.loads(req.content)
-            self.assertTrue(req.url.path.endswith('/image/reference-to-image'))
-            self.assertEqual(body['reference_images'][0]['name'], 'REF_HERO')
-            self.assertTrue(body['reference_images'][0]['image_base64'])
-            return httpx.Response(200, json={'id': body['client_ref'], 'state': 'accepted', 'mode': 'ref2i'})
+            self.assertTrue(req.url.path.endswith('/jobs'))
+            self.assertEqual(body['kind'], 'image')
+            for job in body['jobs']:
+                self.assertEqual(job['image_role'], 'reference')
+                self.assertEqual(job['images'][0]['name'], 'REF_HERO')
+                self.assertTrue(job['images'][0]['image_base64'])
+            return httpx.Response(200, json={'jobs': [{'id': j['client_ref'], 'client_ref': j['client_ref'],
+                                                       'state': 'accepted'} for j in body['jobs']]})
         with InflightClient(self.cfg, httpx.MockTransport(server)) as client, patch.object(inflight, 'media_root', return_value=root):
+            client.account = self.client.account
             ids = [queue.enqueue(client, f'scene:{i}:image', 'image', 'ref2i', {
                 'prompt': 'REF_HERO walks', 'references': [{'name': 'REF_HERO', 'path': 'hero.jpg'}]}) for i in range(15)]
             queue.admit(client, ids)
-        self.assertEqual(sum(r.method == 'POST' for r in requests), 12)
+        posts = [r for r in requests if r.method == 'POST']
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(len(json.loads(posts[0].content)['jobs']), 12)
         with self.scope() as db:
             rows = db.scalars(select(MediaGeneration)).all()
             self.assertEqual(sum(r.state == 'accepted' for r in rows), 12)
             audit = rows[0].payload['_request_audit']
-            self.assertEqual(audit['endpoint'], '/image/reference-to-image')
+            self.assertEqual(audit['endpoint'], '/jobs')
             self.assertGreater(audit['references'][0]['bytes'], 0)
             self.assertEqual(len(audit['references'][0]['sha256']), 64)
+
+    def test_server_ignoring_image_role_disables_role_batches(self):
+        ids = [queue.enqueue(self.client, f'scene:{i}:video', 'video', 'ref2v', {'prompt': 'x', 'references': []}) for i in range(2)]
+        with self.scope() as db:
+            for rid in ids:
+                row = db.get(MediaGeneration, rid)
+                row.state, row.remote_id = 'accepted', f'r{rid}'
+                row.payload = {**row.payload, '_request_audit': {'endpoint': '/jobs', 'mode': 'ref2v'}}
+        self.client.poll = lambda remote: [{'id': r, 'state': 'ready', 'mode': 't2v'} for r in remote]
+        queue.poll(self.client, ids)
+        self.assertIn(self.client.account, queue._NO_ROLE_BATCH)
+        queue._NO_ROLE_BATCH.discard(self.client.account)
 
     def test_server_mode_downgrade_is_reported_and_never_applied_or_retried(self):
         rid = self.add(mode='im2v')
@@ -445,8 +487,8 @@ class QueueTests(unittest.TestCase):
             if mixed:
                 generate_scenes(ctx, False)
             generate_scenes(ctx, True)
-            expected = 0 if legacy else 4  # Dedicated reference/first-frame requests.
-            self.assertEqual(len(submissions), expected)
+            expected = 0 if legacy else 4  # Reference first frames and i2v clips, batched with image_role.
+            self.assertEqual(sum(map(len, submissions)), expected)
             if not legacy:
                 self.assertEqual(set(modes.values()), {"ref2i", "i2v"})
                 for batch in submissions:
@@ -460,7 +502,7 @@ class QueueTests(unittest.TestCase):
                             pixel = Image.open(io.BytesIO(base64.b64decode(task["body"]["image_base64"]))).getpixel((0, 0))
                             self.assertGreater(pixel[2], 200)  # Generated blue frame, not the red portrait.
             generate_scenes(ctx, True)
-            self.assertEqual(len(submissions), expected)
+            self.assertEqual(sum(map(len, submissions)), expected)
             with self.scope() as db:
                 for sc in db.get(Track, tid).scenes:
                     if mixed and sc.idx == 3:
@@ -484,7 +526,7 @@ class QueueTests(unittest.TestCase):
                 # to reference-built first frames + i2v, rather than reattaching them.
                 ctx.params = {"force": True}
                 generate_scenes(ctx, True)
-                self.assertEqual(len(submissions), 4)
+                self.assertEqual(sum(map(len, submissions)), 4)
                 self.assertEqual(set(modes.values()), {"ref2i", "i2v"})
                 with self.scope() as db:
                     self.assertTrue(all(sc.video_meta["mode"] == "i2v" for sc in db.get(Track, tid).scenes))

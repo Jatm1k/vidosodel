@@ -19,9 +19,11 @@ class AppConfig(BaseModel):
 
     inflight_api_key: str = ""
     inflight_base_url: str = "https://api.varag.video/v1"
-    inflight_threads: int = Field(default=12, ge=1, le=12)
-    inflight_video_daily: int = Field(default=1000, ge=1, le=1000)
-    inflight_image_daily: int = Field(default=1000, ge=1, le=1000)
+    #: Own cap on concurrent Inflight jobs per pool; 0 – every slot of the tariff (turbo hours included).
+    inflight_max_threads: int = Field(default=0, ge=0, le=1000)
+    #: Own per-UTC-day ceilings; 0 – only the tariff's remaining volume.
+    inflight_video_daily: int = Field(default=0, ge=0, le=1_000_000)
+    inflight_image_daily: int = Field(default=0, ge=0, le=1_000_000)
     lumean_api_key: str = ""
     fastgen_api_key: str = ""
     #: FastGen image credits allowed per rolling hour (plan limit).
@@ -67,6 +69,12 @@ def load_config() -> AppConfig:
         for row in db.query(AppSetting).all():
             if row.value not in (None, ""):
                 data[row.key] = row.value
+    if "inflight_max_threads" not in data:
+        # Before v1.22 the daily ceilings were mandatory with a hidden default of 1000 (saved with the form);
+        # that default is not a user choice: only the tariff limits apply now.
+        for key in ("inflight_video_daily", "inflight_image_daily"):
+            if data.get(key) in (1000, "1000"):
+                data.pop(key)
     return AppConfig.model_validate(data)
 
 

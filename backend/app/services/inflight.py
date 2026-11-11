@@ -9,8 +9,9 @@ import base64
 import hashlib
 import io
 import time
+from collections import OrderedDict
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 from PIL import Image, ImageOps
@@ -21,9 +22,20 @@ from .http import ApiError
 
 MODES = {"t2i": "/image/generate", "ref2i": "/image/reference-to-image",
          "t2v": "/video/text-to-video", "i2v": "/video/image-to-video",
-         "ref2v": "/video/reference-to-video", "im2v": "/video/image-then-video"}
+         "ref2v": "/video/reference-to-video", "im2v": "/video/image-then-video",
+         "frames2v": "/video/first-last-frame-to-video",
+         "frame_ref2v": "/video/first-frame-to-last-reference"}
+#: ``image_role`` of a ``POST /jobs`` item; text modes have none. im2v is never batched.
+ROLES = {"i2v": "first_frame", "ref2v": "reference", "ref2i": "reference",
+         "frames2v": "first_last_frame", "frame_ref2v": "first_frame_last_reference"}
 FINAL = {"ready", "failed", "declined", "cancelled"}
 IMAGE_LIMIT = 1_500_000
+PROMPT_LIMIT = 12_000
+IMAGE_ASPECTS = ("16:9", "9:16", "1:1", "4:5")
+VIDEO_ASPECTS = ("16:9", "9:16")
+#: A batch stays well below the documented 200 MB request limit.
+BATCH_BYTES = 120_000_000
+_ENCODED: OrderedDict = OrderedDict()
 
 
 def connection_error(exc: httpx.HTTPError, host: str) -> str:
@@ -59,7 +71,23 @@ def media_path(rel: str) -> Path:
 
 
 def encode_image(source: str | bytes) -> dict:
-    raw = source if isinstance(source, bytes) else media_path(source).read_bytes()
+    """JPEG base64 of at most 1.5 MB. Library files are cached: one portrait goes with many scenes."""
+    if isinstance(source, bytes):
+        return _encode(source)
+    path = media_path(source)
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    if key in _ENCODED:
+        _ENCODED.move_to_end(key)
+        return dict(_ENCODED[key])
+    encoded = _encode(path.read_bytes())
+    _ENCODED[key] = encoded
+    while len(_ENCODED) > 64:
+        _ENCODED.popitem(last=False)
+    return dict(encoded)
+
+
+def _encode(raw: bytes) -> dict:
     with Image.open(io.BytesIO(raw)) as original:
         image = ImageOps.exif_transpose(original).convert("RGB")
         image.thumbnail((2048, 2048))
@@ -76,27 +104,64 @@ def encode_image(source: str | bytes) -> dict:
 
 
 def wire_payload(mode: str, payload: dict) -> dict:
+    """Body of the mode's own endpoint (validated and encoded before anything is marked submitted)."""
     if mode not in MODES:
         raise ValueError("Неизвестный режим генерации")
     out = {"aspect_ratio": payload.get("aspect_ratio", "16:9")}
-    if out["aspect_ratio"] not in ("16:9", "9:16"):
-        raise ValueError("Допустимые пропорции: 16:9 и 9:16")
+    allowed = IMAGE_ASPECTS if mode in ("t2i", "ref2i") else VIDEO_ASPECTS
+    if out["aspect_ratio"] not in allowed:
+        raise ValueError("Допустимые пропорции: " + ", ".join(allowed))
     for key in (("image_prompt", "video_prompt") if mode == "im2v" else ("prompt",)):
         value = str(payload.get(key) or "").strip()
-        if not value or len(value) > 6000:
-            raise ValueError("Промпт должен содержать от 1 до 6000 символов")
+        if not value or len(value) > PROMPT_LIMIT:
+            raise ValueError(f"Промпт должен содержать от 1 до {PROMPT_LIMIT} символов")
         out[key] = value
     if mode == "im2v":
         out["return_image_url"] = True
     if mode == "i2v":
         encoded = encode_image(payload.get("first_frame") or "")
         out.update(image_base64=encoded["image_base64"], image_mime=encoded["mime"])
+    if mode in ("frames2v", "frame_ref2v"):
+        out["first_frame"] = encode_image(payload.get("first_frame") or "")
+        out["last_frame" if mode == "frames2v" else "last_frame_reference"] = encode_image(payload.get("last_frame") or "")
+        duration = int(payload.get("duration_seconds") or (8 if mode == "frames2v" else 10))
+        if (mode == "frames2v" and duration not in (5, 6, 7, 8)) or (mode == "frame_ref2v" and duration != 10):
+            raise ValueError("Длительность перехода между кадрами: 5–8 с (без звука) или 10 с (со звуком)")
+        out["duration_seconds"] = duration
     if mode in ("ref2i", "ref2v"):
         refs = payload.get("references") or []
         if not 1 <= len(refs) <= 10:
             raise ValueError("Нужны от 1 до 10 референсов")
         out["reference_images"] = [{"name": r["name"], **encode_image(r["path"])} for r in refs]
     return out
+
+
+def batch_item(mode: str, body: dict) -> dict:
+    """The ``POST /jobs`` form of a single-endpoint body: roles come from ``image_role`` + ordered ``images``.
+
+    Batch items have no ``mode`` field. Sending ``mode`` with ``reference_images`` (an earlier version did)
+    makes the server ignore the images and silently produce a text-only result.
+    """
+    item = {k: body[k] for k in ("prompt", "aspect_ratio", "client_ref", "duration_seconds") if k in body}
+    if mode == "i2v":
+        item["images"] = [{"image_base64": body["image_base64"], "mime": body.get("image_mime", "image/png")}]
+    elif mode in ("ref2v", "ref2i"):
+        item["images"] = [dict(r) for r in body["reference_images"]]
+    elif mode == "frames2v":
+        item["images"] = [body["first_frame"], body["last_frame"]]
+    elif mode == "frame_ref2v":
+        item["images"] = [body["first_frame"], body["last_frame_reference"]]
+    if mode in ROLES:
+        item["image_role"] = ROLES[mode]
+    return item
+
+
+def body_bytes(body: dict) -> int:
+    """Approximate JSON size of a submission (base64 dominates)."""
+    images = list(body.get("reference_images") or []) + [
+        body[k] for k in ("first_frame", "last_frame", "last_frame_reference") if isinstance(body.get(k), dict)]
+    return (len(body.get("image_base64") or "") + sum(len(i.get("image_base64") or "") for i in images)
+            + len(body.get("prompt") or "") + 2_000)
 
 
 class InflightClient:
@@ -107,7 +172,7 @@ class InflightClient:
             raise ApiError("Inflight", 401, "Укажите ключ Inflight в настройках")
         self.account = hashlib.sha256(key.encode()).hexdigest()
         self.base = cfg.inflight_base_url.strip().rstrip("/")
-        self._client = httpx.Client(headers={"X-API-Key": key}, timeout=httpx.Timeout(60, connect=10),
+        self._client = httpx.Client(headers={"X-API-Key": key}, timeout=httpx.Timeout(120, connect=10),
                                     transport=transport)
 
     def __enter__(self):
@@ -137,7 +202,8 @@ class InflightClient:
             detail = data.get("detail", {}) if isinstance(data, dict) else {}
             message = detail.get("message") if isinstance(detail, dict) else str(detail)
             code = detail.get("code", "") if isinstance(detail, dict) else ""
-            raise ApiError("Inflight", response.status_code, message or "Ошибка API", {"code": code})
+            extra = {k: v for k, v in detail.items() if k not in ("message",)} if isinstance(detail, dict) else {}
+            raise ApiError("Inflight", response.status_code, message or "Ошибка API", {**extra, "code": code})
         return data
 
     def account_info(self):
@@ -147,17 +213,14 @@ class InflightClient:
         return self.request("GET", "/account/usage")
 
     def submit(self, kind: str, tasks: list[dict]) -> list[dict]:
-        if len(tasks) == 1 or any(t["mode"] == "im2v" for t in tasks):
-            if len(tasks) != 1:
-                raise ValueError("Составной режим отправляется отдельно")
+        """One task – its own endpoint; several – one all-or-nothing ``POST /jobs``."""
+        if len(tasks) == 1:
             task = tasks[0]
             return [self.request("POST", MODES[task["mode"]], json=task["body"])]
-        # Production /jobs silently downgraded ref2i to t2i (confirmed by GET
-        # /tasks). Reference/first-frame jobs must use their dedicated endpoint.
-        if any(t["mode"] not in ("t2i", "t2v") for t in tasks):
-            raise ValueError("Задания с референсами и первым кадром отправляются по одному через специализированный endpoint")
+        if any(t["mode"] == "im2v" for t in tasks):
+            raise ValueError("Составной режим отправляется отдельно")
         data = self.request("POST", "/jobs", json={"kind": kind, "jobs": [
-            {**t["body"], "mode": t["mode"]} for t in tasks]})
+            batch_item(t["mode"], t["body"]) for t in tasks]})
         return self.task_list(data)
 
     @staticmethod
@@ -175,9 +238,12 @@ class InflightClient:
         return self.task_list(self.request("GET", "/tasks", params={"ids": ",".join(ids)}))
 
     def cancel(self, remote_id: str, hard=False):
-        from urllib.parse import quote
         path = "/tasks/" + quote(remote_id, safe="")
         return self.request("POST" if hard else "DELETE", path + ("/hard-cancel" if hard else ""))
+
+    def hard_cancel(self, remote_ids: list[str] | None = None, *, everything=False):
+        return self.request("POST", "/tasks/hard-cancel",
+                            json={"all": True} if everything else {"ids": list(remote_ids or [])[:200]})
 
     def download(self, url: str, dest: Path):
         # Signed URLs are public: a separate client keeps the API key out of file requests.

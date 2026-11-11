@@ -355,7 +355,7 @@ class HybridRun:
                             with session_scope() as db:
                                 local = queue.local_remaining(db, client.account, self.cfg)
                                 active = queue.active_counts(db, client.account)
-                            inf_free = queue.capacity(self.inf_usage, local, "image", self.cfg.inflight_threads, active)
+                            inf_free = queue.capacity(self.inf_usage, local, "image", self.cfg.inflight_max_threads, active)
                         except ApiError:
                             self.disabled.add("inflight")
                     if available and inf_free:
