@@ -89,7 +89,7 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
             continue  # a later slot of a motion scene: drawn by its first slot
         source_ov = sc.source_scene.overrides if sc.source_scene_id and sc.source_scene else {}
         ov = {**(source_ov or {}), **(sc.overrides or {})}
-        clip_meta = ((sc.source_scene if sc.source_scene_id and sc.source_scene else sc).video_meta or {})
+        clip_meta = getattr(sc.source_scene if sc.source_scene_id and sc.source_scene else sc, "video_meta", None) or {}
         choices = [e for e in effects if e != prev_effect] or effects
         effect = ov.get("effect") or rnd.choice(choices)
         prev_effect = effect
