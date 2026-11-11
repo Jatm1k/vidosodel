@@ -176,9 +176,11 @@ def _footer(settings, parts: list[str], *, single=True):
 
 
 def _style(settings, mode) -> list[str]:
-    style = channel_style(settings)
+    style = channel_style(settings).rstrip()
     if not style:
         return []
+    if style[-1] not in ".!?":
+        style += "."
     if mode == "i2v":
         return ["STYLE: " + style + " The supplied first frame already has this look: keep its medium and rendering."]
     return ["STYLE: " + style + " Keep this exact visual medium in every frame."]
