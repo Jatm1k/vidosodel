@@ -73,8 +73,10 @@ export interface PipelineSettings {
     watermark_fix: 'auto' | 'inpaint' | 'crop' | 'none'; auto_fix_rejected: boolean; max_attempts: number
   }
   videos: {
-    mode: 'off' | 'full' | 'mixed' | 'intro'; share: number; intro_clips: number
+    mode: 'off' | 'smart' | 'full' | 'mixed' | 'intro'; share: number; intro_clips: number; intro_seconds: number
     generation: 'auto' | 't2v' | 'i2v' | 'ref2v' | 'im2v'
+    style_lock: boolean; multishot: boolean; multishot_max: number; multishot_scene: number
+    continuation: boolean; refusal_rewrite: boolean
     aspect_ratio: '16:9' | '9:16'; direction: string; references: string[]
     character_refs: boolean; fit: 'loop' | 'freeze' | 'stretch'
   }
@@ -370,10 +372,13 @@ export interface SystemStatus {
   ffmpeg: string | null
   keys: { lumean: boolean; fastgen: boolean; gemini?: boolean; inflight?: boolean }
   inflight: {
-    video: { budget: number; remaining: number | null; used: number | null; active: number; slots: number }
-    image: { budget: number; remaining: number | null; used: number | null; active: number; slots: number }
-    active: number; threads: number; plan: 'parallel' | 'chain' | null; reset_at: number; updated_at: number | null
-    loading: boolean; stale: boolean; error: string | null; warning: string; expired: boolean
+    video: { budget: number | null; remaining: number | null; used: number | null; active: number; slots: number; free: number }
+    image: { budget: number | null; remaining: number | null; used: number | null; active: number; slots: number; free: number }
+    active: number; threads: number; plan: 'parallel' | 'chain' | 'video' | 'images' | null; quota: 'day' | 'month'
+    reset_at: number | null; expires: number | null; updated_at: number | null
+    loading: boolean; stale: boolean; error: string | null; warning: string; warning_code: string; expired: boolean
+    refusals_paid: boolean
+    turbo: { message: string; extra_slots: number; ends_at: number | null; ends_at_msk: string | null } | null
   } | null
   fastgen: LimiterStatus | null
   /** LLM tokens per hour (prompt + completion), shared by every app on the key. */
@@ -386,7 +391,7 @@ export interface SystemStatus {
 export interface AppConfig {
   inflight_api_key: string
   inflight_base_url: string
-  inflight_threads: number
+  inflight_max_threads: number
   inflight_video_daily: number
   inflight_image_daily: number
   lumean_api_key: string

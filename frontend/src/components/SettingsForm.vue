@@ -464,17 +464,34 @@ onMounted(async () => {
 
       <template v-else-if="active === 'videos'">
         <FormField label="Состав видеоряда" hint="Моушн-сцены задаются отдельно во вкладке «Моушн-графика» и заменяют выбранные сцены. Акценты могут накладываться поверх видео.">
-          <Select v-model="s.videos.mode" :options="[{value:'off',label:'Картинки'}, {value:'full',label:'Весь видеоряд — клипы'}, {value:'mixed',label:'Клипы + картинки'}, {value:'intro',label:'Видео только в начале'}]" option-label="label" option-value="value" />
+          <Select v-model="s.videos.mode" :options="[{value:'off',label:'Картинки'}, {value:'smart',label:'По смыслу — режиссёр выбирает, где нужно движение'}, {value:'full',label:'Весь видеоряд — клипы'}, {value:'mixed',label:'Клипы + картинки поровну по ролику'}, {value:'intro',label:'Первые N сцен — клипы'}]" option-label="label" option-value="value" />
+        </FormField>
+        <FormField v-if="s.videos.mode === 'smart' || s.videos.mode === 'mixed'" :label="`Только клипы в начале: ${s.videos.intro_seconds ? s.videos.intro_seconds + ' с' : 'нет'}`" hint="Первые секунды ролика — сплошь видео (удержание зрителя), дальше клипы и картинки по правилу ниже.">
+          <Slider v-model="s.videos.intro_seconds" :min="0" :max="600" :step="10" class="my-4 max-w-md" />
         </FormField>
         <FormField v-if="s.videos.mode === 'intro'" label="Количество клипов в начале" hint="Первые N сцен — видеоклипы, все последующие — картинки. 0 — только картинки. Отдельные настройки сцен и моушн-сцены имеют приоритет.">
           <InputNumber v-model="s.videos.intro_clips" :min="0" :max-fraction-digits="0" show-buttons class="w-40" />
         </FormField>
-        <FormField v-if="s.videos.mode === 'mixed'" :label="`Доля клипов: ${Math.round(s.videos.share * 100)}%`">
+        <FormField v-if="s.videos.mode === 'mixed' || s.videos.mode === 'smart'" :label="`Доля клипов${s.videos.intro_seconds ? ' после начала' : ''}: ${Math.round(s.videos.share * 100)}%`" :hint="s.videos.mode === 'smart' ? 'LLM оценивает каждый фрагмент текста: клипы получают действия, процессы и перемены, картинки — цифры, паузы и абстракции. Сцены без движения клип не получают, даже если доля не набрана.' : undefined">
           <Slider v-model="s.videos.share" :min="0" :max="1" :step="0.05" class="my-4 max-w-md" />
         </FormField>
-        <FormField label="Генерация видео" hint="Авто: создать первый кадр с референсами героев и стилем канала, затем анимировать его через i2v. Готовый первый кадр используется сразу. Новый кадр расходует квоту картинок. im2v расходует квоты картинки и видео; референсы в этом режиме API не принимает.">
+        <FormField label="Генерация видео" hint="Авто — по сцене: есть герой → кадр по его референсу → i2v (лицо узнаваемо); локация или референсы стиля → ref2v; ничего сохранять не нужно → t2v (быстрее всего, без картинки). im2v расходует квоты картинки и видео.">
           <Select v-model="s.videos.generation" :options="[{value:'auto',label:'Автоматически'}, {value:'t2v',label:'Текст → видео'}, {value:'i2v',label:'Первый кадр → видео'}, {value:'ref2v',label:'Референсы → видео'}, {value:'im2v',label:'Создать картинку, затем видео'}]" option-label="label" option-value="value" />
         </FormField>
+        <template v-if="s.videos.generation === 'auto'">
+          <FormField label="Точный стиль канала" hint="Сцены без референсов тоже начинаются с картинки в стиле канала (картинка → видео одним запросом). Стиль держится точнее, генерация чуть дольше и расходует квоту картинок."><ToggleSwitch v-model="s.videos.style_lock" /></FormField>
+          <FormField label="Мультишот для коротких сцен" hint="Несколько коротких соседних сцен — один 10-секундный клип из нескольких планов со склейками. Экономит квоту и время, особенно в динамичном начале.">
+            <div class="flex flex-wrap items-center gap-3">
+              <ToggleSwitch v-model="s.videos.multishot" />
+              <template v-if="s.videos.multishot">
+                <span class="text-ink-3">до</span><InputNumber v-model="s.videos.multishot_max" :min="2" :max="4" show-buttons class="w-24" /><span class="text-ink-3">сцен, каждая короче</span>
+                <InputNumber v-model="s.videos.multishot_scene" :min="1" :max="8" :step="0.5" :max-fraction-digits="1" suffix=" с" show-buttons class="w-28" />
+              </template>
+            </div>
+          </FormField>
+          <FormField label="Бесконечная история" hint="Сцена, продолжающая предыдущую, начинается с кадра, на котором предыдущий клип уходит с экрана, — получается цельный фильм, а не череда сцен. Такие клипы ждут друг друга (цепочка до 3)."><ToggleSwitch v-model="s.videos.continuation" /></FormField>
+        </template>
+        <FormField label="Переписывать отклонённые" hint="При отказе по содержанию (реальные люди, бренды…) LLM один раз переписывает промпт по виду отказа и отправляет снова."><ToggleSwitch v-model="s.videos.refusal_rewrite" /></FormField>
         <FormField label="Формат кадра"><Select v-model="s.videos.aspect_ratio" :options="['16:9','9:16']" /></FormField>
         <FormField label="Движение и режиссура"><Textarea v-model="s.videos.direction" rows="3" auto-resize class="w-full" /></FormField>
         <FormField label="Референсы героев и локаций" hint="Используются персонажи проекта, назначенные сцене. Их можно загрузить или сгенерировать."><ToggleSwitch v-model="s.videos.character_refs" /></FormField>
@@ -487,7 +504,7 @@ onMounted(async () => {
       <!-- ============================== IMAGES -->
       <template v-else-if="active === 'images'">
         <FormField label="Сервис генерации картинок">
-          <Select v-model="s.images.provider" :options="[{value:'fastgen',label:'FastGen'}, {value:'inflight',label:'Inflight — 1000 картинок/сутки'}, {value:'both',label:'FastGen + Inflight — параллельно'}]" option-label="label" option-value="value" />
+          <Select v-model="s.images.provider" :options="[{value:'fastgen',label:'FastGen'}, {value:'inflight',label:'Inflight'}, {value:'both',label:'FastGen + Inflight — параллельно'}]" option-label="label" option-value="value" />
         </FormField>
         <p v-if="s.images.provider === 'inflight'" class="text-sm text-ink-3">Картинки, референсы героев и обложки создаются в Inflight. Настройки моделей и кредитов ниже относятся к FastGen.</p>
         <p v-if="s.images.provider === 'both'" class="text-sm text-ink-3">Сцены и первые кадры клипов создаются одновременно через оба сервиса. Освободившийся сервис берёт следующие сцены из общей очереди. Лимиты учитываются отдельно; одна сцена закрепляется за одним сервисом. Модели ниже используются для части FastGen. При разных моделях фактура изображения может отличаться, даже с общим стилем и референсами.</p>

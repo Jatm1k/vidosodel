@@ -16,7 +16,7 @@ from ..jobs.events import scene_changed, track_changed
 from ..jobs.runner import runner
 from ..models import MediaGeneration, Scene
 from ..motion import store as motion_store
-from ..pipeline.footage import wants_video, scene_first_frame, generation_mode
+from ..pipeline.footage import wants_video, scene_first_frame, generation_mode, route_of, uses_first_frame
 from ..pipeline import characters as chars
 from ..render.media import imread, imwrite, probe_duration
 from ..services.inflight import FINAL, InflightClient, media_path
@@ -96,6 +96,29 @@ def cancel_tasks(body: CancelTasks, db: Session = Depends(get_db)):
         return {"cancelled_count": count}
 
 
+@router.post("/inflight/cancel-active")
+def cancel_active(track_id: int | None = None, db: Session = Depends(get_db)):
+    """Hard cancel every active task of this app (of one version when ``track_id`` is given)."""
+    with ADMISSION, InflightClient() as client:
+        q = select(MediaGeneration).where(MediaGeneration.account == client.account,
+            MediaGeneration.provider == "inflight", MediaGeneration.state.in_(("queued", "accepted", "running")))
+        if track_id is not None:
+            track = _track(db, track_id)
+            q = q.where(MediaGeneration.owner.in_([f"scene:{s.id}:{k}" for s in track.scenes for k in ("video", "image", "frame")]))
+        rows = db.scalars(q).all()
+        remote = [r.remote_id for r in rows if r.remote_id]
+        cancelled = set()
+        for offset in range(0, len(remote), 200):
+            cancelled |= set(client.hard_cancel(remote[offset:offset + 200]).get("cancelled_ids") or [])
+        count = 0
+        for row in rows:
+            if row.state == "queued" or row.remote_id in cancelled:
+                row.state, row.error = "cancelled", "HARD_CANCELLED"
+                count += 1
+        db.commit()
+        return {"cancelled_count": count}
+
+
 @router.post("/inflight/tasks/{task_id}/attach")
 def attach(task_id: int, body: AttachTask, db: Session = Depends(get_db)):
     with ADMISSION, InflightClient() as client:
@@ -118,7 +141,7 @@ def attach(task_id: int, body: AttachTask, db: Session = Depends(get_db)):
 class SceneMedia(BaseModel):
     media_type: Literal["auto", "image", "video"] = "auto"
     video_mode: Literal["inherit", "auto", "t2v", "i2v", "ref2v", "im2v"] = "inherit"
-    video_prompt: str = Field(default="", max_length=5800)
+    video_prompt: str = Field(default="", max_length=11000)
     first_frame: str | None = None
     references: list[str] = Field(default_factory=list, max_length=10)
     clip_fit: Literal["loop", "freeze", "stretch"] = "freeze"
@@ -223,7 +246,12 @@ def media_plan(track_id: int, db: Session = Depends(get_db)):
         mode = "i2v" if requested == "auto" else requested
         ids = src.characters if src.characters is not None else chars.mentioned(src.prompt, cast)
         enabled = tc.settings.videos.character_refs if kind == "video" else tc.settings.images.character_refs
+        route = route_of(src)
         planned.append({"id": scene.id, "kind": kind,
+            "motion": route.get("motion"), "why": route.get("why") or "",
+            "group": route.get("group"), "shot": route.get("shot"), "group_size": len(route.get("shots") or []) or None,
+            "continue_from": route.get("continue_from"),
+            "needs_frame": kind == "video" and uses_first_frame(src, tc.settings),
             "status": ("done" if owner.get(scene.idx) else "planned") if kind == "motion" else
                       ((src.video_status or "none") if kind == "video" else (src.image_status or "none")),
             "generation": mode if kind == "video" else None,

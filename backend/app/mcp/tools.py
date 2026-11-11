@@ -770,7 +770,9 @@ def write_video_prompts(a: SceneIdsIn) -> dict[str, Any]:
 
 @tool("generate_videos", "Сгенерировать видеоряд", SceneIdsIn)
 def generate_videos(a: SceneIdsIn) -> dict[str, Any]:
-    """Создать клипы Inflight: t2v/i2v/ref2v/im2v по videos.generation и переопределениям сцен.
+    """Создать клипы Inflight. videos.mode=smart — режиссёр (LLM) сам выбирает сцены, где нужно движение;
+    videos.generation=auto — режим по сцене (герой → кадр по референсу → i2v, локация/стиль → ref2v,
+    иначе t2v), короткие соседние сцены — один мультишот-клип, продолжения — с кадра предыдущего клипа.
     Выбранные scene_ids становятся видеосценами. Пустой список — только недостающие по плану.
     Возвращает job_id; принятые задания возобновляются после перезапуска без новой оплаты."""
     with session_scope() as db:

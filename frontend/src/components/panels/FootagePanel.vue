@@ -18,7 +18,10 @@ const emit = defineEmits<{ changed: [] }>()
 const notify = useNotify()
 const { run, starting } = useTrackActions(() => props.track.id)
 const scenes = ref<Scene[]>([])
-const plan = ref<{ video: number; image: number; motion: number; video_missing: number; image_missing: number; scenes: {id: number; kind: string; status: string; generation: string | null; requested_generation: string | null; first_frame_url: string | null; character_refs_enabled: boolean; characters: {id: number; name: string; url: string | null}[]}[] } | null>(null)
+const plan = ref<{ video: number; image: number; motion: number; video_missing: number; image_missing: number; scenes: {id: number; kind: string; status: string; generation: string | null; requested_generation: string | null; first_frame_url: string | null; character_refs_enabled: boolean; characters: {id: number; name: string; url: string | null}[]
+  motion: number | null; why: string; group: number | null; shot: number | null; group_size: number | null; continue_from: number | null; needs_frame: boolean}[] } | null>(null)
+const motionLabels = ['статично', 'можно картинкой', 'движение помогает', 'нужно движение']
+function sceneNo(id: number | null) { const sc = scenes.value.find(s => s.id === id); return sc ? sc.idx + 1 : '?' }
 const tasks = ref<{ id: number; mode: string; state: string; remote_id: string | null; error: string | null }[]>([])
 const account = ref<any>(null)
 const accountError = ref('')
@@ -37,7 +40,7 @@ const filters = computed(() => [{value: 'video' as const, label: `Клипы (${
 const modeLabels: Record<string, string> = {i2v: 'Первый кадр → видео', ref2v: 'Референсы → видео', t2v: 'Текст → видео', im2v: 'Картинка, затем видео'}
 const active = computed(() => props.track.active_jobs.some(j => ['videos', 'video_prompts', 'images', 'render', 'preview'].includes(j.kind)))
 const locked = computed(() => props.track.shares_images || active.value || busy.value)
-const modes = [{ value: 'inherit', label: 'По настройкам проекта' }, { value: 'auto', label: 'Авто — кадр с референсами → видео' }, { value: 't2v', label: 'Текст → видео' },
+const modes = [{ value: 'inherit', label: 'По настройкам проекта' }, { value: 'auto', label: 'Авто — по содержанию сцены' }, { value: 't2v', label: 'Текст → видео' },
   { value: 'i2v', label: 'Первый кадр → видео' }, { value: 'ref2v', label: 'Референсы → видео' },
   { value: 'im2v', label: 'Картинка, затем видео' }]
 const types = [{ value: 'auto', label: 'По настройкам проекта' }, { value: 'image', label: 'Картинка' }, { value: 'video', label: 'Видеоклип' }]
@@ -103,7 +106,7 @@ async function generate(force = false) {
 }
 async function prepareFrames() {
   if (editing.value) { notify.info('Сначала сохраните параметры сцены'); return }
-  const ids = (plan.value?.scenes || []).filter(s => s.kind === 'video' && s.generation === 'i2v' && (!selected.value.length || selected.value.includes(s.id))).map(s => s.id)
+  const ids = (plan.value?.scenes || []).filter(s => s.kind === 'video' && s.needs_frame && (!selected.value.length || selected.value.includes(s.id))).map(s => s.id)
   if (!ids.length) { notify.info('Нет видеосцен с генерацией из первого кадра'); return }
   await run('images', {scene_ids: ids}, 'Первые кадры добавлены в очередь — их можно проверить до генерации клипов')
   emit('changed'); await load()
@@ -118,6 +121,12 @@ function useDirected(sc: Scene) {
   if (!shot) return
   draft.value.video_prompt = [shot.opening_frame, shot.camera_detail, shot.subject_action,
     shot.environment_motion, shot.lighting, ...(shot.beats || []), shot.continuity].filter(Boolean).join(' ')
+}
+async function cancelActive() {
+  try {
+    const result = await api.post<{cancelled_count: number}>(`/api/inflight/cancel-active?track_id=${props.track.id}`, {})
+    notify.info(`Отменено заданий: ${result.cancelled_count}`); await load(); void loadAccount()
+  } catch (e) { notify.error(e) }
 }
 async function cancel(id: number, hard: boolean) {
   try { await api.post(`/api/inflight/tasks/${id}/cancel`, { hard }); await load(); void loadAccount() }
@@ -137,19 +146,20 @@ async function remove(sc: Scene) {
   <div class="flex flex-col gap-6">
     <div class="rounded-xl border border-line bg-raised p-5">
       <h2 class="text-lg font-semibold">Видеоряд</h2>
-      <p class="mt-2 text-sm text-ink-3">В автоматическом режиме сначала создаётся кадр с референсами героев и стилем канала, затем он анимируется через i2v. Готовый первый кадр используется сразу. Общий состав задаётся в настройках проекта → Видеоряд; тип каждой сцены можно изменить ниже. Полноэкранный моушн заменяет её медиа, наложения работают поверх клипа.</p>
+      <p class="mt-2 text-sm text-ink-3">Режиссёр решает, какие сцены станут клипами, и выбирает способ для каждой: текст → видео, кадр с героем → видео, референсы локации → видео, мультишот из коротких сцен или продолжение предыдущего клипа. Затем он пишет и проверяет промпт: стиль канала, сцена, камера, действие по секундам и звук. Состав задаётся в настройках проекта → Видеоряд; тип и режим каждой сцены можно изменить ниже. Полноэкранный моушн заменяет медиа сцены, наложения работают поверх клипа.</p>
       <p v-if="plan" class="mt-3">{{ plan.video }} клипов · {{ plan.image }} картинок · {{ plan.motion }} моушн-сцен. Не хватает: {{ plan.video_missing }} клипов, {{ plan.image_missing }} картинок.</p>
       <p v-if="track.shares_images" class="mt-2 text-ink-3">Этот язык использует видеоряд основного языка. Генерируйте и редактируйте его там.</p>
       <div class="mt-4 flex flex-wrap gap-2">
-        <Button label="Подготовить первые кадры" icon="pi pi-image" severity="secondary" outlined :disabled="locked || !plan?.scenes.some(s => s.kind === 'video' && s.generation === 'i2v')" :loading="starting === 'images'" @click="prepareFrames" />
-        <Button label="Написать видеопромпты" severity="secondary" outlined :disabled="locked || !plan?.video" :loading="starting === 'video_prompts'" @click="writePrompts()" />
+        <Button label="Подготовить первые кадры" icon="pi pi-image" severity="secondary" outlined :disabled="locked || !plan?.scenes.some(s => s.kind === 'video' && s.needs_frame)" :loading="starting === 'images'" @click="prepareFrames" />
+        <Button label="Спланировать и написать промпты" severity="secondary" outlined :disabled="locked || !plan?.video" :loading="starting === 'video_prompts'" @click="writePrompts()" />
         <Button label="Обновить режиссуру" severity="secondary" text :disabled="locked || !plan?.video" @click="writePrompts(true)" />
         <Button :label="selected.length ? `Создать выбранные (${selected.length})` : 'Создать недостающие клипы'" icon="pi pi-video" :disabled="locked || !plan?.video" :loading="starting === 'videos'" @click="generate()" />
         <Button v-if="selected.length" label="Перегенерировать выбранные" severity="secondary" outlined :disabled="locked" @click="generate(true)" />
         <a :href="`/api/tracks/${track.id}/download/clips`" class="self-center px-3 text-sm text-tally">Скачать все клипы ZIP</a>
         <Button label="Задания и лимиты" severity="secondary" text @click="showTasks = !showTasks; loadAccount()" />
+        <Button v-if="tasks.some(t => ['queued','accepted','running'].includes(t.state))" label="Остановить все задания" severity="danger" text @click="cancelActive" />
       </div>
-      <p class="mt-3 text-xs text-ink-3">Выбирать для генерации можно только видеосцены. Тип сцены меняется в её параметрах. Звук клипов заменяется озвучкой проекта. Готовые клипы можно скачать и загрузить свои.</p>
+      <p class="mt-3 text-xs text-ink-3">Выбирать для генерации можно только видеосцены. Тип сцены меняется в её параметрах. Звук клипов не используется: остаются озвучка и звук проекта. Готовые клипы можно скачать и загрузить свои.</p>
     </div>
     <CharacterCast v-if="!track.shares_images && project.effective_settings.videos.character_refs" :project-id="project.id" :master-track-id="project.master_track_id" :characters="project.characters" @changed="emit('changed')" />
     <p class="text-sm text-ink-3">Перед созданием клипов LLM пишет и проверяет режиссуру: действие, камеру, свет и развитие кадра с учётом стиля канала. Видеопромпты можно подготовить отдельно, до расхода квоты Inflight. Ручные промпты сохраняются.</p>
@@ -158,12 +168,14 @@ async function remove(sc: Scene) {
       <p v-if="accountError" class="text-bad">{{ accountError }}</p>
       <div v-if="account" class="flex flex-wrap gap-5 text-sm">
         <span>Тариф: {{ account.account.plan }}</span>
-        <span>Видео: доступно {{ Math.min(account.usage.video?.left ?? 0, localRemaining?.video ?? 1000) }}, занято {{ account.usage.video?.busy }}/{{ account.usage.video?.slots }}</span>
-        <span>Картинки: доступно {{ Math.min(account.usage.image?.left ?? 0, localRemaining?.image ?? 1000) }}, занято {{ account.usage.image?.busy }}/{{ account.usage.image?.slots }}</span>
+        <span>Видео: доступно {{ Math.min(account.usage.video?.left ?? 0, localRemaining?.video ?? Infinity) }}, занято {{ account.usage.video?.busy }}/{{ account.usage.video?.slots }}</span>
+        <span>Картинки: доступно {{ Math.min(account.usage.image?.left ?? 0, localRemaining?.image ?? Infinity) }}, занято {{ account.usage.image?.busy }}/{{ account.usage.image?.slots }}</span>
+        <span v-if="account.usage.pool">Общий пул: {{ account.usage.pool.busy }}/{{ account.usage.pool.slots }}</span>
         <span v-if="account.usage.resets_at">Сброс: {{ new Date(account.usage.resets_at * 1000).toLocaleString() }}</span>
       </div>
       <p v-if="account?.usage.warning" class="mt-3 text-tally">{{ account.usage.warning }}</p>
-      <p class="mt-3 text-xs text-ink-3">Приложение ограничивает расход до 1000 видео и 1000 картинок/сутки и 12 потоков. Отмена в очереди задач останавливает ожидание; кнопки ниже отменяют задания в сервисе. Принудительная отмена освобождает активный слот.</p>
+      <p v-if="account?.usage.turbo?.active" class="mt-3 text-tally">{{ account.usage.turbo.message }}</p>
+      <p class="mt-3 text-xs text-ink-3">Используются все свободные потоки тарифа; свой потолок задаётся в настройках приложения. Отмена в очереди задач останавливает ожидание; кнопки ниже отменяют задания в сервисе. Принудительная отмена освобождает активный слот.</p>
       <div v-for="task in tasks" :key="task.id" class="mt-3 flex flex-wrap items-center gap-3 border-t border-line pt-3 text-sm">
         <span>#{{ task.id }} · {{ task.mode }} · {{ labels[task.state] || task.state }}</span>
         <code class="text-xs text-ink-3">{{ task.remote_id }}</code>
@@ -195,9 +207,10 @@ async function remove(sc: Scene) {
           </div>
           <p class="my-3 line-clamp-3 text-sm text-ink-2">{{ sc.text }}</p>
           <div v-if="kind(sc.id) === 'video'" class="mb-3 flex flex-col gap-2 text-xs text-ink-3">
-            <p>Новая генерация: {{ planned(sc.id)?.requested_generation === 'auto' ? 'Авто · ' : '' }}{{ modeLabels[planned(sc.id)?.generation || ''] || 'По настройкам проекта' }}</p>
+            <p>Новая генерация: {{ planned(sc.id)?.requested_generation === 'auto' ? 'Авто · ' : '' }}{{ planned(sc.id)?.group ? `Мультишот · шот ${(planned(sc.id)?.shot ?? 0) + 1} из клипа сцены ${sceneNo(planned(sc.id)?.group ?? null)}` : planned(sc.id)?.continue_from ? `Продолжение клипа сцены ${sceneNo(planned(sc.id)?.continue_from ?? null)}` : (modeLabels[planned(sc.id)?.generation || ''] || 'По настройкам проекта') }}</p>
+            <p v-if="planned(sc.id)?.motion != null">Режиссёр: {{ motionLabels[planned(sc.id)?.motion ?? 0] }}{{ planned(sc.id)?.why ? ' — ' + planned(sc.id)?.why : '' }}</p>
             <p v-if="sc.video_url && sc.video_meta.mode">Созданный клип: {{ modeLabels[sc.video_meta.mode] || sc.video_meta.mode }}</p>
-            <div v-if="planned(sc.id)?.generation === 'i2v'" class="flex items-center gap-3">
+            <div v-if="planned(sc.id)?.needs_frame" class="flex items-center gap-3">
               <img v-if="planned(sc.id)?.first_frame_url" :src="planned(sc.id)?.first_frame_url || undefined" class="h-14 w-24 rounded object-contain" alt="Первый кадр клипа" />
               <span>{{ planned(sc.id)?.first_frame_url ? 'Этот кадр будет анимирован.' : 'Первый кадр будет создан перед анимацией.' }}</span>
             </div>

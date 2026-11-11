@@ -90,12 +90,12 @@ async function check(service: 'inflight' | 'lumean' | 'fastgen' | 'llm_fallback'
     <form v-if="cfg" class="mt-8 flex flex-col gap-10" @submit.prevent="save">
       <section class="rounded-xl border border-line p-5">
         <h2 class="font-semibold">Inflight: лимиты генерации</h2>
-        <p class="my-3 text-sm text-ink-3">До 1000 видео и 1000 картинок за сутки UTC. Очередь ждёт сброса квоты; серверные ограничения учитываются дополнительно.</p>
+        <p class="my-3 text-sm text-ink-3">По умолчанию используются все потоки тарифа (включая турбо-часы) и весь его объём. Ниже можно оставить запас для других программ на этом ключе: 0 — без своего ограничения.</p>
         <label class="block">Адрес API <InputText v-model="cfg.inflight_base_url" class="w-full" /></label>
         <div class="mt-4 flex flex-wrap gap-4">
-          <label>Потоки на пул <InputNumber v-model="cfg.inflight_threads" :min="1" :max="12" show-buttons /></label>
-          <label>Видео/сутки <InputNumber v-model="cfg.inflight_video_daily" :min="1" :max="1000" /></label>
-          <label>Картинки/сутки <InputNumber v-model="cfg.inflight_image_daily" :min="1" :max="1000" /></label>
+          <label>Потоков на пул, не больше <InputNumber v-model="cfg.inflight_max_threads" :min="0" :max="1000" show-buttons /></label>
+          <label>Видео/сутки, не больше <InputNumber v-model="cfg.inflight_video_daily" :min="0" :max="1000000" /></label>
+          <label>Картинки/сутки, не больше <InputNumber v-model="cfg.inflight_image_daily" :min="0" :max="1000000" /></label>
         </div>
         <p class="mt-3 text-sm text-ink-3">На тарифе parallel картинки и видео используют отдельные пулы потоков. На chain лимит общий. FastGen работает независимо.</p>
       </section>
