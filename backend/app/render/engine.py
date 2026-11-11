@@ -72,6 +72,8 @@ class PlanScene:
     video: str | None = None
     clip_fit: str = "freeze"
     clip_start: float = 0.0
+    #: End of the scene's window of the clip (a shot of a multishot clip); None – the clip's end.
+    clip_end: float | None = None
     clip_speed: float = 1.0
 
 
@@ -219,7 +221,7 @@ class FrameRenderer:
             return self.motion_client().scene(s.motion, t - s.start)
         if s.video:
             return self._footage.frame(s.video, t - s.start, s.end - s.start,
-                                       fit=s.clip_fit, offset=s.clip_start, speed=s.clip_speed)
+                                       fit=s.clip_fit, offset=s.clip_start, speed=s.clip_speed, end=s.clip_end)
         a, b = self._window[idx]
         u = (t - a) / max(0.1, b - a)
         lp = self.look.p

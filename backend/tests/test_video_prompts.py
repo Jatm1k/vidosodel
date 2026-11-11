@@ -36,6 +36,7 @@ def shot(sid=1):
         "beats": ["Her hands rest beside the open pages on the desk.",
                   "She brings the covers together in one slow, deliberate movement.",
                   "The book lies closed and her hands settle on its cover."],
+        "audio": "Quiet room tone, paper rustling and the soft thud of the closing book.",
         "continuity": "Keep the same desk, red sweater and left-side window as in the neighboring scene."}
 
 
@@ -50,23 +51,26 @@ class DirectionTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 prompt = compose_video(mode, self.settings, shot=shot())
                 self.assertIn("flat 2D ink illustration", prompt)
-                self.assertIn("Avoid: logos, captions, photorealism", prompt)
+                self.assertIn("AVOID: logos, captions, photorealism", prompt)
                 self.assertIn("Calm restrained movement.", prompt)
                 self.assertIn("9:16 composition", prompt)
                 self.assertNotIn("16:9", prompt)
-                self.assertIn("Progression:", prompt)
-                self.assertLessEqual(len(prompt), 6000)
+                self.assertIn("- 0–", prompt)  # timed action
+                self.assertIn("AUDIO: Quiet room tone", prompt)
+                self.assertIn("No dialogue", prompt)
+                self.assertLess(prompt.index("STYLE:"), prompt.index("ACTION:"))  # style first
+                self.assertLessEqual(len(prompt), 12000)
 
     def test_first_frame_and_references_have_different_instructions(self):
         animated = compose_video("i2v", self.settings, shot=shot())
-        self.assertIn("Preserve its subjects", animated)
-        self.assertNotIn("Opening (", animated)
+        self.assertIn("Keep its subjects", animated)
+        self.assertNotIn("SCENE:", animated)
         self.assertNotIn("A red-haired woman sits", animated)
         self.assertIn(shot()["subject_action"], animated)
         ref = compose_video("ref2v", self.settings, shot=shot(), notes="REF_CHARACTER_1 is Anna.")
         self.assertIn("not a required first frame", ref)
         self.assertIn("REF_CHARACTER_1 is Anna", ref)
-        self.assertIn("no external visual reference", compose_video("t2v", self.settings, shot=shot()))
+        self.assertIn("SCENE: A red-haired woman sits", compose_video("t2v", self.settings, shot=shot()))
 
     def test_manual_direction_is_preserved_and_still_receives_channel_style(self):
         manual = "Keep the view fixed. Let the curtain move while the woman remains still."
@@ -77,7 +81,7 @@ class DirectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compose_video("t2v", self.settings)
         with self.assertRaises(ValueError):
-            compose_video("t2v", self.settings, manual="x" * 6000)
+            compose_video("t2v", self.settings, manual="x" * 12000)
 
     def test_opening_for_im2v_matches_directed_opening_not_action_end(self):
         opening = compose_opening(shot(), "unrelated old image prompt", self.settings)
@@ -119,7 +123,7 @@ class DirectionTests(unittest.TestCase):
 
     def test_actual_payload_uses_directed_action_and_style(self):
         self.settings.videos.generation = "t2v"
-        scene = SimpleNamespace(idx=0, prompt="A woman at a desk.", text="She ends the lesson.",
+        scene = SimpleNamespace(idx=0, start=0, end=4, prompt="A woman at a desk.", text="She ends the lesson.",
             overrides={}, characters=[], image_file=None, source_scene_id=None, video_plan={"shot": shot()})
         tc = SimpleNamespace(settings=self.settings, project=SimpleNamespace(characters=[]))
         mode, payload = scene_payload(scene, tc, True)
@@ -130,11 +134,11 @@ class DirectionTests(unittest.TestCase):
         self.settings.videos.generation = "im2v"
         _, payload = scene_payload(scene, tc, True)
         self.assertIn("open book", payload["image_prompt"])
-        self.assertIn("supplied first frame", payload["video_prompt"])
+        self.assertIn("START FRAME", payload["video_prompt"])
 
     def test_actual_payload_rejects_unplanned_automatic_clip(self):
         self.settings.videos.generation = "t2v"
-        scene = SimpleNamespace(prompt="A woman at a desk.", overrides={}, characters=[],
+        scene = SimpleNamespace(idx=0, start=0, end=4, prompt="A woman at a desk.", overrides={}, characters=[],
             image_file=None, source_scene_id=None, video_plan={})
         tc = SimpleNamespace(settings=self.settings, project=SimpleNamespace(characters=[]))
         with self.assertRaises(JobError):

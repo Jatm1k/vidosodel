@@ -72,7 +72,7 @@ class StreamingTests(unittest.TestCase):
     def project(self):
         with self.scope() as db:
             ch = Channel(name='test'); db.add(ch); db.flush()
-            project = Project(name='test', channel_id=ch.id, settings={'videos': {'mode': 'full'}, 'images': {'provider': 'inflight'}})
+            project = Project(name='test', channel_id=ch.id, settings={'videos': {'mode': 'full', 'generation': 'i2v'}, 'images': {'provider': 'inflight'}})
             db.add(project); db.flush()
             track = Track(project_id=project.id, language='ru'); db.add(track); db.flush()
             ids = []

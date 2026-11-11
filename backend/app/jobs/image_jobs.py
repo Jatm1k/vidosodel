@@ -167,9 +167,13 @@ def images_job(ctx: JobContext) -> dict[str, Any]:
     with session_scope() as db:
         tc = load_track(db, ctx.track_id)
         use_inflight = tc.settings.images.provider in ("inflight", "both")
+        videos_on = tc.settings.videos.mode != "off" and not tc.shares_images
     if use_inflight:
         from .footage_jobs import generate_scenes
         return generate_scenes(ctx, False)
+    if videos_on:
+        from .video_prompt_jobs import ensure_routes
+        ensure_routes(ctx.track_id, ctx.check, ctx.progress)  # clip scenes need no still of their own
     only_ids = set(ctx.params.get("scene_ids") or [])
     force = bool(ctx.params.get("force")) and not ctx.params.get("missing_only")
     retry_failed = bool(ctx.params.get("retry_failed"))

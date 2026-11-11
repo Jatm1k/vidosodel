@@ -61,7 +61,13 @@ def resolved_payload(db, payload):
 
 def hybrid_images(ctx, *, first_frames=False, skip_scene_ids=None):
     from .footage_jobs import wait_for_inputs, image_payload
+    from .video_prompt_jobs import ensure_routes
     wait_for_inputs(ctx)
+    with session_scope() as db:
+        tc = load_track(db, ctx.track_id)
+        videos_on = tc.settings.videos.mode != "off" and not tc.shares_images
+    if videos_on:
+        ensure_routes(ctx.track_id, ctx.check, ctx.progress)  # which scenes are stills, which need a first frame
     cfg = load_config()
     if not (cfg.fastgen_api_key.strip() or cfg.inflight_api_key.strip()):
         raise JobError("Укажите ключ FastGen или Inflight для совместной генерации картинок")

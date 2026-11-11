@@ -12,9 +12,15 @@ from sqlalchemy import select
 from ..settings_store import load_config
 from ..motion import store as motion_store
 from ..pipeline import characters as chars
-from ..pipeline.footage import wants_video, generation_mode, scene_first_frame, uses_first_frame, wants_still
+from ..pipeline.footage import (wants_video, generation_mode, scene_first_frame, uses_first_frame, wants_still,
+                                route_of, is_member)
 from ..pipeline.llm_tasks import compose_prompt
-from ..pipeline.video_prompts import compose_video, compose_opening
+from ..pipeline.video_prompts import compose_video, compose_opening, compose_multishot
+
+
+def screen_seconds(scene) -> float:
+    """How long the scene's clip is on screen (a clip itself is always 10 s)."""
+    return round(max(.5, float(scene.end) - float(scene.start)), 2)
 from ..services.inflight import InflightClient
 from ..services import inflight_queue as queue
 from ..storage import media_url
@@ -68,6 +74,8 @@ def scene_payload(scene, tc, video: bool, *, for_planning=False) -> tuple[str, d
         if previous:
             payload["previous_scene_id"] = previous.id
             payload["continuity_change"] = str((scene.continuity or {}).get("change") or "")
+        # Stills that are first frames go a little ahead of clips at the same point of the video.
+        payload["_priority"] = float(scene.start) - (30 if wants_video(scene, s) else 0)
         return ("ref2i" if refs or previous else "t2i"), payload
     first = scene_first_frame(scene)
     if mode == "i2v":
@@ -82,9 +90,22 @@ def scene_payload(scene, tc, video: bool, *, for_planning=False) -> tuple[str, d
         payload["_reference_notes"] = note
         return mode, payload
     plan = (getattr(scene, "video_plan", None) or {}).get("shot")
+    route = route_of(scene)
     try:
-        directed = compose_video(mode, s, shot=plan, manual=str(ov.get("video_prompt") or ""), notes=note)
+        if route.get("shots") and route.get("group") == scene.id:
+            # Multishot leader: one clip, one shot per scene of the group.
+            members = {sc.id: sc for sc in tc.track.scenes if sc.id in route["shots"]}
+            ordered = [members[i] for i in route["shots"] if i in members]
+            shots = [(sc.video_plan or {}).get("shot") for sc in ordered]
+            if len(ordered) != len(route["shots"]) or not all(shots):
+                raise ValueError("Нет режиссуры всех шотов мультишот-клипа")
+            directed = compose_multishot(s, shots, [screen_seconds(sc) for sc in ordered], note)
+            payload["_multishot"] = {"scenes": route["shots"], "screens": [screen_seconds(sc) for sc in ordered]}
+        else:
+            directed = compose_video(mode, s, shot=plan, manual=str(ov.get("video_prompt") or ""), notes=note,
+                                     screen=screen_seconds(scene), continued=bool(route.get("continue_from")))
         payload["prompt"] = directed
+        payload["_priority"] = float(scene.start)
         payload["_video_plan"] = {"manual": bool(str(ov.get("video_prompt") or "").strip()),
                                   "shot": plan if not ov.get("video_prompt") else None}
         payload["_source"] = {"first_frame": first if mode == "i2v" else None,
@@ -166,6 +187,12 @@ def generate_scenes(ctx: JobContext, video: bool, *, first_frames=False, skip_sc
     retry_failed = bool(ctx.params.get("retry_failed"))
     force = bool(ctx.params.get("force")) and not ctx.params.get("missing_only") and not first_frames
     wait_for_inputs(ctx)
+    with session_scope() as db:
+        tc = load_track(db, ctx.track_id)
+        videos_on = tc.settings.videos.mode != "off" and not tc.shares_images
+    if videos_on:
+        from .video_prompt_jobs import ensure_routes
+        ensure_routes(ctx.track_id, ctx.check, ctx.progress)  # which scenes are stills, which need a first frame
     prefix = "image"
     with session_scope() as db:
         tc = load_track(db, ctx.track_id)

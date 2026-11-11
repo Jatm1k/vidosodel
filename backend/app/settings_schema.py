@@ -99,11 +99,33 @@ class ImageSettings(_Base):
 
 
 class VideoSettings(_Base):
-    """Generated footage; motion scenes take precedence over footage selection."""
-    mode: Literal["off", "full", "mixed", "intro"] = "off"
+    """Generated footage; motion scenes take precedence over footage selection.
+
+    ``smart`` – the director (LLM) reads the narration and gives clips to the scenes that need motion
+    (actions, processes, changes), stills to the rest; ``share`` is the target share of clips after the
+    all-clip opening of ``intro_seconds``. ``mixed``/``intro`` are the older positional rules.
+    """
+    mode: Literal["off", "smart", "full", "mixed", "intro"] = "off"
+    #: The first seconds of the video are all clips (``smart`` and ``mixed``); 0 – none.
+    intro_seconds: float = Field(default=0, ge=0, le=3600)
     intro_clips: int = Field(default=5, ge=0)
     share: float = Field(default=0.5, ge=0, le=1)
+    #: ``auto`` – per scene: t2v without references, a reference-built first frame → i2v for recurring
+    #: characters (faces stay recognisable), ref2v for places/objects/style references.
     generation: Literal["auto", "t2v", "i2v", "ref2v", "im2v"] = "auto"
+    #: ``auto``: scenes without references start from a still in the channel style (image → video in one
+    #: request) instead of text-only video – exact style, a little slower.
+    style_lock: bool = False
+    #: Several short neighbouring scenes share one 10-second clip of several shots (saves quota, faster).
+    multishot: bool = True
+    multishot_max: int = Field(default=3, ge=2, le=4)
+    #: Only scenes shorter than this (seconds) are combined.
+    multishot_scene: float = Field(default=4.5, ge=1, le=8)
+    #: "Endless story": a scene that continues the previous one starts from the frame where the previous
+    #: clip leaves the screen (one continuous film instead of separate shots; these clips wait for each other).
+    continuation: bool = False
+    #: A refused clip is rewritten once by the LLM (by the refusal kind) and submitted again.
+    refusal_rewrite: bool = True
     aspect_ratio: Literal["16:9", "9:16"] = "16:9"
     direction: str = "Natural continuous movement, coherent anatomy, cinematic camera movement."
     references: list[str] = Field(default_factory=list, max_length=10)

@@ -89,6 +89,7 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
             continue  # a later slot of a motion scene: drawn by its first slot
         source_ov = sc.source_scene.overrides if sc.source_scene_id and sc.source_scene else {}
         ov = {**(source_ov or {}), **(sc.overrides or {})}
+        clip_meta = ((sc.source_scene if sc.source_scene_id and sc.source_scene else sc).video_meta or {})
         choices = [e for e in effects if e != prev_effect] or effects
         effect = ov.get("effect") or rnd.choice(choices)
         prev_effect = effect
@@ -111,7 +112,9 @@ def build_plan(tc: TrackCtx, *, preview: bool, start: float = 0.0, length: float
                                      rnd.randrange(1, 10**9), trans,
                                      video=img if img in clip_paths else None,
                                      clip_fit=ov.get("clip_fit", s.videos.fit),
-                                     clip_start=float(ov.get("clip_start", 0)),
+                                     # A shot of a multishot clip: its window of the clip, plus the user's trim.
+                                     clip_start=float(clip_meta.get("clip_start") or 0) + float(ov.get("clip_start", 0)),
+                                     clip_end=clip_meta.get("clip_end"),
                                      clip_speed=float(ov.get("clip_speed", 1))))
 
     width, height = RESOLUTIONS["540p" if preview else s.render.resolution]
