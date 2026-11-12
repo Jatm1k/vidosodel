@@ -83,6 +83,10 @@ class ImageSettings(_Base):
     character_refs: bool = False
     #: Model that draws the reference portraits.
     character_operation: str = "nano_banana_pro_image_generate"
+    #: The video is about real historical people (philosophers, scientists...): they stay characters under
+    #: their real names, and portraits/prompts name them so the model draws their real likeness.
+    #: Living politicians and celebrities stay forbidden.
+    real_people: bool = False
     #: Scene continuity: when the story stays in one picture and only a detail changes, the LLM
     #: marks the scene and its image is drawn from the previous scene's image (needs a model
     #: that accepts references).

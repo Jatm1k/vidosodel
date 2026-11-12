@@ -46,11 +46,12 @@ def ensure_scanned(project_id: int, fg: FastgenClient, *, force: bool = False) -
             return 0
         master = master_track(db, project)
         script = master.script if master else ""
-        llm = effective_settings(project.channel.settings, project.settings).llm
+        s = effective_settings(project.channel.settings, project.settings)
+        llm, real_people = s.llm, s.images.real_people
     if not script.strip():
         raise JobError("Нет сценария — персонажей искать не в чем.")
     bible = ensure_bible(project_id, fg)
-    found = llm_tasks.extract_characters(fg, script, bible, llm)
+    found = llm_tasks.extract_characters(fg, script, bible, llm, real_people=real_people)
     added = 0
     with session_scope() as db:
         project = db.get(Project, project_id)
@@ -81,7 +82,8 @@ def ensure_portraits(project_id: int, ctx: JobContext, *, only: set[int] | None 
     with session_scope() as db:
         project = db.get(Project, project_id)
         s = effective_settings(project.channel.settings, project.settings)
-        targets = [(c.id, c.description or c.name) for c in project.characters if wanted(c)]
+        targets = [(c.id, c.name if c.kind != "location" else "", c.description or c.name)
+                   for c in project.characters if wanted(c)]
         for c in project.characters:
             if wanted(c):
                 c.image_status, c.image_error = "generating", None
@@ -94,10 +96,11 @@ def ensure_portraits(project_id: int, ctx: JobContext, *, only: set[int] | None 
     result = {"done": 0, "failed": 0}
     lock = threading.Lock()
 
-    def draw(char_id: int, description: str) -> None:
+    def draw(char_id: int, name: str, description: str) -> None:
+        prompt = llm_tasks.portrait_prompt(description, name, real_people=images.real_people)
         try:
             with FastgenClient() as fg:
-                path, meta = generate_one(fg, llm_tasks.portrait_prompt(description), out_dir, f"character_{char_id}",
+                path, meta = generate_one(fg, prompt, out_dir, f"character_{char_id}",
                                           images, s.llm, [], ctx, operation=images.character_operation)
             with session_scope() as db:
                 c = db.get(Character, char_id)

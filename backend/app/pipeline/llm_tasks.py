@@ -30,6 +30,23 @@ SAFE_RULES = (
     "topics through metaphor, atmosphere, body language and symbolism instead of explicit depiction."
 )
 
+#: Channels about real historical people (``images.real_people``): they are named so the image model draws
+#: their real likeness. Living politicians and celebrities stay out.
+REAL_PEOPLE_RULES = (
+    "Images must be safe for YouTube monetization: no gore, blood, nudity, weapons pointed at people, "
+    "drugs, hate symbols, living politicians, living celebrities, brand logos or readable text. The video is "
+    "about real historical people (thinkers, writers, scientists, artists): show them by their full real "
+    "name so the image model draws their real, recognizable likeness at the right age. Show difficult "
+    "topics through metaphor, atmosphere, body language and symbolism instead of explicit depiction."
+)
+
+_REAL_PEOPLE_BIBLE = (
+    " The script is about REAL historical people: keep each of them under their full real name as the "
+    "handle (e.g. the real full name, never an invented first name or 'the philosopher'), and describe "
+    "how they really looked at the age shown in the video – their recognizable features, hair, build, "
+    "glasses, beard, typical clothing of that time."
+)
+
 
 def _niche(llm: LlmSettings) -> str:
     return f"Channel niche: {llm.niche}\n" if llm.niche.strip() else ""
@@ -45,6 +62,7 @@ def visual_bible(fg: FastgenClient, script: str, llm: LlmSettings, images: Image
         "3) recurring locations; 4) color palette, lighting and mood. "
         "If the script is abstract/educational, define a consistent visual metaphor language instead. "
         "Max 1800 characters, plain text, no markdown headers."
+        + (_REAL_PEOPLE_BIBLE if images.real_people else "")
     )
     user = (
         f"{_niche(llm)}Channel visual style: {images.style_prompt}\n"
@@ -57,14 +75,27 @@ def visual_bible(fg: FastgenClient, script: str, llm: LlmSettings, images: Image
 
 # ----------------------------------------------------------------------- characters
 def extract_characters(fg: FastgenClient, script: str, bible: str, llm: LlmSettings,
-                       limit: int = 6) -> list[dict[str, str]]:
-    """Recurring on-screen people of the video: ``[{"name", "description"}]`` (may be empty)."""
+                       limit: int = 6, *, real_people: bool = False) -> list[dict[str, str]]:
+    """Recurring on-screen people of the video: ``[{"name", "description"}]`` (may be empty).
+
+    ``real_people``: real historical figures are kept under their full real names (the portrait is then
+    drawn by name, see :func:`portrait_prompt`); otherwise they are skipped.
+    """
+    skip = (
+        "Skip people that appear once and crowds. REAL historical figures (thinkers, writers, scientists, "
+        "artists) who recur ARE characters: use their full real name as the handle (never an invented "
+        "first name) and describe how they really looked at the age shown – recognizable features, hair, "
+        "glasses, beard, build, clothing of that time. Skip living politicians and living celebrities. "
+        "For invented people give a short English handle (a first name or 'the old man'). "
+    ) if real_people else (
+        "Skip people that appear once, crowds, historical figures and real celebrities. For each give a "
+        "short English handle (a first name or 'the old man'). "
+    )
     system = (
         "You prepare reference portraits for an illustrated narrated video. From the script and the visual "
         f"bible, list up to {limit} RECURRING people who should look the same in many images: named heroes, "
-        "the narrator's persona if shown, a recurring 'the man'/'the woman' protagonist. Skip people that appear "
-        "once, crowds, historical figures and real celebrities. For each give a short English handle (a first "
-        "name or 'the old man') and a fixed visual description in English, 25–50 words: gender, age, "
+        "the narrator's persona if shown, a recurring 'the man'/'the woman' protagonist. " + skip +
+        "Give each a fixed visual description in English, 25–50 words: gender, age, "
         "ethnicity, face, hair, build, typical clothing. Reuse the bible's descriptions when present. "
         "If nobody recurs (abstract or educational script), return an empty list. "
         'Answer ONLY with JSON: {"characters": [{"name": "...", "description": "..."}]}'
@@ -82,11 +113,22 @@ def extract_characters(fg: FastgenClient, script: str, bible: str, llm: LlmSetti
     return out[:limit]
 
 
-def portrait_prompt(description: str) -> str:
-    """Prompt of a character reference portrait (the channel style is appended by :func:`compose_prompt`)."""
+def portrait_prompt(description: str, name: str = "", *, real_people: bool = False) -> str:
+    """Prompt of a character reference portrait (the channel style is appended by :func:`compose_prompt`).
+
+    ``real_people``: the portrait names the person, so a real historical figure gets their real likeness
+    (an invented handle like "the old man" reads naturally too). A refused request is rewritten without
+    the name by the usual prompt softening, i.e. drawn by the description alone.
+    """
+    description = description.strip().rstrip(".")
+    if real_people and name.strip():
+        who = (f"Character reference portrait of {name.strip()}, a faithful likeness true to their real "
+               f"photographs and portraits: {description}")
+    else:
+        who = f"Character reference portrait: {description}"
     return (
-        f"Character reference portrait: {description}. Head and upper body, facing the camera, calm neutral "
-        "expression, plain neutral grey background, soft even studio lighting, face in sharp focus, "
+        f"{who}. Head and upper body, facing the camera, calm neutral expression, plain flat neutral grey "
+        "studio backdrop without landscape or scenery, soft even studio lighting, face in sharp focus, "
         "no other people"
     )
 
@@ -137,6 +179,7 @@ def scene_prompts(
     characters: Sequence[tuple[str, str]] = (),
     continuity: bool = False,
     before: dict[int, tuple[int | None, str]] | None = None,
+    real_people: bool = False,
 ) -> dict[int, dict[str, Any]]:
     """Generate prompts for ``(scene_id, text)`` pairs.
 
@@ -150,7 +193,7 @@ def scene_prompts(
     incrementally (a long video is ~50 requests).
     """
     system = _PROMPT_SYSTEM.format(
-        safe=SAFE_RULES,
+        safe=REAL_PEOPLE_RULES if real_people else SAFE_RULES,
         characters_rule=_CHARACTERS_RULE if characters else "",
         characters_field=', "characters": ["<name>"]' if characters else "",
         continuity_rule=_CONTINUITY_RULE if continuity else "",

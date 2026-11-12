@@ -69,7 +69,7 @@ export interface PipelineSettings {
     premium_minutes: number; budget_credits: number
     upscale_2x: boolean; style_prompt: string; avoid: string
     reference_images: string[]; use_references: boolean
-    character_refs: boolean; character_operation: string; scene_continuity: boolean
+    character_refs: boolean; character_operation: string; scene_continuity: boolean; real_people: boolean
     watermark_fix: 'auto' | 'inpaint' | 'crop' | 'none'; auto_fix_rejected: boolean; max_attempts: number
   }
   videos: {
